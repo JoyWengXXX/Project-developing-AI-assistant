@@ -1,0 +1,6 @@
+# Agent 開發用客製化檔案（不納入版本控制）
+AGENTS.md
+.github/agents/
+.github/instructions/
+.github/prompts/
+.github/skills/

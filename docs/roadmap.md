@@ -28,7 +28,7 @@
 | --- | --- | --- |
 | 0 | 文件骨架（README、product、roadmap、architecture） | 已完成（文件） |
 | 1 | 專案骨架、設定、`/health`、request ID、結構化日誌、統一錯誤格式 | 已完成（2026-10-22：`uv run pytest` 19 passed；ruff、mypy 通過；uvicorn 手動驗證 `/health`） |
-| 2 | Docker Compose（dev／test DB）、SQLAlchemy、Alembic、`/ready` | 未完成 |
+| 2 | Docker Compose（dev／test DB）、SQLAlchemy、Alembic、`/ready` | 已完成（2026-10-24：`docker compose up -d --wait db db-test`；`uv run alembic upgrade head` 於 dev 資料庫成功，`alembic current` 為 `0001 (head)`；`uv run pytest` 24 passed，含 PostgreSQL 整合測試；ruff、mypy 通過；uvicorn 手動驗證 `/ready` 回 200。目前 migration 僅為空基線，尚無資料表） |
 | 3 | Repository 註冊（路徑正規化、`REPOSITORY_ROOTS`、根目錄檢查、去重） | 未完成 |
 | 4 | revision 解析與快照匯入 | 未完成 |
 | 5 | Snapshot 與檔案查詢（分頁、歸屬檢查、狀態過濾） | 未完成 |
@@ -45,7 +45,14 @@
 | 指定舊 commit 可正確讀取該版本 | 未完成 |
 | 匯入失敗不留下可被當成成功資料的半套索引 | 未完成 |
 
-### 最近驗證（2026-10-24，切片 1）
+### 最近驗證（2026-10-24，切片 2）
+
+- `uv run pytest`：24 passed（含 3 個 PostgreSQL 整合測試：`/ready` 200、migration 從空 schema `upgrade head`、upgrade／downgrade／upgrade）；另有一則 Starlette TestClient 使用 HTTPX 的棄用警告。
+- `uv run ruff check .`、`uv run ruff format --check .`、`uv run mypy src tests`：通過。
+- 手動：dev 資料庫 `alembic upgrade head` 成功；uvicorn 的 `/ready` 回 200。`/ready` 在資料庫不可連線時回 503，由自動化測試涵蓋（未實際停止 dev 容器驗證）。
+- 尚無任何資料表，不代表第一階段整體驗收完成。
+
+### 先前驗證（2026-10-24，切片 1）
 
 - `uv run pytest`：19 passed；另有一則 Starlette TestClient 使用 HTTPX 的棄用警告。
 - `uv run ruff check .`：通過。
@@ -55,6 +62,7 @@
 
 ## 第二階段：背景匯入與程式結構索引（計畫）
 
+- [詳細規格草稿](./stage-02-spec.md)：未完成，待使用者確認；須先完成第一階段整體驗收，本次未開始第二階段實作。
 - 實作：Celery + Redis；匯入 API 改回傳工作識別碼並提供進度；Python AST 抽取模組、函式、類別、import 與行號；檔案、符號與關鍵字搜尋；工作重試與冪等。
 - 驗收：長時間工作不佔住 HTTP 請求；失敗可追查並安全重試；語法錯誤不造成整批索引失敗；搜尋可限定 repo 與 snapshot。
 

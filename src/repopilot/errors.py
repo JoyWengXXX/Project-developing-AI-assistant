@@ -6,3 +6,9 @@ class RepoPilotError(Exception):
     def __init__(self, message: str) -> None:
         super().__init__(message)
         self.message = message
+
+
+class DatabaseUnavailableError(RepoPilotError):
+    """資料庫無法連線或查詢失敗。"""
+
+    code = "database_unavailable"

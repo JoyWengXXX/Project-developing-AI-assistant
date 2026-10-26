@@ -1,0 +1,38 @@
+# 僅供本機開發與測試。postgres_* volume 只保存資料庫檔，不是被匯入的 Git repo。
+# 帳密為本機用的假值；請勿用於任何共用或正式環境。
+services:
+  db:
+    image: postgres:17
+    environment:
+      POSTGRES_USER: repopilot
+      POSTGRES_PASSWORD: repopilot_dev
+      POSTGRES_DB: repopilot
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - postgres_dev_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U repopilot -d repopilot"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  db-test:
+    image: postgres:17
+    environment:
+      POSTGRES_USER: repopilot
+      POSTGRES_PASSWORD: repopilot_test
+      POSTGRES_DB: repopilot_test
+    ports:
+      - "127.0.0.1:5433:5432"
+    # 測試資料庫不保存資料，每次重建都是乾淨環境
+    tmpfs:
+      - /var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U repopilot -d repopilot_test"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  postgres_dev_data:

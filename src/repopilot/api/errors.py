@@ -7,14 +7,16 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from repopilot.errors import RepoPilotError
+from repopilot.errors import DatabaseUnavailableError, RepoPilotError
 from repopilot.logging_config import APP_LOGGER_NAME
 from repopilot.request_context import request_id_var
 
 logger = logging.getLogger(f"{APP_LOGGER_NAME}.api.errors")
 
 # 領域例外 → HTTP 狀態碼；依 MRO 尋找，未列出者回 500。後續切片在此加入對應。
-ERROR_STATUS: dict[type[RepoPilotError], int] = {}
+ERROR_STATUS: dict[type[RepoPilotError], int] = {
+    DatabaseUnavailableError: 503,
+}
 
 _HTTP_ERROR_CODES = {
     404: "not_found",

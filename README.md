@@ -2,7 +2,7 @@
 
 AI 輔助專案客製化平台：管理參考 repos 與目標 repo，依自然語言需求產出附程式碼來源引用的修改方案；後續在獨立工作目錄改碼、執行測試並產出可審查的 diff 與驗證報告。
 
-> 狀態：**第一階段實作中**（專案骨架、Repo 管理與固定版本匯入）。目前已有專案骨架與 `/health`，尚未有資料庫與匯入功能。各階段狀態見 [docs/roadmap.md](docs/roadmap.md)。
+> 狀態：**第一階段實作中**（專案骨架、Repo 管理與固定版本匯入）。目前已有專案骨架、`/health`、`/ready`、PostgreSQL（Docker Compose）與 Alembic 基線；尚無 Repo 註冊與匯入功能。各階段狀態見 [docs/roadmap.md](docs/roadmap.md)。
 
 ## 文件
 
@@ -25,37 +25,35 @@ AI 輔助專案客製化平台：管理參考 repos 與目標 repo，依自然�
 
 - Python 3.12（以 uv 管理：`uv python install 3.12`）
 - uv
-- Docker Desktop（執行 PostgreSQL；切片 2 起需要）
+- Docker Desktop（執行 PostgreSQL）
 - Git CLI
 
 ## 常用指令
 
-已驗證（切片 1，2026-10-22）：
+已驗證（切片 2，2026-10-24，Windows PowerShell、Docker 27.4.0）：
 
 ```powershell
 uv sync
+docker compose up -d --wait db db-test
+uv run alembic upgrade head
 uv run uvicorn repopilot.main:create_app --factory --reload
 uv run pytest
 uv run ruff check . ; uv run ruff format --check .
 uv run mypy src tests
 ```
 
+整合測試需要 `db-test` 容器（埠 5433，資料不保存）；未啟動時整合測試會明確失敗，不會被跳過。`pytest` 會重建測試資料庫的 `public` schema，且只允許資料庫名稱含 `test`。
+
 啟動後可開啟 `http://127.0.0.1:8000/docs`（Swagger UI），或：
 
 ```powershell
-curl.exe -i http://127.0.0.1:8000/health
-```
-
-規劃，未驗證（切片 2 完成後更新）：
-
-```powershell
-docker compose up -d db db-test
-uv run alembic upgrade head
+curl.exe -i http://127.0.0.1:8000/health   # 程序存活，不檢查資料庫
+curl.exe -i http://127.0.0.1:8000/ready    # 驗證資料庫；無法連線回 503 database_unavailable
 ```
 
 ### 設定
 
-複製 `.env.example` 為 `.env` 後修改。目前可用設定：`APP_NAME`、`LOG_LEVEL`。
+複製 `.env.example` 為 `.env` 後修改。可用設定：`APP_NAME`、`LOG_LEVEL`、`DATABASE_URL`、`DB_CONNECT_TIMEOUT_SECONDS`、`DB_POOL_SIZE`、`DB_MAX_OVERFLOW`、`DB_POOL_TIMEOUT_SECONDS`（連線池預設 5＋10、等待 30 秒，同 SQLAlchemy 預設，未經實測；池滿等待逾時時請求會失敗）；整合測試另讀環境變數 `TEST_DATABASE_URL`（不讀 `.env`，未設定時使用 `db-test` 預設值）。範例中的帳密是本機開發用假值，請勿用於共用或正式環境，也不要提交 `.env`。
 
 ### 錯誤格式
 

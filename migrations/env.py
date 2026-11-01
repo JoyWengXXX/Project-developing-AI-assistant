@@ -4,6 +4,7 @@ from alembic import context
 from sqlalchemy import create_engine, pool
 
 from repopilot.config import get_settings
+from repopilot.db import models  # noqa: F401  註冊 ORM model，供 autogenerate 比對
 from repopilot.db.base import Base
 
 config = context.config

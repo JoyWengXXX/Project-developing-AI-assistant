@@ -1,8 +1,10 @@
+import os
 from functools import lru_cache
-from typing import Literal
+from pathlib import Path
+from typing import Annotated, Any, Literal
 
-from pydantic import Field, SecretStr
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic import Field, SecretStr, field_validator
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 LogLevel = Literal["DEBUG", "INFO", "WARNING", "ERROR"]
 
@@ -25,6 +27,16 @@ class Settings(BaseSettings):
     db_pool_size: int = Field(default=5, ge=1, le=100)
     db_max_overflow: int = Field(default=10, ge=0, le=100)
     db_pool_timeout_seconds: float = Field(default=30.0, gt=0, le=300)
+    # 允許註冊的本機目錄；環境變數以 os.pathsep 分隔（Windows 為 ;）。預設為空＝拒絕所有註冊
+    repository_roots: Annotated[list[Path], NoDecode] = Field(default_factory=list)
+    git_timeout_seconds: float = Field(default=30.0, gt=0, le=600)
+
+    @field_validator("repository_roots", mode="before")
+    @classmethod
+    def _split_repository_roots(cls, value: Any) -> Any:
+        if isinstance(value, str):
+            return [part.strip() for part in value.split(os.pathsep) if part.strip()]
+        return value
 
 
 @lru_cache

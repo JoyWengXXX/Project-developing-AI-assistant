@@ -19,15 +19,15 @@ flowchart LR
 | 模組 | 職責 | 狀態 |
 | --- | --- | --- |
 | `repopilot.main` | `create_app()` 應用程式工廠；組裝 middleware、exception handler、路由 | 已完成 |
-| `repopilot.config` | pydantic-settings 設定；目前有 `APP_NAME`、`LOG_LEVEL`、`DATABASE_URL`（`SecretStr`）、`DB_CONNECT_TIMEOUT_SECONDS`、`DB_POOL_SIZE`、`DB_MAX_OVERFLOW`、`DB_POOL_TIMEOUT_SECONDS`（`REPOSITORY_ROOTS`、匯入上限於後續切片加入） | 已完成（部分欄位未完成） |
+| `repopilot.config` | pydantic-settings 設定；目前有 `APP_NAME`、`LOG_LEVEL`、`DATABASE_URL`（`SecretStr`）、`DB_CONNECT_TIMEOUT_SECONDS`、`DB_POOL_SIZE`、`DB_MAX_OVERFLOW`、`DB_POOL_TIMEOUT_SECONDS`、`REPOSITORY_ROOTS`、`GIT_TIMEOUT_SECONDS`（匯入上限於後續切片加入） | 已完成（部分欄位未完成） |
 | `repopilot.logging_config` | 單行 JSON 日誌，自動帶 `request_id` 與 `extra` 欄位 | 已完成 |
 | `repopilot.api.middleware` | `RequestIdMiddleware`：request ID、存取日誌（method、path、status_code、duration_ms）、未預期例外轉 500 | 已完成 |
 | `repopilot.api.errors` | 統一錯誤格式；領域例外 → HTTP 狀態碼對照表 `ERROR_STATUS` | 已完成 |
-| `repopilot.api.routes` | 路由；目前有 `GET /health`、`GET /ready` | 已完成（其餘未完成） |
-| `repopilot.errors` | 領域例外基底 `RepoPilotError`（穩定 `code`）、`DatabaseUnavailableError`（→ 503） | 已完成 |
-| `repopilot.services` | Repository 註冊、快照匯入、查詢 | 未完成 |
-| `repopilot.git` | 以參數陣列呼叫 Git CLI、逾時、錯誤轉換 | 未完成 |
-| `repopilot.db` | `Base`（約束命名規則）、Engine／Session 工廠、`get_session` dependency；Alembic 位於專案根目錄 `migrations/`，目前只有空基線 `0001`，ORM model 未完成 | 已完成（基礎設施；model 未完成） |
+| `repopilot.api.routes` | 路由；目前有 `GET /health`、`GET /ready`、`POST／GET /api/v1/repositories`、`GET /api/v1/repositories/{id}`；`api/schemas.py` 為請求／回應模型 | 已完成（匯入與快照路由未完成） |
+| `repopilot.errors` | 領域例外基底 `RepoPilotError`（穩定 `code`）：`DatabaseUnavailableError`（503）、`InvalidRepositoryPathError`（422）、`RepositoryNotFoundError`（404）、`GitCommandError`（500）、`GitTimeoutError`（504）；SQLAlchemy `OperationalError` 亦轉為 503 | 已完成 |
+| `repopilot.services` | `services/repositories.py`：路徑正規化與 `REPOSITORY_ROOTS` 檢查、註冊（冪等）、列表、查詢；快照匯入與查詢未完成 | 已完成（Repository 部分；匯入與查詢未完成） |
+| `repopilot.git` | `runner.run_git`：參數陣列、`shell=False`、逾時、移除 `GIT_DIR` 等環境變數、`GIT_TERMINAL_PROMPT=0`；`repository.ensure_repository_root`：非 bare、`--show-toplevel` 等於註冊路徑；revision 解析與 `ls-tree`／`cat-file` 未完成 | 已完成（根目錄檢查；匯入所需指令未完成） |
+| `repopilot.db` | `Base`（約束命名規則）、Engine／Session 工廠、`get_session` dependency、ORM model `Repository`；Alembic 位於專案根目錄 `migrations/`（`0001` 空基線、`0002` repositories）；Snapshot／SnapshotFile model 未完成 | 已完成（基礎設施與 Repository；快照 model 未完成） |
 
 ### 路徑區分
 
@@ -49,7 +49,7 @@ flowchart LR
 | # | 決策 | 理由 | 取捨／替代方案 | 狀態 |
 | --- | --- | --- | --- | --- |
 | D1 | Python 固定 3.12（`requires-python = ">=3.12"`，`.python-version` 為 3.12） | 符合技術棧下限，避免依賴尚未支援新版 Python 的套件 | 本機 3.14 亦可用，但相容性風險較高 | 已完成 |
-| D2 | 重複註冊相同 repo 回 200 與既有資料；新建回 201 | 冪等，用戶端不需先查詢 | 亦可回 409，但對自動化較不友善 | 未完成 |
+| D2 | 重複註冊相同 repo 回 200 與既有資料；新建回 201 | 冪等，用戶端不需先查詢 | 亦可回 409，但對自動化較不友善 | 已完成（切片 3） |
 | D3 | 重複匯入已完成快照回 200 與既有快照；新建回 201；相同快照匯入中回 409 | 冪等並明確區分匯入中 | — | 未完成 |
 | D4 | 失敗快照重試時重用同一筆，於同一交易內刪除舊檔案列並重設為 `importing` | 遵守唯一約束且不留下半套資料 | 另建新列需放寬唯一約束 | 未完成 |
 | D5 | 預設上限：單檔 1 MiB、檔案數 20,000、快照總大小 200 MiB、Git 指令逾時 30 秒，皆可設定 | 保護同步請求與資料庫 | 數值未經實測，之後依實測調整 | 未完成 |
@@ -65,6 +65,10 @@ flowchart LR
 | D17 | 連線池大小、溢出數與等待逾時可由設定調整，預設與 SQLAlchemy 相同（5、10、30 秒） | 同步 handler 在 threadpool 執行（約 40 條），可能多於連線池；匯入等長流程需要能調整 | 預設值未經實測，不代表適合本專案負載；Session 持有交易期間會佔用連線，不應在交易內執行長時間 Git 工作 | 已完成 |
 | D15 | Alembic 放在專案根目錄 `migrations/`，連線字串由 `env.py` 從 Settings 讀取（測試可經 `config.attributes` 注入）；先建立空基線 `0001` | 確認 migration 流程與 `alembic_version` 可運作，資料表留給後續切片 | 空基線在切片 3 前沒有實際 schema；`alembic.ini` 須維持 ASCII，否則 Windows 非 UTF-8 地區設定下 `configparser` 讀取失敗 | 已完成 |
 | D16 | 整合測試資料庫不可連線時以 `pytest.fail` 明確失敗，不跳過；`TEST_DATABASE_URL` 名稱不含 `test` 即拒絕；session 啟動時重建 `public` schema | 規則 10：PostgreSQL 未驗證就不能視為通過；避免誤清開發資料庫 | 未啟動 `db-test` 時 `uv run pytest` 會有失敗 | 已完成 |
+| D18 | 註冊路徑須為絕對路徑，經 `resolve(strict=True)` 後以 `is_relative_to` 比對已 resolve 的 `REPOSITORY_ROOTS`；`REPOSITORY_ROOTS` 預設為空（拒絕全部）；不存在的根目錄略過並記錄警告 | 預設拒絕較安全；`resolve` 展開 symlink／junction、`..`、短檔名並還原實際大小寫，使去重與越界檢查一致 | 使用者須先設定 `REPOSITORY_ROOTS` 才能註冊；`canonical_local_path` 含平台分隔符，跨平台搬移資料庫不可直接沿用 | 已完成（切片 3） |
+| D19 | Repository 根目錄判斷：`rev-parse --is-bare-repository` 非 true，且 `--show-toplevel` resolve 後等於註冊路徑；bare repo、子目錄、`.git` 目錄皆回 422；Git 因 `dubious ownership` 拒絕時回明確訊息，不修改 `safe.directory` | 符合「只接受 repo 根目錄」與不改動使用者 Git 設定 | 使用者全域 `safe.bareRepository=explicit` 時 bare repo 以 stderr 判斷，依賴 Git 訊息文字 | 已完成（切片 3；dubious ownership 分支未實測） |
+| D20 | 重複註冊以「先查、再 insert、捕捉 `uq_repositories_canonical_local_path` 的 IntegrityError 後重新查詢」處理；`name` 預設為目錄名稱，重複註冊不更新既有名稱 | 併發下仍只有一筆；唯一性由資料庫約束保證 | 重複註冊無法改名（需另有 Update 端點，本階段不提供） | 已完成（切片 3） |
+| D21 | 回應 `GET /api/v1/repositories` 為 `{"items": [...]}`，暫不分頁 | 預期 repo 數量少；包成物件以便日後加入分頁欄位而不破壞契約 | 數量大時需補分頁 | 已完成（切片 3） |
 
 ## 未來擴充（計畫）
 

@@ -29,7 +29,7 @@
 | 0 | 文件骨架（README、product、roadmap、architecture） | 已完成（文件） |
 | 1 | 專案骨架、設定、`/health`、request ID、結構化日誌、統一錯誤格式 | 已完成（2026-10-22：`uv run pytest` 19 passed；ruff、mypy 通過；uvicorn 手動驗證 `/health`） |
 | 2 | Docker Compose（dev／test DB）、SQLAlchemy、Alembic、`/ready` | 已完成（2026-10-24：`docker compose up -d --wait db db-test`；`uv run alembic upgrade head` 於 dev 資料庫成功，`alembic current` 為 `0001 (head)`；`uv run pytest` 24 passed，含 PostgreSQL 整合測試；ruff、mypy 通過；uvicorn 手動驗證 `/ready` 回 200。目前 migration 僅為空基線，尚無資料表） |
-| 3 | Repository 註冊（路徑正規化、`REPOSITORY_ROOTS`、根目錄檢查、去重） | 未完成 |
+| 3 | Repository 註冊（路徑正規化、`REPOSITORY_ROOTS`、根目錄檢查、去重） | 已完成（2026-10-26：`POST/GET /api/v1/repositories`、`GET /api/v1/repositories/{id}`；migration `0002`；`uv run pytest` 75 passed，含 PostgreSQL 整合測試與併發註冊測試；ruff、mypy、`alembic check` 通過） |
 | 4 | revision 解析與快照匯入 | 未完成 |
 | 5 | Snapshot 與檔案查詢（分頁、歸屬檢查、狀態過濾） | 未完成 |
 | 6 | 失敗、重試、併發與邊界測試 | 未完成 |
@@ -45,7 +45,14 @@
 | 指定舊 commit 可正確讀取該版本 | 未完成 |
 | 匯入失敗不留下可被當成成功資料的半套索引 | 未完成 |
 
-### 最近驗證（2026-10-24，切片 2）
+### 最近驗證（2026-10-26，切片 3）
+
+- `uv run pytest`：75 passed（含 PostgreSQL 整合測試：註冊 201／重複 200、路徑不同寫法去重、根目錄外／子目錄／非 repo／不存在／相對路徑 422、bare repo 拒絕、Git 逾時 504、8 執行緒併發註冊只產生一筆、唯一約束名稱）。
+- `uv run ruff check .`、`uv run ruff format .`、`uv run mypy src`：通過；`uv run alembic check`（對 test 資料庫）：無未同步差異。
+- 限制：symlink 逃逸測試在本機以 Windows junction 驗證（無 symlink 權限時改用），真正的 symlink 與 Linux／macOS 未驗證；「dubious ownership」訊息分支未實際驗證；`REPOSITORY_ROOTS` 以環境變數設定的實際啟動流程未手動驗證。
+- 尚無快照匯入，不代表第一階段整體驗收完成。
+
+### 先前驗證（2026-10-24，切片 2）
 
 - `uv run pytest`：24 passed（含 3 個 PostgreSQL 整合測試：`/ready` 200、migration 從空 schema `upgrade head`、upgrade／downgrade／upgrade）；另有一則 Starlette TestClient 使用 HTTPX 的棄用警告。
 - `uv run ruff check .`、`uv run ruff format --check .`、`uv run mypy src tests`：通過。

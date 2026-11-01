@@ -5,9 +5,17 @@ from typing import Any, cast
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from sqlalchemy.exc import OperationalError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from repopilot.errors import DatabaseUnavailableError, RepoPilotError
+from repopilot.errors import (
+    DatabaseUnavailableError,
+    GitCommandError,
+    GitTimeoutError,
+    InvalidRepositoryPathError,
+    RepoPilotError,
+    RepositoryNotFoundError,
+)
 from repopilot.logging_config import APP_LOGGER_NAME
 from repopilot.request_context import request_id_var
 
@@ -16,6 +24,10 @@ logger = logging.getLogger(f"{APP_LOGGER_NAME}.api.errors")
 # 領域例外 → HTTP 狀態碼；依 MRO 尋找，未列出者回 500。後續切片在此加入對應。
 ERROR_STATUS: dict[type[RepoPilotError], int] = {
     DatabaseUnavailableError: 503,
+    InvalidRepositoryPathError: 422,
+    RepositoryNotFoundError: 404,
+    GitCommandError: 500,
+    GitTimeoutError: 504,
 }
 
 _HTTP_ERROR_CODES = {
@@ -74,9 +86,15 @@ def _handle_http_exception(_: Request, raw_exc: Exception) -> JSONResponse:
     return error_response(exc.status_code, code, message, headers=exc.headers)
 
 
-# Starlette 依註冊的例外型別分派，handler 收到的必為對應型別
+def _handle_database_error(_: Request, raw_exc: Exception) -> JSONResponse:
+    # 只記錄例外型別，避免連線資訊進入日誌或回應
+    logger.error("database_error", extra={"error_type": type(raw_exc).__name__})
+    return error_response(503, DatabaseUnavailableError.code, "Database is unavailable.")
+
+
 # Starlette 依註冊的例外型別分派，handler 收到的必為對應型別
 def register_exception_handlers(app: FastAPI) -> None:
     app.add_exception_handler(RepoPilotError, _handle_domain_error)
+    app.add_exception_handler(OperationalError, _handle_database_error)
     app.add_exception_handler(RequestValidationError, _handle_validation_error)
     app.add_exception_handler(StarletteHTTPException, _handle_http_exception)

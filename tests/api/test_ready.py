@@ -21,6 +21,16 @@ def test_ready_returns_503_when_database_is_unreachable() -> None:
     assert "FAKE_PASSWORD_FOR_TEST" not in response.text
 
 
+def test_repository_routes_return_503_when_database_is_unreachable() -> None:
+    settings = Settings(database_url=SecretStr(UNREACHABLE_URL), db_connect_timeout_seconds=1)
+
+    with TestClient(create_app(settings)) as client:
+        response = client.get("/api/v1/repositories")
+
+    assert response.status_code == 503
+    assert response.json()["error"]["code"] == "database_unavailable"
+
+
 def test_health_does_not_depend_on_database() -> None:
     settings = Settings(database_url=SecretStr(UNREACHABLE_URL), db_connect_timeout_seconds=1)
 

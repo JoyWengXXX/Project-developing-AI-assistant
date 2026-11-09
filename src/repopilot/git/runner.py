@@ -35,10 +35,13 @@ def _git_env() -> dict[str, str]:
     return env
 
 
-def run_git(repo_path: Path, args: list[str], *, timeout: float) -> GitResult:
+def run_git(
+    repo_path: Path, args: list[str], *, timeout: float, stdin: bytes | None = None
+) -> GitResult:
     """在指定目錄執行唯讀 Git 指令；不檢查 return code，由呼叫端依指令語意判斷。
 
     stdout 保留 bytes；stderr 截斷後僅供日誌與錯誤判斷。逾時與無法啟動 Git 轉為領域例外。
+    `stdin` 供 `cat-file --batch` 這類從標準輸入讀取物件 ID 的指令使用。
     """
     command = ["git", "-C", str(repo_path), *args]
     try:
@@ -48,6 +51,7 @@ def run_git(repo_path: Path, args: list[str], *, timeout: float) -> GitResult:
             capture_output=True,
             timeout=timeout,
             check=False,
+            input=stdin,
             env=_git_env(),
         )
     except subprocess.TimeoutExpired:

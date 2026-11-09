@@ -1,49 +1,21 @@
 import os
 import subprocess
 import threading
-from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
-from pydantic import SecretStr
-from sqlalchemy import Engine, func, select, text
+from sqlalchemy import Engine, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
 from repopilot.config import Settings
 from repopilot.db.models import Repository
-from repopilot.main import create_app
 from repopilot.services.repositories import register_repository
 from tests.git_helpers import init_repo
 
 URL = "/api/v1/repositories"
-
-
-@pytest.fixture
-def roots(tmp_path: Path) -> Path:
-    directory = tmp_path / "repos"
-    directory.mkdir()
-    return directory
-
-
-@pytest.fixture
-def clean_repositories(db_engine: Engine) -> None:
-    # 只清除名稱含 test 的測試資料庫（由 db_engine fixture 保證）
-    with db_engine.begin() as connection:
-        connection.execute(text("TRUNCATE repositories RESTART IDENTITY CASCADE"))
-
-
-@pytest.fixture
-def settings(test_database_url: str, roots: Path) -> Settings:
-    return Settings(database_url=SecretStr(test_database_url), repository_roots=[roots])
-
-
-@pytest.fixture
-def client(settings: Settings, clean_repositories: None) -> Iterator[TestClient]:
-    with TestClient(create_app(settings)) as test_client:
-        yield test_client
 
 
 def _count(db_engine: Engine) -> int:

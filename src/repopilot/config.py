@@ -8,6 +8,22 @@ from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 LogLevel = Literal["DEBUG", "INFO", "WARNING", "ERROR"]
 
+DEFAULT_EXCLUDED_PATTERNS: tuple[str, ...] = (
+    ".env",
+    ".env.*",
+    "*.pem",
+    "*.key",
+    "id_rsa*",
+    "id_ed25519*",
+    "*.p12",
+    "*.pfx",
+    "credentials*.json",
+    ".npmrc",
+    ".pypirc",
+    ".netrc",
+)
+DEFAULT_EXCLUDED_EXCEPTIONS: tuple[str, ...] = (".env.example",)
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
@@ -30,6 +46,21 @@ class Settings(BaseSettings):
     # 允許註冊的本機目錄；環境變數以 os.pathsep 分隔（Windows 為 ;）。預設為空＝拒絕所有註冊
     repository_roots: Annotated[list[Path], NoDecode] = Field(default_factory=list)
     git_timeout_seconds: float = Field(default=30.0, gt=0, le=600)
+    # 匯入上限；數值未經實測，讀取 blob 內容前先依 ls-tree 的大小檢查
+    import_max_file_bytes: int = Field(default=1024 * 1024, ge=1)
+    import_max_files: int = Field(default=20_000, ge=1)
+    import_max_snapshot_bytes: int = Field(default=200 * 1024 * 1024, ge=1)
+    # 讀取整個快照 blob 的 Git 呼叫逾時（比單一 Git 指令的逾時長）
+    import_git_timeout_seconds: float = Field(default=300.0, gt=0, le=3600)
+    # importing 超過此秒數視為程序中斷，允許後續請求接手；須大於實際匯入所需時間
+    import_stale_seconds: int = Field(default=1800, ge=60)
+    # 以檔名（不分大小寫、fnmatch）比對；環境變數為 JSON 陣列。納入 import_profile_hash
+    import_excluded_patterns: list[str] = Field(
+        default_factory=lambda: list(DEFAULT_EXCLUDED_PATTERNS)
+    )
+    import_excluded_exceptions: list[str] = Field(
+        default_factory=lambda: list(DEFAULT_EXCLUDED_EXCEPTIONS)
+    )
 
     @field_validator("repository_roots", mode="before")
     @classmethod

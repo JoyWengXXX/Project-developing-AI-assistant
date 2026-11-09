@@ -5,9 +5,14 @@ from pathlib import Path
 import pytest
 from alembic import command
 from alembic.config import Config
+from fastapi.testclient import TestClient
+from pydantic import SecretStr
 from sqlalchemy import Engine, create_engine, text
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import OperationalError
+
+from repopilot.config import Settings
+from repopilot.main import create_app
 
 # 預設對應 docker-compose.yml 的 db-test（假密碼，僅限本機）
 DEFAULT_TEST_DATABASE_URL = (
@@ -51,3 +56,28 @@ def db_engine(test_database_url: str) -> Iterator[Engine]:
     command.upgrade(alembic_config(test_database_url), "head")
     yield engine
     engine.dispose()
+
+
+@pytest.fixture
+def roots(tmp_path: Path) -> Path:
+    directory = tmp_path / "repos"
+    directory.mkdir()
+    return directory
+
+
+@pytest.fixture
+def clean_repositories(db_engine: Engine) -> None:
+    # 只清除名稱含 test 的測試資料庫（由 db_engine fixture 保證）；CASCADE 一併清除快照
+    with db_engine.begin() as connection:
+        connection.execute(text("TRUNCATE repositories RESTART IDENTITY CASCADE"))
+
+
+@pytest.fixture
+def settings(test_database_url: str, roots: Path) -> Settings:
+    return Settings(database_url=SecretStr(test_database_url), repository_roots=[roots])
+
+
+@pytest.fixture
+def client(settings: Settings, clean_repositories: None) -> Iterator[TestClient]:
+    with TestClient(create_app(settings)) as test_client:
+        yield test_client

@@ -2,7 +2,7 @@
 
 AI 輔助專案客製化平台：管理參考 repos 與目標 repo，依自然語言需求產出附程式碼來源引用的修改方案；後續在獨立工作目錄改碼、執行測試並產出可審查的 diff 與驗證報告。
 
-> 狀態：**第一階段實作中**（專案骨架、Repo 管理與固定版本匯入）。目前已有專案骨架、`/health`、`/ready`、PostgreSQL（Docker Compose）與 Alembic 基線；尚無 Repo 註冊與匯入功能。各階段狀態見 [docs/roadmap.md](docs/roadmap.md)。
+> 狀態：**第一階段實作中**（專案骨架、Repo 管理與固定版本匯入）。目前已有專案骨架、`/health`、`/ready`、PostgreSQL（Docker Compose）、Alembic、Repo 註冊與固定版本匯入（`POST /api/v1/repositories/{id}/imports`）；尚無快照與檔案查詢 API。各階段狀態見 [docs/roadmap.md](docs/roadmap.md)。
 
 ## 文件
 
@@ -54,6 +54,22 @@ curl.exe -i http://127.0.0.1:8000/ready    # 驗證資料庫；無法連線回 5
 ### 設定
 
 複製 `.env.example` 為 `.env` 後修改。可用設定：`APP_NAME`、`LOG_LEVEL`、`DATABASE_URL`、`DB_CONNECT_TIMEOUT_SECONDS`、`DB_POOL_SIZE`、`DB_MAX_OVERFLOW`、`DB_POOL_TIMEOUT_SECONDS`（連線池預設 5＋10、等待 30 秒，同 SQLAlchemy 預設，未經實測；池滿等待逾時時請求會失敗）；整合測試另讀環境變數 `TEST_DATABASE_URL`（不讀 `.env`，未設定時使用 `db-test` 預設值）。範例中的帳密是本機開發用假值，請勿用於共用或正式環境，也不要提交 `.env`。
+
+### 註冊並匯入 repo（切片 4）
+
+已驗證：自動化測試，以及 2026-11-01 以 Windows PowerShell 對本專案 repo 手動註冊並匯入 `HEAD`（54 個檔案、約 0.2 秒）、無效 revision 回 422。尚未驗證 dev 資料庫的長時間使用。
+
+先在 `.env` 設定 `REPOSITORY_ROOTS`（例如 `REPOSITORY_ROOTS=D:\repos`），再：
+
+```powershell
+$repo = Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8000/api/v1/repositories `
+  -ContentType "application/json" -Body (@{ path = "D:\repos\demo" } | ConvertTo-Json)
+# 匯入 HEAD（body 可省略）或指定 revision（分支、tag、SHA）；新建回 201，相同快照已完成回 200，匯入中回 409
+Invoke-RestMethod -Method Post -Uri "http://127.0.0.1:8000/api/v1/repositories/$($repo.id)/imports" `
+  -ContentType "application/json" -Body '{"revision": "main"}'
+```
+
+匯入只讀 Git 物件（不讀工作目錄）；`.env`、私鑰與憑證檔會被記為 `skipped/excluded` 且不讀內容。Git 版本以 2.47.0 實測。
 
 ### 錯誤格式
 

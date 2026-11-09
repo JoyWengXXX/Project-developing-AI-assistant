@@ -12,9 +12,12 @@ from repopilot.errors import (
     DatabaseUnavailableError,
     GitCommandError,
     GitTimeoutError,
+    ImportLimitExceededError,
     InvalidRepositoryPathError,
+    InvalidRevisionError,
     RepoPilotError,
     RepositoryNotFoundError,
+    SnapshotImportInProgressError,
 )
 from repopilot.logging_config import APP_LOGGER_NAME
 from repopilot.request_context import request_id_var
@@ -26,6 +29,9 @@ ERROR_STATUS: dict[type[RepoPilotError], int] = {
     DatabaseUnavailableError: 503,
     InvalidRepositoryPathError: 422,
     RepositoryNotFoundError: 404,
+    InvalidRevisionError: 422,
+    ImportLimitExceededError: 422,
+    SnapshotImportInProgressError: 409,
     GitCommandError: 500,
     GitTimeoutError: 504,
 }

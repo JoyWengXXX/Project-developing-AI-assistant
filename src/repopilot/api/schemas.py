@@ -27,3 +27,26 @@ class RepositoryResponse(BaseModel):
 
 class RepositoryListResponse(BaseModel):
     items: list[RepositoryResponse]
+
+
+class ImportCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    # 格式與可解析性由 git 層驗證（需存取 repo）；此處只限制長度
+    revision: Annotated[str, StringConstraints(min_length=1, max_length=256)] = "HEAD"
+
+
+class SnapshotResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    repository_id: int
+    commit_sha: str
+    import_profile_hash: str
+    status: str
+    file_count: int
+    skipped_count: int
+    total_bytes: int
+    started_at: datetime
+    completed_at: datetime | None
+    error_summary: str | None

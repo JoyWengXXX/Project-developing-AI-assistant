@@ -26,6 +26,24 @@ class RepositoryNotFoundError(RepoPilotError):
     code = "repository_not_found"
 
 
+class InvalidRevisionError(RepoPilotError):
+    """revision 格式不合法、無法解析，或解析結果不是 commit。"""
+
+    code = "invalid_revision"
+
+
+class SnapshotImportInProgressError(RepoPilotError):
+    """相同快照正由另一個請求匯入中。"""
+
+    code = "snapshot_import_in_progress"
+
+
+class ImportLimitExceededError(RepoPilotError):
+    """快照超過檔案數或總大小上限。"""
+
+    code = "import_limit_exceeded"
+
+
 class GitCommandError(RepoPilotError):
     """Git 指令執行失敗（非使用者輸入造成）。"""
 

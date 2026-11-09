@@ -30,7 +30,7 @@
 | 1 | 專案骨架、設定、`/health`、request ID、結構化日誌、統一錯誤格式 | 已完成（2026-10-22：`uv run pytest` 19 passed；ruff、mypy 通過；uvicorn 手動驗證 `/health`） |
 | 2 | Docker Compose（dev／test DB）、SQLAlchemy、Alembic、`/ready` | 已完成（2026-10-24：`docker compose up -d --wait db db-test`；`uv run alembic upgrade head` 於 dev 資料庫成功，`alembic current` 為 `0001 (head)`；`uv run pytest` 24 passed，含 PostgreSQL 整合測試；ruff、mypy 通過；uvicorn 手動驗證 `/ready` 回 200。目前 migration 僅為空基線，尚無資料表） |
 | 3 | Repository 註冊（路徑正規化、`REPOSITORY_ROOTS`、根目錄檢查、去重） | 已完成（2026-10-26：`POST/GET /api/v1/repositories`、`GET /api/v1/repositories/{id}`；migration `0002`；`uv run pytest` 75 passed，含 PostgreSQL 整合測試與併發註冊測試；ruff、mypy、`alembic check` 通過） |
-| 4 | revision 解析與快照匯入 | 未完成 |
+| 4 | revision 解析與快照匯入 | 已完成（2026-11-01：`POST /api/v1/repositories/{id}/imports`；migration `0003`；`uv run pytest` 154 passed，含 PostgreSQL 整合測試；ruff、mypy、`alembic check` 通過；快照與檔案查詢 API 屬切片 5） |
 | 5 | Snapshot 與檔案查詢（分頁、歸屬檢查、狀態過濾） | 未完成 |
 | 6 | 失敗、重試、併發與邊界測試 | 未完成 |
 | 7 | README、架構文件與 `docs/learning/stage-01.md` 收尾 | 未完成 |
@@ -40,12 +40,19 @@
 | 驗收條件 | 狀態 |
 | --- | --- |
 | 重啟服務後資料仍存在 | 未完成 |
-| 同 repo、同 commit、同匯入設定不產生重複快照 | 未完成 |
-| 工作目錄髒資料不影響匯入 | 未完成 |
-| 指定舊 commit 可正確讀取該版本 | 未完成 |
-| 匯入失敗不留下可被當成成功資料的半套索引 | 未完成 |
+| 同 repo、同 commit、同匯入設定不產生重複快照 | 已完成（切片 4：重複匯入與 6 執行緒併發匯入整合測試） |
+| 工作目錄髒資料不影響匯入 | 已完成（切片 4 整合測試） |
+| 指定舊 commit 可正確讀取該版本 | 已完成（切片 4 整合測試，以資料庫檔案列驗證；尚無查詢 API） |
+| 匯入失敗不留下可被當成成功資料的半套索引 | 已完成（切片 4：失敗不留檔案列、重試成功；「查詢端不回傳未完成快照」待切片 5） |
 
-### 最近驗證（2026-10-26，切片 3）
+### 最近驗證（2026-11-01，切片 4）
+
+- `uv run pytest`：154 passed（新增 79 項：`git/objects` 單元測試、匯入設定單元測試、`tests/integration/test_snapshots.py` 29 項 PostgreSQL 整合測試）。涵蓋：指定 SHA／分支匯入、髒工作目錄、兩個 commit 間新增／修改／刪除、重複匯入 200、不同匯入設定另建快照、空白／中文／巢狀路徑、二進位（含 8000 bytes 之後才出現的 NUL）、無效 UTF-8、BOM 與 CRLF 保留、超大檔案、symlink／submodule（以 `update-index --cacheinfo` 建立，不依賴作業系統 symlink）、`.env`／`*.pem` 排除、檔案數與總大小上限（超限時不讀取 blob）、無效 revision 422、失敗後重試、插入時資料庫錯誤整筆 rollback、6 執行緒併發只產生一筆、過期 `importing` 接手、失去所有權不覆寫新擁有者、約束檢查。
+- `uv run ruff check .`、`uv run ruff format --check .`、`uv run mypy src`：通過；`uv run alembic check` 無差異；`alembic downgrade 0002` 再 `upgrade head` 成功（對 test 資料庫）。
+- 未驗證：大型 repo（接近預設上限）的耗時與記憶體；真正的 symlink 檔案（僅驗證 Git 中的 symlink 項目）；非 UTF-8 檔名的實際 Git repo（Windows 難以建立，僅實作 `backslashreplace` 處理）；SHA-256 object format 的 repo；重啟服務後資料仍存在（尚未手動驗證）。
+- 尚無快照與檔案查詢 API，不代表第一階段整體驗收完成。
+
+### 先前驗證（2026-10-26，切片 3）
 
 - `uv run pytest`：75 passed（含 PostgreSQL 整合測試：註冊 201／重複 200、路徑不同寫法去重、根目錄外／子目錄／非 repo／不存在／相對路徑 422、bare repo 拒絕、Git 逾時 504、8 執行緒併發註冊只產生一筆、唯一約束名稱）。
 - `uv run ruff check .`、`uv run ruff format .`、`uv run mypy src`：通過；`uv run alembic check`（對 test 資料庫）：無未同步差異。

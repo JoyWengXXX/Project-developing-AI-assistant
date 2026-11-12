@@ -281,6 +281,24 @@ export interface JobError {
   message: string
 }
 
+// 失敗追查用的摘要（切片 4）；不含路徑、令牌或內容
+export interface JobUnit {
+  kind: string // 例如 "blob_batch"（匯入：一批檔案內容）
+  index: number | null // 從 0 起算
+  count: number | null
+}
+
+export interface JobPoison {
+  suspect_crashes: number
+  skipped_units: number
+  total_crashes: number // > 0＝worker 曾在處理這個工作時中斷
+}
+
+export interface JobDiagnostics {
+  current_unit: JobUnit | null // 只在 running 時有值
+  poison: JobPoison
+}
+
 export interface Job {
   id: number
   kind: JobKind
@@ -293,6 +311,9 @@ export interface Job {
   max_attempts: number
   next_attempt_at: string | null
   cancel_requested: boolean
+  // 切片 4 新增的兩個欄位：舊版後端的回應沒有，所以宣告為可省略，讀取時要容錯
+  cancel_requested_at?: string | null
+  diagnostics?: JobDiagnostics
   progress: JobProgress
   error: JobError | null // queued 時是「上次失敗原因」
   result: Record<string, unknown> | null // 不可信內容：只能當文字顯示

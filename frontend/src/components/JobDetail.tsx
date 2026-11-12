@@ -1,7 +1,8 @@
-import { useState } from 'react'
-import { ERROR_HINT, formatTime } from '../format'
-import { durationBetween, formatDuration, JOB_KIND_LABEL, JOB_PHASE_LABEL } from '../jobFormat'
+import { formatTime } from '../format'
+import { durationBetween, formatDuration, isCancelling, JOB_KIND_LABEL, JOB_PHASE_LABEL, batchText } from '../jobFormat'
 import type { Job } from '../types'
+import { CopyRequestId } from './CopyRequestId'
+import { JobFailureInfo } from './JobFailureInfo'
 import { JobStatusBadge } from './JobStatusBadge'
 
 /** params／result 是不可信內容：一律轉成文字放進 <pre>，由 React 轉義，不會被當 HTML 解析。 */
@@ -11,30 +12,6 @@ function formatJson(value: unknown): string {
   } catch {
     return String(value)
   }
-}
-
-function CopyRequestId({ requestId }: { requestId: string }) {
-  const [state, setState] = useState<'idle' | 'copied' | 'failed'>('idle')
-  async function copy() {
-    try {
-      await navigator.clipboard.writeText(requestId)
-      setState('copied')
-    } catch {
-      setState('failed') // 非安全環境或權限被拒：請使用者手動選取
-    }
-  }
-  return (
-    <>
-      <code className="wrap">{requestId}</code>{' '}
-      <button type="button" className="secondary small" onClick={() => void copy()}>
-        複製
-      </button>{' '}
-      <span role="status" className="muted">
-        {state === 'copied' && '已複製'}
-        {state === 'failed' && '複製失敗，請手動選取'}
-      </span>
-    </>
-  )
 }
 
 function TimelineItem({ label, iso, note }: { label: string; iso: string | null; note?: string }) {
@@ -62,8 +39,8 @@ export function JobDetail({ job, repoName, id }: { job: Job; repoName: string; i
         </dd>
         <dt>狀態</dt>
         <dd>
-          <JobStatusBadge status={job.status} />
-          {job.cancel_requested && <span className="muted"> 已要求取消</span>}
+          <JobStatusBadge status={job.status} cancelling={isCancelling(job)} />
+          {job.cancel_requested && job.status !== 'cancelled' && <span className="muted"> 已要求取消</span>}
         </dd>
         <dt>階段</dt>
         <dd>
@@ -79,18 +56,10 @@ export function JobDetail({ job, repoName, id }: { job: Job; repoName: string; i
         </dd>
         <dt>request_id</dt>
         <dd>{job.request_id ? <CopyRequestId requestId={job.request_id} /> : '（無）'}</dd>
-        <dt>{job.status === 'queued' ? '上次失敗原因' : '錯誤'}</dt>
-        <dd>
-          {job.error ? (
-            <>
-              <code>{job.error.code}</code>：{job.error.message}
-              {ERROR_HINT[job.error.code] && <div className="muted">說明：{ERROR_HINT[job.error.code]}</div>}
-            </>
-          ) : (
-            '（無）'
-          )}
-        </dd>
       </dl>
+
+      {/* 失敗追查：與卡片提示、詳情匯入區相同的元件（嘗試次數與 request_id 已在上方，不重複） */}
+      <JobFailureInfo job={job} showFacts={false} />
 
       <h4>進度計數</h4>
       <dl className="kv">
@@ -98,6 +67,8 @@ export function JobDetail({ job, repoName, id }: { job: Job; repoName: string; i
         <dd>{p.processed_files}</dd>
         <dt>total_files</dt>
         <dd>{p.total_files ?? '（未知）'}</dd>
+        <dt>目前批次</dt>
+        <dd>{batchText(job) ?? '（無）'}</dd>
         <dt>indexed_files</dt>
         <dd>{p.indexed_files}</dd>
         <dt>parse_error_count</dt>
@@ -117,6 +88,7 @@ export function JobDetail({ job, repoName, id }: { job: Job; repoName: string; i
         <TimelineItem label="本階段開始" iso={job.phase_started_at} />
         <TimelineItem label="最後心跳" iso={job.last_heartbeat_at} />
         <TimelineItem label="預定下次重試" iso={job.next_attempt_at} />
+        <TimelineItem label="要求取消" iso={job.cancel_requested_at ?? null} />
         <TimelineItem
           label="結束"
           iso={job.finished_at}

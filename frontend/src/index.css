@@ -195,7 +195,8 @@ button {
   cursor: pointer;
   align-self: flex-start;
 }
-button:disabled {
+button:disabled,
+button[aria-disabled='true'] {
   opacity: 0.5;
   cursor: not-allowed;
 }
@@ -1331,6 +1332,44 @@ label.check-label {
     animation: none;
     opacity: 0.45;
   }
+}
+/* 失敗追查資訊（JobFailureInfo）：底色沿用 .job-error（failed 紅、重新排隊／曾中斷 警告色） */
+.job-failure {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.job-failure p {
+  margin: 0;
+}
+.job-failure .job-retry {
+  color: inherit;
+}
+.job-failure-detail {
+  font-size: 12.5px;
+  opacity: 0.9;
+}
+.job-notice-title {
+  margin: 0;
+}
+.job-batch {
+  white-space: nowrap;
+}
+/* 「取消匯入」按鈕與它的行內確認、錯誤：垂直排列，確認區塊吃滿寬度 */
+.cancel-job {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  min-width: 0;
+  max-width: 100%;
+}
+.cancel-job .remove-confirm,
+.cancel-job .error-box {
+  align-self: stretch;
+  margin: 0;
 }
 .job-confirm {
   padding: 8px 12px;

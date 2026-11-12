@@ -8,10 +8,11 @@ export function toApiError(e: unknown): ApiError {
   return new ApiError(null, 'unexpected_error', String(e), null)
 }
 
-/** 背景工作 failed／cancelled → 與請求錯誤相同的 ApiError，讓同一個 ErrorBox 顯示（request_id 取自 job）。 */
+/** 背景工作 failed（或 cancelled）→ 與請求錯誤相同的 ApiError，讓同一個 ErrorBox 顯示（request_id 取自 job）。 */
 export function jobFailure(job: Job): ApiError {
   if (job.error !== null) return new ApiError(null, job.error.code, job.error.message, job.request_id)
-  return new ApiError(null, 'job_cancelled', '背景工作已被取消。', job.request_id)
+  if (job.status === 'cancelled') return new ApiError(null, 'job_cancelled', '背景工作已被取消。', job.request_id)
+  return new ApiError(null, 'job_failed', '背景工作失敗，但後端沒有回報原因。', job.request_id)
 }
 
 /** 參考版本所屬 repo 的顯示名稱：GitHub 來源用 owner/name，本機來源用註冊名稱。 */
@@ -147,12 +148,13 @@ export const ERROR_HINT: Record<string, string> = {
   job_not_cancellable: '這個工作目前無法取消（可能已結束）。',
   job_not_retryable: '只有失敗的工作可以重試，或同一個目標已有進行中的工作。',
   job_lease_lost: '執行這個工作的 worker 已失去它的租約（工作已被其他程序接手或已結束），請重新整理列表。',
-  worker_lost: 'worker 中斷或租約過期；若尚有重試額度會自動重新排隊，已達上限則標為失敗，可手動重試。',
+  worker_lost: '執行匯入的背景程序中途中斷，系統已自動重試；重試額度用完後才會失敗。',
   profile_mismatch: 'API 與 worker 的設定雜湊不一致（兩邊的匯入或索引設定不同），請對齊設定後再重試。',
   path_not_mapped: 'repo 路徑無法映射到 worker 容器內的路徑，這是部署設定問題，請檢查 WORKER_PATH_MAPPINGS（見 README）。',
   worker_path_not_mapped:
     'repo 的主機路徑沒有對應到 worker 容器內的路徑，這是部署設定問題，請檢查 WORKER_PATH_MAPPINGS（見 README）；工作沒有被排入。',
-  job_cancelled: '這個背景工作已被取消；按「重試匯入」會重新排入。',
+  job_cancelled: '這個背景工作已被取消；按「重新匯入」會重新排入。',
+  job_failed: '背景工作失敗，但後端沒有回報原因；請用 request_id 查後端日誌。',
   unsupported_job_kind: 'worker 不支援這種工作（版本不一致），請確認 worker 映像與後端是同一版本。',
   invalid_response: '後端回應的內容不符合預期，請用 request_id 查後端日誌。',
   parser_crash: '某個檔案的解析器當機；該檔案以部分解析處理，不影響其他檔案。',

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type MouseEvent } from 'react'
 import { commitShortSha, formatBytes, formatCommitTime, repoTitle, shortRefName } from '../format'
-import type { ReferenceItem, Repository, RepositoryOverview } from '../types'
+import type { Job, ReferenceItem, Repository, RepositoryOverview } from '../types'
 import { ErrorBox } from '../ui'
 import { useOnFalling, type JobsOverview } from '../useJobsOverview'
 import { useOverview, type OverviewState } from '../useOverview'
@@ -84,7 +84,7 @@ export function RepoCard(props: Props) {
 
   // 點卡片主體進入詳情；按鈕、連結、輸入控制項、展開鈕與「正在選取文字」不算
   function handleBodyClick(e: MouseEvent<HTMLDivElement>) {
-    if ((e.target as HTMLElement).closest('button, a, input, select, label, summary, .repo-job-notice')) return
+    if ((e.target as HTMLElement).closest('button, a, input, select, label, summary, .repo-job-notice, .remove-confirm')) return
     if ((window.getSelection()?.toString() ?? '') !== '') return
     if (!removing && !removeLocked) onOpen(repo)
   }
@@ -133,7 +133,7 @@ export function RepoCard(props: Props) {
           snapshots={snapshots.items}
           workerOffline={jobs.workerOffline}
           controls={jobs}
-          hideActive={(job) => run?.status === 'running' && (run.job === null || run.job.id === job.id)}
+          hideActive={(job) => (run?.status === 'running' || run?.status === 'cancelled') && (run.job === null || run.job.id === job.id)}
           hideFailedId={run !== undefined && run.status !== 'done' ? (run.job?.id ?? null) : null}
         />
 
@@ -144,6 +144,10 @@ export function RepoCard(props: Props) {
           repoId={repo.id}
           jobActive={jobActive}
           onImport={() => startImport()}
+          onCancelResult={(job) => {
+            imports.applyJob(repo.id, job)
+            jobs.reload() // 共用輪詢也立刻更新（頂端的「進行中」數量）
+          }}
         />
       </div>
 
@@ -198,6 +202,7 @@ function PhaseContent({
   repoId,
   jobActive,
   onImport,
+  onCancelResult,
 }: {
   state: OverviewState
   overview: RepositoryOverview | null
@@ -206,6 +211,8 @@ function PhaseContent({
   /** 這個 repo 已有進行中的背景工作（上方的提示正在顯示進度）：停用「匯入」，避免重複送出。 */
   jobActive: boolean
   onImport: () => void
+  /** 這次匯入的「取消」成功後（最新的 job）。 */
+  onCancelResult: (job: Job) => void
 }) {
   const { phase } = state
   const run = imports.runs[repoId]
@@ -233,6 +240,7 @@ function PhaseContent({
           locked={imports.busy}
           onRetry={() => imports.start(repoId, run.revision, { thenReference: run.thenReference })}
           onDismiss={() => imports.dismiss(repoId)}
+          onCancelResult={onCancelResult}
         />
       )}
       {finishing && (

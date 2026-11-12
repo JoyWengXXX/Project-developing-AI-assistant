@@ -2,6 +2,7 @@ import { useEffect, useId, useRef, useState } from 'react'
 import {
   canCancel,
   canRetry,
+  isCancelling,
   JOB_ACTION_LABEL,
   jobOutcome,
   jobTitle,
@@ -82,7 +83,7 @@ export function JobRow({ job, repoShort, repoFull, workerOffline, acting, onActi
   return (
     <li className={`job-item job-${job.status}${compact ? ' job-compact' : ''}`}>
       <div className="job-line">
-        <JobStatusBadge status={job.status} />
+        <JobStatusBadge status={job.status} cancelling={isCancelling(job)} />
         {dismissal?.dismissed === true && job.status === 'failed' && (
           <span className="badge badge-neutral" title="已忽略：不計入頂端的「失敗」數量與 repo 卡片的提示">
             已忽略
@@ -132,7 +133,7 @@ export function JobRow({ job, repoShort, repoFull, workerOffline, acting, onActi
             disabled={acting !== null || job.cancel_requested}
             onClick={() => setConfirming('cancel')}
           >
-            {job.cancel_requested ? '已要求取消，等待工作停止' : '取消'}
+            {isCancelling(job) ? '取消中…' : '取消'}
           </button>
         )}
         {retryable && (
@@ -183,8 +184,8 @@ export function JobRow({ job, repoShort, repoFull, workerOffline, acting, onActi
             </strong>{' '}
             {confirming === 'cancel'
               ? job.status === 'queued'
-                ? '排隊中的工作會立即取消。'
-                : '執行中的工作會先記錄取消請求，等工作在下一個檢查點才會真正停止。'
+                ? '排隊中的工作會立即取消；之後可以重新匯入。'
+                : '執行中的工作會先記錄取消請求，等目前這一批處理完才會停止；已讀取的內容不會保留，之後可以重新匯入。'
               : '會重新排入背景執行器，再做一次。'}
           </p>
           <div className="action-row">

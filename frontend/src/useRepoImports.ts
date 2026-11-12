@@ -13,6 +13,8 @@ import { chooseLoadMode, isFinished, newerJob, type LoadMethod } from './version
  *
  * 狀態放在 App：註冊要花數秒到數分鐘，使用者可能已進入某個 repo 的詳情（總覽卸載），
  * 匯入仍會繼續，回到總覽時卡片接著顯示結果。
+ * 取消：卡片上的「取消」（CancelJobButton）把 POST /jobs/{id}/cancel 的結果交給 applyJob；輪詢看到 cancelled 就把這次匯入
+ * 標成 cancelled（不是失敗），卡片顯示「已取消」與「重新匯入」（再呼叫 start：後端把同一個 job 重新排入）。同步回退沒有 job，無法取消。
  */
 
 export interface ImportRun {
@@ -20,7 +22,8 @@ export interface ImportRun {
   revision: string
   /** 匯入成功後自動把這個版本設為參考版本（「匯入並改用最新版本」）。匯入失敗就不會設定。 */
   thenReference: boolean
-  status: 'running' | 'failed' | 'done'
+  /** cancelled＝使用者取消了背景工作（不是錯誤）：卡片顯示「已取消」與「重新匯入」。 */
+  status: 'running' | 'failed' | 'done' | 'cancelled'
   job: Job | null
   method: LoadMethod | null
   /** 輪詢 job 失敗（網路等）：畫面上的進度可能過期，會自動退避重試。 */
@@ -37,6 +40,11 @@ export interface RepoImports {
   /** 任何 repo 有匯入進行中（使用者按的「匯入」一次只做一個；註冊後的自動匯入不受此限）。 */
   busy: boolean
   start: (repoId: number, revision: string, options?: { thenReference?: boolean }) => void
+  /**
+   * 取消請求（POST /jobs/{id}/cancel）的結果：把最新的 job 併入這次匯入的狀態，並立刻重新輪詢一次
+   * （不等下一個 1.5 秒），所以「已取消」或「取消中」馬上顯示。
+   */
+  applyJob: (repoId: number, job: Job) => void
   /** 清除某個 repo 的結果（失敗訊息按「關閉」）。 */
   dismiss: (repoId: number) => void
   /** 匯入完成且卡片重新讀取概況後：清掉紀錄，或（概況仍顯示尚未匯入時）改成失敗狀態。 */
@@ -79,6 +87,7 @@ export function useRepoImports(): RepoImports {
   const [runs, setRuns] = useState<Record<number, ImportRun>>({})
   const [doneTicks, setDoneTicks] = useState<Record<number, number>>({})
   const active = useRef(new Set<number>()) // 同步可讀：同一個 repo 不會同時有兩個匯入
+  const wakeUp = useRef(new Map<number, () => void>()) // 提早結束輪詢的等待（取消成功後立刻重新讀取 job）
   const [lifetime] = useState(() => new AbortController()) // App 卸載時取消所有請求與輪詢
   useEffect(() => () => lifetime.abort(), [lifetime])
 
@@ -86,9 +95,12 @@ export function useRepoImports(): RepoImports {
     setRuns((prev) => (prev[repoId] === undefined ? prev : { ...prev, [repoId]: { ...prev[repoId], ...changes } }))
   }, [])
 
-  /** 取得匯入的快照編號：背景工作（含輪詢）或同步回退。 */
+  /**
+   * 取得匯入的快照編號：背景工作（含輪詢）或同步回退。
+   * 回傳 null＝背景工作被取消了（沒有快照，也不是錯誤）。
+   */
   const importSnapshot = useCallback(
-    async (repoId: number, revision: string): Promise<number> => {
+    async (repoId: number, revision: string): Promise<number | null> => {
       const signal = lifetime.signal
       // 送出當下才查一次 worker 狀態（不另外輪詢）；查不到就視為不可用，回退同步
       let statusSnapshot: { data: JobsStatus | null; error: unknown; loading: boolean }
@@ -127,7 +139,10 @@ export function useRepoImports(): RepoImports {
       patch(repoId, { job })
       let failures = 0
       while (!isFinished(job)) {
-        await sleep(failures === 0 ? POLL_MS : Math.min(BACKOFF_MAX_MS, BACKOFF_BASE_MS * 2 ** (failures - 1)), signal)
+        const wait = failures === 0 ? POLL_MS : Math.min(BACKOFF_MAX_MS, BACKOFF_BASE_MS * 2 ** (failures - 1))
+        // 等到下一次輪詢；取消成功時（wakeUp）提早結束等待，立刻讀取最新狀態
+        await Promise.race([sleep(wait, signal), new Promise<void>((resolve) => wakeUp.current.set(repoId, resolve))])
+        wakeUp.current.delete(repoId)
         try {
           const polled = await api<Job>('GET', `/api/v1/jobs/${job.id}`, { signal })
           failures = 0
@@ -141,6 +156,7 @@ export function useRepoImports(): RepoImports {
           patch(repoId, { pollError: error }) // 暫時性失敗：保留最後的進度，退避後再試
         }
       }
+      if (job.status === 'cancelled') return null
       if (job.status !== 'succeeded') throw jobFailure(job)
       if (job.snapshot_id === null) {
         throw new ApiError(null, 'invalid_response', '背景工作已成功，但沒有回報快照編號。', job.request_id)
@@ -173,6 +189,11 @@ export function useRepoImports(): RepoImports {
         let step: 'import' | 'reference' = 'import'
         try {
           const snapshotId = await importSnapshot(repoId, revision)
+          if (snapshotId === null) {
+            // 被取消：不是錯誤，也不設定參考；job（已取消）已在輪詢時存進這次匯入的狀態
+            if (!lifetime.signal.aborted) patch(repoId, { status: 'cancelled', pollError: null })
+            return
+          }
           if (thenReference) {
             step = 'reference' // 匯入成功才設定，失敗不會留下半套狀態
             await setReference(repoId, snapshotId)
@@ -185,10 +206,23 @@ export function useRepoImports(): RepoImports {
           patch(repoId, { status: 'failed', error: toApiError(e), errorStep: step, pollError: null })
         } finally {
           active.current.delete(repoId)
+          wakeUp.current.delete(repoId)
         }
       })()
     },
     [importSnapshot, lifetime, patch],
+  )
+
+  const applyJob = useCallback(
+    (repoId: number, job: Job) => {
+      setRuns((prev) => {
+        const run = prev[repoId]
+        if (run === undefined || run.status !== 'running') return prev
+        return { ...prev, [repoId]: { ...run, job: run.job === null ? job : newerJob(run.job, job) } }
+      })
+      wakeUp.current.get(repoId)?.()
+    },
+    [],
   )
 
   const dismiss = useCallback((repoId: number) => {
@@ -209,5 +243,5 @@ export function useRepoImports(): RepoImports {
   }, [])
 
   const busy = Object.values(runs).some((r) => r.status === 'running')
-  return { runs, doneTicks, busy, start, dismiss, settle }
+  return { runs, doneTicks, busy, start, applyJob, dismiss, settle }
 }

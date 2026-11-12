@@ -131,6 +131,59 @@ export function canCancel(job: Job): boolean {
   return job.status === 'queued' || job.status === 'running'
 }
 
+/** 已要求取消、但執行中的工作還沒在檢查點停下來（最多延遲一批）：顯示「取消中…」。 */
+export function isCancelling(job: Job): boolean {
+  return job.status === 'running' && job.cancel_requested
+}
+
+/** 取消的時間：優先用使用者要求取消的時間，舊版後端沒有這個欄位時退回結束時間。 */
+export function cancelTimeIso(job: Job): string | null {
+  return job.cancel_requested_at ?? job.finished_at
+}
+
+/** worker 在處理這個工作時中斷的總次數（舊版後端沒有 diagnostics 時為 0）。 */
+export function workerCrashCount(job: Job): number {
+  return job.diagnostics?.poison?.total_crashes ?? 0
+}
+
+/** 有失敗追查資訊可顯示（JobFailureInfo 會輸出內容）：上一次（或這一次）的錯誤，或 worker 曾中斷。 */
+export function hasFailureDetails(job: Job): boolean {
+  return job.error !== null || workerCrashCount(job) > 0
+}
+
+/** 重試額度已耗盡：失敗原因是 worker_lost（租約過期且沒有剩餘的重試次數）。 */
+export function isRetryExhausted(job: Job): boolean {
+  return job.status === 'failed' && job.error?.code === 'worker_lost'
+}
+
+/**
+ * 匯入正在列舉檔案：後端還沒回報檔案總數（total_files 為 null）、也還沒處理任何檔案。
+ * 這段時間沒有百分比可說，只能顯示「正在列舉檔案…」。
+ */
+export function isEnumerating(job: Job): boolean {
+  return job.kind === 'snapshot_import' && job.status === 'running' && job.progress.total_files === null && job.progress.processed_files === 0
+}
+
+/** 執行中的批次進度「第 3／21 批」（只有匯入的 blob 批次，次要資訊）；沒有就是 null。 */
+export function batchText(job: Job): string | null {
+  const unit = job.diagnostics?.current_unit
+  if (job.status !== 'running' || !unit || unit.kind !== 'blob_batch' || unit.index === null || unit.count === null) return null
+  return `第 ${Math.min(unit.index + 1, unit.count)}／${unit.count} 批`
+}
+
+/** 進度文字（進度條旁）：百分比與「已處理 N / M 個檔案」；總數未知時不偽造百分比。 */
+export function progressText(job: Job): string {
+  const { processed_files: done, total_files: total } = job.progress
+  const pct = progressPercent(job.progress)
+  if (pct !== null && total !== null) return `${pct}%，已處理 ${done.toLocaleString('zh-TW')} / ${total.toLocaleString('zh-TW')} 個檔案`
+  if (total === 0) return `沒有檔案需要處理（${done} / 0）`
+  if (isEnumerating(job)) return '正在列舉檔案…'
+  if (done > 0) return `已處理 ${done.toLocaleString('zh-TW')} 個檔案（總數未知）`
+  if (job.status === 'running') return '進行中（總數未知，無法估計進度）'
+  if (job.status === 'queued') return '尚未開始'
+  return '沒有進度資料'
+}
+
 export function canRetry(job: Job): boolean {
   return job.status === 'failed'
 }
@@ -199,9 +252,10 @@ export function jobOutcome(job: Job, options: { workerOffline: boolean }): strin
       if (options.workerOffline) return '排隊中（背景執行器目前不在線，暫時不會執行）'
       return job.error !== null ? '排隊中（上次嘗試失敗，等待自動重試）' : '排隊中（等待背景執行器）'
     case 'running': {
-      const cancelling = job.cancel_requested ? '；已要求取消，等待停止' : ''
-      if (job.kind !== 'snapshot_import') return `進行中：${JOB_PHASE_LABEL[job.phase]}${cancelling}`
-      return files > 0 ? `進行中：已處理 ${files.toLocaleString('zh-TW')} 個檔案${cancelling}` : `進行中：正在讀取版本內容${cancelling}`
+      if (job.cancel_requested) return '取消中…（等目前這一批處理完就會停止）'
+      if (job.kind !== 'snapshot_import') return `進行中：${JOB_PHASE_LABEL[job.phase]}`
+      if (isEnumerating(job)) return '進行中：正在列舉檔案…'
+      return files > 0 ? `進行中：已處理 ${files.toLocaleString('zh-TW')} 個檔案` : '進行中：正在讀取版本內容'
     }
     case 'succeeded': {
       const parts = ['已完成']
@@ -218,17 +272,13 @@ export function jobOutcome(job: Job, options: { workerOffline: boolean }): strin
   }
 }
 
-/** 進行中工作的一小段進度說明（括號內用）：「排隊中」「42%，已處理 1,200 / 3,000 個檔案」「已處理 80 個檔案」「進行中」。 */
+/** 進行中工作的一小段進度說明（括號內用）：「排隊中」「42%，已處理 1,200 / 3,000 個檔案」「正在列舉檔案…」「取消中…」。 */
 export function progressSummary(job: Job, options: { workerOffline: boolean }): string {
   if (job.status === 'queued') return options.workerOffline ? '排隊中，背景執行器離線' : '排隊中'
-  const { processed_files: done, total_files: total } = job.progress
-  const pct = progressPercent(job.progress)
-  const cancelling = job.cancel_requested ? '，已要求取消' : ''
-  if (pct !== null && total !== null) {
-    return `${pct}%，已處理 ${done.toLocaleString('zh-TW')} / ${total.toLocaleString('zh-TW')} 個檔案${cancelling}`
-  }
-  if (done > 0) return `已處理 ${done.toLocaleString('zh-TW')} 個檔案${cancelling}`
-  return `進行中${cancelling}`
+  if (isCancelling(job)) return '取消中…'
+  const { processed_files: done } = job.progress
+  if (progressPercent(job.progress) !== null || isEnumerating(job) || done > 0) return progressText(job)
+  return '進行中'
 }
 
 /** 失敗原因（繁中）：優先用 ERROR_HINT 的白話說明，沒有就退回後端的 message；原始 code 留在「詳情」。 */

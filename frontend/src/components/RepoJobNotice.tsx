@@ -1,11 +1,16 @@
 import { useEffect, useId, useRef, useState } from 'react'
 import { api, type ApiError } from '../api'
 import { toApiError } from '../format'
-import { failureReason, JOB_KIND_LABEL, jobTitle, progressSummary } from '../jobFormat'
+import { resubmitImport } from '../jobActions'
+import { canCancel, failureReason, hasFailureDetails, isCancelling, JOB_KIND_LABEL, jobTitle, progressSummary } from '../jobFormat'
 import { isSuperseded, jobCommitSha, type RepoJobs } from '../jobsOverview'
 import type { Job, SnapshotItem } from '../types'
 import { ErrorBox } from '../ui'
+import { useAction } from '../useAction'
 import type { JobControls } from '../useJobsOverview'
+import { useTrackedJob } from '../useTrackedJob'
+import { CancelJobButton } from './CancelJobButton'
+import { JobFailureInfo } from './JobFailureInfo'
 import { JobProgress, JobProgressBar } from './JobProgress'
 import { JobStatusBadge } from './JobStatusBadge'
 
@@ -31,8 +36,9 @@ function failureLabel(job: Job): string {
 
 /**
  * 一個 repo 的背景工作提示（總覽卡片與詳情版本區共用；沒有東西可顯示時不佔空間）：
- *   - 進行中：「背景工作進行中：匯入 deds-portal 的版本 be6ab7df（42%，已處理 …）」，可展開看進度與嘗試次數。
- *   - 最近一筆尚未忽略的失敗：「上次背景匯入失敗：<繁中原因>」＋「重試」（POST /jobs/{id}/retry，先確認）＋「忽略」（只記在瀏覽器）。
+ *   - 進行中：「背景工作進行中：匯入 deds-portal 的版本 be6ab7df（42%，已處理 …）」，可展開看進度與嘗試次數，
+ *     也可「取消」（先確認）。取消後這一行換成「取消中…」，工作停下來後顯示「已取消」與「重新匯入」（同一個工作重新排入）。
+ *   - 最近一筆尚未忽略的失敗：「上次背景匯入失敗」＋失敗追查資訊（JobFailureInfo）＋「重試」（POST /jobs/{id}/retry，先確認）＋「忽略」（只記在瀏覽器）。
  *     若這個失敗之後已有更新的成功匯入，只顯示一行淡色的「較早的失敗」與「忽略」，不再要求處理，
  *     但它仍算在頂端的「失敗 N」，所以保留一個忽略的入口，數字才對得起來。
  * 進度數字每次輪詢都會更新，所以不放 aria-live；頂端摘要列才會報讀數量變化。
@@ -41,24 +47,47 @@ export function RepoJobNotice({ repoName, jobs, snapshots, workerOffline, contro
   const rootRef = useRef<HTMLDivElement>(null)
   // 按了「忽略」或「重試」後留一行說明：也讓提示區塊不會立刻消失，鍵盤焦點有地方可去
   const [note, setNote] = useState<'dismissed' | 'retried' | null>(null)
+  // 在這裡按了取消的工作：它離開共用輪詢的「進行中」清單後，仍由 CancelledLine 追蹤到結束並顯示結果，直到使用者關閉
+  const [cancelled, setCancelled] = useState<Job[]>([])
+  const trackedIds = new Set(cancelled.map((j) => j.id))
 
-  const active = hideActive === undefined ? jobs.active : jobs.active.filter((j) => !hideActive(j))
-  const latest = jobs.failed[0] ?? null
+  const active = (hideActive === undefined ? jobs.active : jobs.active.filter((j) => !hideActive(j))).filter((j) => !trackedIds.has(j.id))
+  const failedJobs = jobs.failed.filter((j) => !trackedIds.has(j.id))
+  const latest = failedJobs[0] ?? null
   // 快照列表還沒載入時無法判斷是否已被取代，先不顯示（避免先閃出紅色提示又消失）
   const failure = latest !== null && latest.id !== hideFailedId && snapshots !== null ? latest : null
   // 重試後工作已出現在「進行中」：進行中的那一行取代這句說明（在 render 期間同步調整，不需要 effect）
   if (note === 'retried' && active.length > 0) setNote(null)
-  if (active.length === 0 && failure === null && note === null) return null
+  if (active.length === 0 && failure === null && note === null && cancelled.length === 0) return null
 
   function afterAction(kind: 'dismissed' | 'retried') {
     setNote(kind)
     rootRef.current?.focus() // 剛按的按鈕即將消失：焦點移到這個提示區塊，不掉到頁面最上面
   }
 
+  function handleCancelled(job: Job) {
+    setCancelled((prev) => (prev.some((j) => j.id === job.id) ? prev : [...prev, job]))
+    controls.reload()
+    rootRef.current?.focus() // 這一行即將換成「取消中…／已取消」，原本的按鈕不在了
+  }
+
+  function closeCancelled(jobId: number) {
+    setCancelled((prev) => prev.filter((j) => j.id !== jobId))
+  }
+
+  // 重新匯入成功：同一個工作回到排隊，由共用輪詢接手顯示（這裡先留一行說明，直到它出現在「進行中」）
+  function requeued(jobId: number) {
+    closeCancelled(jobId)
+    afterAction('retried')
+  }
+
   return (
     <div className="repo-job-notice" ref={rootRef} tabIndex={-1} role="group" aria-label="背景工作狀態">
       {active.map((job) => (
-        <ActiveLine key={job.id} job={job} repoName={repoName} workerOffline={workerOffline} />
+        <ActiveLine key={job.id} job={job} repoName={repoName} workerOffline={workerOffline} onCancelled={handleCancelled} />
+      ))}
+      {cancelled.map((job) => (
+        <CancelledLine key={job.id} initial={job} repoName={repoName} controls={controls} onClose={closeCancelled} onRequeued={requeued} />
       ))}
       {failure !== null && (
         <FailureLine
@@ -66,7 +95,7 @@ export function RepoJobNotice({ repoName, jobs, snapshots, workerOffline, contro
           job={failure}
           repoName={repoName}
           superseded={isSuperseded(failure, snapshots ?? [])}
-          others={jobs.failed.length - 1}
+          others={failedJobs.length - 1}
           controls={controls}
           onDone={afterAction}
         />
@@ -82,13 +111,23 @@ export function RepoJobNotice({ repoName, jobs, snapshots, workerOffline, contro
   )
 }
 
-function ActiveLine({ job, repoName, workerOffline }: { job: Job; repoName: string; workerOffline: boolean }) {
+function ActiveLine({
+  job,
+  repoName,
+  workerOffline,
+  onCancelled,
+}: {
+  job: Job
+  repoName: string
+  workerOffline: boolean
+  onCancelled: (job: Job) => void
+}) {
   const [expanded, setExpanded] = useState(false)
   const detailId = `job-notice-${useId()}`
   return (
     <div className="job-notice job-notice-active">
       <div className="job-notice-line">
-        <JobStatusBadge status={job.status} />
+        <JobStatusBadge status={job.status} cancelling={isCancelling(job)} />
         <span>
           背景工作進行中：{jobTitle(job, repoName)}（{progressSummary(job, { workerOffline })}）
         </span>
@@ -106,14 +145,10 @@ function ActiveLine({ job, repoName, workerOffline }: { job: Job; repoName: stri
         <div id={detailId} className="job-notice-detail">
           <JobProgress job={job} />
           <p className="job-meta muted">
-            工作 #{job.id} · 嘗試 {job.attempt} / {job.max_attempts}
+            工作 #{job.id}
+            {!hasFailureDetails(job) && ` · 嘗試 ${job.attempt} / ${job.max_attempts}`}
           </p>
-          {job.status === 'queued' && job.error !== null && (
-            <p className="job-error job-error-previous">
-              <strong>上次嘗試失敗（會自動重試）：</strong>
-              {failureReason(job)}
-            </p>
-          )}
+          <JobFailureInfo job={job} />
           {job.status === 'queued' && workerOffline && (
             <p className="warning" role="status">
               <strong>
@@ -125,6 +160,79 @@ function ActiveLine({ job, repoName, workerOffline }: { job: Job; repoName: stri
       ) : (
         <JobProgressBar job={job} />
       )}
+      {canCancel(job) && <CancelJobButton job={job} label="取消" small onResult={onCancelled} />}
+    </div>
+  )
+}
+
+/**
+ * 使用者在這裡按了取消的工作：追蹤到結束（useTrackedJob）並顯示結果。
+ * 「取消中…」（執行中的工作要等目前這一批處理完）→「已取消」＋「重新匯入」（POST import-jobs，後端把同一個工作重新排入）；
+ * 若工作在取消生效前就結束了（成功或失敗），如實顯示那個結果。
+ */
+function CancelledLine({
+  initial,
+  repoName,
+  controls,
+  onClose,
+  onRequeued,
+}: {
+  initial: Job
+  repoName: string
+  controls: JobControls
+  onClose: (jobId: number) => void
+  onRequeued: (jobId: number) => void
+}) {
+  const job = useTrackedJob(initial)
+  const action = useAction()
+  const sha = jobCommitSha(job)
+  const repositoryId = job.repository_id
+  const title = jobTitle(job, repoName)
+
+  async function reimport() {
+    if (sha === null || repositoryId === null) return
+    const ok = await action.run(async () => {
+      await resubmitImport(repositoryId, sha)
+    })
+    if (ok) {
+      controls.reload()
+      onRequeued(job.id)
+    }
+  }
+
+  if (canCancel(job)) {
+    return (
+      <div className="job-notice job-notice-active">
+        <div className="job-notice-line">
+          <JobStatusBadge status={job.status} cancelling={isCancelling(job)} />
+          <span>取消中…：{title}（等目前這一批處理完就會停止）</span>
+        </div>
+      </div>
+    )
+  }
+
+  return (
+    <div className="job-notice job-notice-old">
+      <div className="job-notice-line">
+        <JobStatusBadge status={job.status} />
+        <span>
+          {job.status === 'cancelled' && `已取消：${title}`}
+          {job.status === 'succeeded' && `${title}在取消生效前已經完成。`}
+          {job.status === 'failed' && `${title}在取消生效前已經失敗。`}
+        </span>
+      </div>
+      <JobFailureInfo job={job} />
+      <div className="action-row">
+        {job.status === 'cancelled' && sha !== null && repositoryId !== null && (
+          <button type="button" className="small" disabled={action.busy} onClick={() => void reimport()}>
+            {action.busy ? '送出中…' : '重新匯入'}
+          </button>
+        )}
+        <button type="button" className="secondary small" onClick={() => onClose(job.id)}>
+          關閉
+        </button>
+      </div>
+      <ErrorBox error={action.error} />
     </div>
   )
 }
@@ -195,11 +303,11 @@ function FailureLine({ job, repoName, superseded, others, controls, onDone }: Fa
 
   return (
     <div className="job-notice job-notice-failed">
-      <p className="job-error">
-        <strong>{failureLabel(job)}：</strong>
-        {failureReason(job)}
+      <p className="job-notice-title">
+        <strong>{failureLabel(job)}</strong>
         {sha !== undefined && <span className="job-notice-code">（版本 {sha}）</span>}
       </p>
+      <JobFailureInfo job={job} />
       {others > 0 && <p className="note job-notice-note">這個 repo 另有 {others} 個未忽略的失敗工作，請見「查看所有背景工作」。</p>}
       <div className="action-row">
         <button

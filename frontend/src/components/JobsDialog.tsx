@@ -127,7 +127,7 @@ export function JobsDialog({ jobs, repos, onClose }: Props) {
       if (action === 'retry') {
         text = `${what}已重新排入，等待背景執行器處理。`
         jobs.restore(job.id) // 重新排入後若再失敗，要重新提醒
-      } else if (res.status === 202) text = `已記錄${what}的取消請求；工作仍在執行，會在下一個檢查點停止。`
+      } else if (res.status === 202) text = `已記錄${what}的取消請求（取消中…）；工作仍在執行，會在目前這一批處理完後停止。`
       else text = `${what}已取消。`
       setNotice({ kind: 'success', text })
       refresh()
@@ -225,7 +225,12 @@ export function JobsDialog({ jobs, repos, onClose }: Props) {
             <ErrorBox error={notice.error} />
           </div>
         )}
-        <ApiHint apis={['POST /api/v1/jobs/{id}/cancel（取消）', 'POST /api/v1/jobs/{id}/retry（重試失敗的工作）']} />
+        <ApiHint
+          apis={[
+            'POST /api/v1/jobs/{id}/cancel（取消：排隊中立即取消 200；執行中回 202、cancel_requested＝true，status 仍是 running，worker 在批次之間停止；409＝已結束，404＝不存在）',
+            'POST /api/v1/jobs/{id}/retry（重試失敗的工作）',
+          ]}
+        />
 
         {loading && <p role="status">載入中…</p>}
         {attention ? (

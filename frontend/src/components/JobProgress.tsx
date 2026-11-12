@@ -1,4 +1,4 @@
-import { formatSize, progressPercent } from '../jobFormat'
+import { batchText, formatSize, progressPercent, progressText } from '../jobFormat'
 import type { Job } from '../types'
 import { Elapsed } from './JobTimes'
 
@@ -41,29 +41,21 @@ export function JobProgressBar({ job }: { job: Job }) {
 }
 
 /**
- * 工作進度：已知總數才畫進度條與百分比；total_files 為 null（總數未知）時只顯示「已處理 N 個」，
- * 執行中另畫一條「不確定」的動態條（沒有 aria-valuenow，也不顯示任何百分比）。
+ * 工作進度：已知總數才畫進度條與百分比；total_files 為 null（總數未知）時不顯示百分比——
+ * 匯入顯示「正在列舉檔案…」，其他工作只顯示已處理數；執行中另畫一條「不確定」的動態條（沒有 aria-valuenow）。
+ * 文字與批次（「第 3／21 批」）的規則在 jobFormat.ts。
  */
 export function JobProgress({ job }: { job: Job }) {
   const p = job.progress
-  const done = p.processed_files
-  const total = p.total_files
-  const pct = progressPercent(p)
   const running = job.status === 'running'
-
-  let text: string
-  if (total !== null && total > 0) text = `${done} / ${total} 個檔案（${pct}%）`
-  else if (total === 0) text = `沒有檔案需要處理（${done} / 0）`
-  else if (done > 0) text = `已處理 ${done} 個檔案（總數未知）`
-  else if (running) text = '進行中（總數未知，無法估計進度）'
-  else if (job.status === 'queued') text = '尚未開始'
-  else text = '沒有進度資料'
+  const batch = batchText(job)
 
   return (
     <div className="job-progress">
       <JobProgressBar job={job} />
       <div className="job-progress-text">
-        <span>{text}</span>
+        <span>{progressText(job)}</span>
+        {batch !== null && <span className="muted job-batch">{batch}</span>}
         {p.indexed_files > 0 && <span>已建立索引 {p.indexed_files} 個檔案</span>}
         {p.parse_error_count > 0 && <span>解析錯誤 {p.parse_error_count}</span>}
         {p.bytes_received !== null && <span>已接收約 {formatSize(p.bytes_received)}（暫存目錄大小，非百分比）</span>}

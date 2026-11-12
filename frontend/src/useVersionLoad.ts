@@ -9,8 +9,10 @@ export interface VersionLoad {
   /** idle＝沒有選取，或選取了但還沒按「匯入此版本」（不會自動匯入）。 */
   status: 'idle' | 'loading' | 'ready' | 'error'
   snapshot: Snapshot | null
-  /** 載入失敗：請求本身的錯誤（409／422／503…），或背景工作 failed／cancelled 的 error。 */
+  /** 載入失敗：請求本身的錯誤（409／422／503…），或背景工作 failed 的 error。已取消不是錯誤（見 job）。 */
   error: ApiError | null
+  /** 背景工作失敗（error 即由它而來）時的那個 job，讓畫面顯示完整的失敗追查資訊；請求本身的錯誤時為 null。 */
+  failedJob: Job | null
   /** 目前選取的 commit 的背景工作（沒有用背景工作、或還沒提交時為 null）。 */
   job: Job | null
   /** 輪詢這個 job 失敗（網路等）：畫面上的進度可能過期，輪詢會自動退避重試。 */
@@ -25,10 +27,16 @@ export interface VersionLoad {
   loadingShas: ReadonlySet<string>
   /** 目前會用哪種方式匯入（按下「匯入此版本」的那一刻才真正決定；wait＝還不知道 worker 是否在線）。 */
   decision: LoadModeDecision
-  /** 使用者按「匯入此版本」：提交目前選取的 commit（同一個 SHA 進行中、或已匯入時不會重複送出）。 */
+  /** 使用者按「匯入此版本」：提交目前選取的 commit（同一個 SHA 進行中、或已匯入時不會重複送出）。取消後的「重新匯入此版本」也是它。 */
   start: () => void
   /** 失敗後重試目前的版本（重新 POST；後端會把失敗的 job 重新排入）。 */
   retry: () => void
+  /**
+   * 取消請求（POST /jobs/{id}/cancel）的結果：把最新的 job 併入狀態，畫面立刻更新（queued 取消成功＝cancelled；
+   * running 變成「取消中」，輪詢繼續到 cancelled）。job 必須是目前選取的 commit 的；若這個 commit 還沒有追蹤中的 job
+   * （例如重新整理頁面前就開始的匯入），就改為追蹤它。
+   */
+  applyJob: (job: Job) => void
   /** 這個版本已被移除：忘掉本次瀏覽中記住的快照與 job（之後再按「匯入此版本」會重新匯入）。 */
   forget: (sha: string) => void
 }
@@ -68,10 +76,13 @@ function without<T>(record: Record<string, T>, key: string): Record<string, T> {
  *
  * 規則：
  *   - 同一個 SHA 的請求只會有一個在進行（inflight）；進行中（請求中或 job 排隊／執行中）再按 start 不會重複提交。
- *   - 切換 commit 時不取消後端的 job（取消 UI 屬切片 4），只是不再輪詢它、不顯示它的結果。
+ *   - 切換 commit 時不取消後端的 job（取消只在使用者按「取消匯入」時才做），只是不再輪詢它、不顯示它的結果。
  *     回到該 commit 時，用「SHA→jobId」的記憶接續輪詢同一個 job，不重複提交。
  *     限制：記憶只存在這個元件的生命週期（換 repo、離開詳情頁就沒了；之後回來要再按「匯入此版本」，
  *     由後端的 dedupe 回既有進行中的 job 或快照，所以不會重複工作）。
+ *   - 取消：applyJob 把 POST /jobs/{id}/cancel 的結果併入。取消後 job 的狀態是 cancelled（不是錯誤），畫面顯示「已取消」與
+ *     「重新匯入此版本」；重新匯入＝start，後端把**同一個 job id** 重新排入（202），所以 SHA→jobId 的記憶不必改，
+ *     只是 jobs 裡這個 id 的資料換成較新的 queued（newerJob 以 updated_at 把關），輪詢隨之恢復，不會殘留舊的已取消狀態。
  *   - 失敗的 job 會一直顯示失敗（不因為切走再回來而自動重送），按「重試匯入」才重新 POST；
  *     請求本身的錯誤（409／422／503…）切換 commit 後就清掉（回到未匯入，可再按一次）。
  *   - 元件卸載（換 repo、repo 被移除）時取消進行中的請求與輪詢。
@@ -216,9 +227,12 @@ export function useVersionLoad(
   }, [busy, sha, snapshot, job])
 
   let error: ApiError | null = null
+  let failedJob: Job | null = null
   if (failure !== null && failure.sha === sha) error = failure.error
-  else if (job !== null && (job.status === 'failed' || job.status === 'cancelled')) error = jobFailure(job)
-  else if (job !== null && job.status === 'succeeded' && job.snapshot_id === null) {
+  else if (job !== null && job.status === 'failed') {
+    error = jobFailure(job)
+    failedJob = job
+  } else if (job !== null && job.status === 'succeeded' && job.snapshot_id === null) {
     error = new ApiError(null, 'invalid_response', '背景工作已成功，但沒有回報快照編號。', job.request_id)
   }
   const active = sha !== null && (loadingShas.has(sha) || (job !== null && job.status === 'succeeded'))
@@ -245,6 +259,11 @@ export function useVersionLoad(
     submit()
   }
 
+  function applyJob(updated: Job) {
+    setJobs((prev) => ({ ...prev, [updated.id]: newerJob(prev[updated.id], updated) }))
+    if (sha !== null) setJobIds((prev) => (prev[sha] === undefined ? { ...prev, [sha]: updated.id } : prev))
+  }
+
   // 穩定的函式（只用 setState）：VersionPanel 把它放進 effect 的依賴列
   const forget = useCallback((forSha: string) => {
     setLoaded((prev) => without(prev, forSha))
@@ -257,6 +276,7 @@ export function useVersionLoad(
     status,
     snapshot,
     error,
+    failedJob,
     job,
     pollError: polling && pollError !== null && pollError.code !== 'job_not_found' ? pollError : null,
     method: sha !== null ? (methods[sha] ?? null) : null,
@@ -266,6 +286,7 @@ export function useVersionLoad(
     decision,
     start,
     retry,
+    applyJob,
     forget,
   }
 }

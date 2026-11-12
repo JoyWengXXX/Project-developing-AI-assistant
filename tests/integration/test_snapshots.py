@@ -2,6 +2,7 @@ import hashlib
 import os
 import shutil
 import threading
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -16,6 +17,7 @@ from sqlalchemy.orm import Session
 from repopilot.config import Settings
 from repopilot.db.models import Snapshot, SnapshotFile
 from repopilot.errors import GitCommandError, SnapshotImportInProgressError
+from repopilot.git.objects import read_blobs as git_read_blobs
 from repopilot.main import create_app
 from repopilot.services import snapshots as snapshot_service
 from repopilot.services.import_profile import ImportProfile
@@ -370,8 +372,13 @@ def test_repository_removed_from_disk_returns_422(
 ) -> None:
     repo = init_repo(roots / "gone")
     repository_id = _register(client, repo)
+
     # .git 內的物件檔為唯讀，Windows 刪除前須先放寬權限
-    shutil.rmtree(repo, onexc=lambda func, path, _exc: (os.chmod(path, 0o700), func(path)))
+    def make_writable_and_retry(func: Callable[[str], object], path: str, _exc: object) -> None:
+        os.chmod(path, 0o700)
+        func(path)
+
+    shutil.rmtree(repo, onexc=make_writable_and_retry)
 
     response = _import(client, repository_id)
 
@@ -387,7 +394,7 @@ def test_failed_import_can_be_retried_and_exposes_no_partial_files(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     repository_id = _register(client, repo)
-    real_read_blobs = snapshot_service.read_blobs
+    real_read_blobs = git_read_blobs
 
     def failing(*_: object, **__: object) -> None:
         raise GitCommandError("git cat-file failed: simulated")

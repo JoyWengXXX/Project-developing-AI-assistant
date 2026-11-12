@@ -20,6 +20,12 @@ def test_engine_uses_pool_settings() -> None:
     assert pool.timeout() == 7.5
 
 
+def test_engine_hides_sql_parameters_so_exception_text_cannot_leak_file_content() -> None:
+    engine = create_db_engine(Settings(database_url=FAKE_URL))
+
+    assert engine.hide_parameters is True
+
+
 def test_default_pool_settings_match_documented_values() -> None:
     settings = Settings(database_url=FAKE_URL)
 

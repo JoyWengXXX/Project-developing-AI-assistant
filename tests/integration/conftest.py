@@ -13,6 +13,7 @@ from sqlalchemy.exc import OperationalError
 
 from repopilot.config import Settings
 from repopilot.main import create_app
+from tests.stack_control import stop_job_services_if_running
 
 # 預設對應 docker-compose.yml 的 db-test（假密碼，僅限本機）
 DEFAULT_TEST_DATABASE_URL = (
@@ -49,7 +50,10 @@ def db_engine(test_database_url: str) -> Iterator[Engine]:
             "無法連線測試資料庫；請先執行 `docker compose up -d --wait db-test`。"
             f"（{type(exc).__name__}）"
         )
-    # 重建 schema，確保 migration 從空資料庫開始；只影響名稱含 test 的資料庫
+    # 重建 schema，確保 migration 從空資料庫開始；只影響名稱含 test 的資料庫。
+    # 先停止測試堆疊的 worker／dispatcher（若在跑）：它們會處理測試用的假 job，
+    # 也會持有舊 schema 的連線
+    stop_job_services_if_running()
     with engine.begin() as connection:
         connection.execute(text("DROP SCHEMA public CASCADE"))
         connection.execute(text("CREATE SCHEMA public"))

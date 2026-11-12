@@ -43,3 +43,7 @@ def configure_logging(level: LogLevel) -> None:
     handler = logging.StreamHandler(sys.stderr)
     handler.setFormatter(JsonFormatter())
     logger.addHandler(handler)
+    # httpx 在 INFO 會記錄請求的 URL；縱使目前不含標頭，仍壓到 WARNING，
+    # 避免日後升級或除錯設定意外把含 Authorization 的請求細節寫進日誌
+    for noisy in ("httpx", "httpcore"):
+        logging.getLogger(noisy).setLevel(logging.WARNING)

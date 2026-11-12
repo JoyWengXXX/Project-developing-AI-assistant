@@ -51,3 +51,46 @@ def test_migration_upgrade_is_repeatable_and_downgrade_to_base_works(
     with db_engine.connect() as connection:
         versions = connection.execute(text(VERSION_QUERY)).scalars().all()
     assert len(versions) == 1
+
+
+def test_models_and_migrations_have_no_drift(test_database_url: str, db_engine: Engine) -> None:
+    """等同 `alembic check`：從空資料庫套用 migration 後，ORM model 沒有尚未寫成 migration 的差異。
+
+    只涵蓋 Alembic 能比對的項目（資料表、欄位、型別、索引、唯一與外鍵約束）；CHECK 約束與
+    部分索引的運算式不在其比對範圍內，由約束的直接測試負責。
+    """
+    command.check(alembic_config(test_database_url))
+
+
+def test_every_migration_step_upgrades_and_downgrades_one_revision_at_a_time(
+    test_database_url: str, db_engine: Engine
+) -> None:
+    config = alembic_config(test_database_url)
+    script = ScriptDirectory.from_config(config)
+    assert len(script.get_heads()) == 1, "migration 鏈不可分岔"
+    revisions = [revision.revision for revision in reversed(list(script.walk_revisions()))]
+    assert len(revisions) >= 5  # 0001 ～ 0005
+
+    def current() -> list[str]:
+        with db_engine.connect() as connection:
+            return list(connection.execute(text(VERSION_QUERY)).scalars().all())
+
+    try:
+        command.downgrade(config, "base")
+        assert current() == []
+        for revision in revisions:  # 空資料庫逐版升級
+            command.upgrade(config, "+1")
+            assert current() == [revision]
+        for previous in [*reversed(revisions[:-1]), None]:  # 逐版降回 base
+            command.downgrade(config, "-1")
+            assert current() == ([previous] if previous else [])
+    finally:
+        command.upgrade(config, "head")  # 不論成敗都還原，避免影響之後的測試
+
+    with db_engine.connect() as connection:
+        tables = set(
+            connection.execute(
+                text("SELECT tablename FROM pg_tables WHERE schemaname = 'public'")
+            ).scalars()
+        )
+    assert {"repositories", "snapshots", "snapshot_files", "github_credentials"} <= tables

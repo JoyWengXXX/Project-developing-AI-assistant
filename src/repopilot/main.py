@@ -6,7 +6,16 @@ from fastapi import FastAPI
 from repopilot import __version__
 from repopilot.api.errors import register_exception_handlers
 from repopilot.api.middleware import RequestIdMiddleware
-from repopilot.api.routes import health, ready, repositories
+from repopilot.api.routes import (
+    github,
+    github_repositories,
+    health,
+    jobs,
+    ready,
+    references,
+    repositories,
+    snapshots,
+)
 from repopilot.config import Settings, get_settings
 from repopilot.db.session import create_db_engine, create_session_factory
 from repopilot.logging_config import configure_logging
@@ -33,4 +42,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(health.router)
     app.include_router(ready.router)
     app.include_router(repositories.router)
+    app.include_router(references.router)
+    app.include_router(github_repositories.router)
+    app.include_router(snapshots.router)
+    app.include_router(github.router)
+    app.include_router(jobs.router)
     return app

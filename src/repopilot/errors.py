@@ -38,10 +38,170 @@ class SnapshotImportInProgressError(RepoPilotError):
     code = "snapshot_import_in_progress"
 
 
+class SnapshotNotFoundError(RepoPilotError):
+    """指定的快照不存在。"""
+
+    code = "snapshot_not_found"
+
+
+class SnapshotFileNotFoundError(RepoPilotError):
+    """指定的檔案不存在，或不屬於該快照。"""
+
+    code = "snapshot_file_not_found"
+
+
+class SnapshotNotCompletedError(RepoPilotError):
+    """快照尚未匯入完成（importing 或 failed），不得讀取其檔案內容。"""
+
+    code = "snapshot_not_completed"
+
+
+class SnapshotBusyError(RepoPilotError):
+    """快照正被使用（未逾時的匯入、進行中的 job，或快照鎖被持有），暫時不能移除。"""
+
+    code = "snapshot_busy"
+
+
+class SnapshotReferencedError(RepoPilotError):
+    """快照是某個 repo 的參考版本；移除需帶 `force=true`（同時清除參考）。"""
+
+    code = "snapshot_referenced"
+
+
 class ImportLimitExceededError(RepoPilotError):
     """快照超過檔案數或總大小上限。"""
 
     code = "import_limit_exceeded"
+
+
+class TokenEncryptionNotConfiguredError(RepoPilotError):
+    """`TOKEN_ENCRYPTION_KEY` 未設定或不是有效的 Fernet 金鑰，無法保存 GitHub token。"""
+
+    code = "token_encryption_not_configured"
+
+
+class GitHubTokenInvalidError(RepoPilotError):
+    """GitHub 拒絕該 token（401）：無效、過期或已撤銷。"""
+
+    code = "github_token_invalid"
+
+
+class GitHubUnreachableError(RepoPilotError):
+    """無法連線到 GitHub API（DNS、連線被拒、TLS 等）。"""
+
+    code = "github_unreachable"
+
+
+class GitHubTimeoutError(GitHubUnreachableError):
+    """呼叫 GitHub API 逾時。"""
+
+    code = "github_timeout"
+
+
+class GitHubApiError(RepoPilotError):
+    """GitHub 回了非預期的結果（403／速率限制、5xx、非 JSON 等）。"""
+
+    code = "github_api_error"
+
+
+class InvalidGitHubRepoError(RepoPilotError):
+    """GitHub repo 參考（`owner/name` 或 URL）格式不合法；訊息不回顯輸入。"""
+
+    code = "invalid_github_repo"
+
+
+class GitHubRegistrationDisabledError(RepoPilotError):
+    """`MANAGED_REPOS_DIR` 未設定，GitHub 註冊功能停用（服務端設定問題）。"""
+
+    code = "github_registration_disabled"
+
+
+class GitHubRepoNotFoundError(RepoPilotError):
+    """GitHub 回 404：repo 不存在，或 token（未提供／權限不足）看不到該 repo。"""
+
+    code = "github_repo_not_found_or_private"
+
+
+class RepositoryNotGitHubError(RepoPilotError):
+    """該 repo 不是 GitHub 來源，不能 fetch。"""
+
+    code = "repository_not_github"
+
+
+class RepositoryBusyError(RepoPilotError):
+    """repo 正在被使用（未逾時的匯入，或 GitHub 來源的 clone／fetch 進行中），暫時不能移除。"""
+
+    code = "repository_busy"
+
+
+class ManagedStorageError(RepoPilotError):
+    """受管目錄的檔案系統操作失敗（建立目錄、rename 等）。"""
+
+    code = "managed_storage_error"
+
+
+class JobNotFoundError(RepoPilotError):
+    """指定的背景工作不存在（含 repo 被移除而連帶刪除）。"""
+
+    code = "job_not_found"
+
+
+class JobNotRetryableError(RepoPilotError):
+    """只有 `failed` 的工作可以重試；或已有相同工作正在進行，重試會違反 dedupe 唯一性。"""
+
+    code = "job_not_retryable"
+
+
+class JobNotCancellableError(RepoPilotError):
+    """工作已結束（`succeeded`／`failed`），不能取消。"""
+
+    code = "job_not_cancellable"
+
+
+class JobLeaseLostError(RepoPilotError):
+    """呼叫者持有的令牌不再是該工作的租約擁有者（租約已被他人取得、工作已結束或不存在）。
+
+    只出現在 worker 端的寫入（進度、心跳、完成、失敗）；被拒絕的寫入不會改動任何資料。
+    """
+
+    code = "job_lease_lost"
+
+
+class PathNotMappedError(RepoPilotError):
+    """資料庫中的主機路徑無法換成 worker 容器內的路徑。
+
+    原因是沒有符合的 `WORKER_PATH_MAPPINGS`，或路徑不合格。worker 端出現時是 job 的
+    `error.code`（永久性）；API 在建立 job 前檢查，轉成 `WorkerPathNotMappedError`（503）。
+    """
+
+    code = "path_not_mapped"
+
+
+class WorkerPathNotMappedError(RepoPilotError):
+    """API 建立 job 前發現 repo 路徑不能映射到 worker 容器。
+
+    這是服務端設定問題，不是使用者輸入錯誤，故 503。
+    """
+
+    code = "worker_path_not_mapped"
+
+
+class ImportCancelledError(RepoPilotError):
+    """worker 在檢查點發現使用者已要求取消，中止匯入。
+
+    快照會被標記為 failed（可被後續匯入接手）。
+    """
+
+    code = "import_cancelled"
+
+
+class ProfileMismatchError(RepoPilotError):
+    """worker 重新計算的匯入設定雜湊與 job 記錄的不同。
+
+    代表 API 與 worker 的 `IMPORT_*` 設定不一致（永久性）。
+    """
+
+    code = "profile_mismatch"
 
 
 class GitCommandError(RepoPilotError):
@@ -54,3 +214,27 @@ class GitTimeoutError(GitCommandError):
     """Git 指令逾時。"""
 
     code = "git_timeout"
+
+
+class GitHubCloneError(GitCommandError):
+    """`git clone` 失敗（遠端不存在、認證失敗、網路錯誤等）；訊息不含 stderr 原文。"""
+
+    code = "github_clone_failed"
+
+
+class GitHubCloneTimeoutError(GitTimeoutError):
+    """`git clone` 逾時。"""
+
+    code = "github_clone_timeout"
+
+
+class GitHubFetchError(GitCommandError):
+    """`git fetch` 失敗；訊息不含 stderr 原文。"""
+
+    code = "github_fetch_failed"
+
+
+class GitHubFetchTimeoutError(GitTimeoutError):
+    """`git fetch` 逾時。"""
+
+    code = "github_fetch_timeout"

@@ -1,10 +1,14 @@
+import json
 import os
 from functools import lru_cache
 from pathlib import Path
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, Literal, Self
+from urllib.parse import urlsplit
 
-from pydantic import Field, SecretStr, field_validator
+from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
+
+from repopilot.path_mapping import PathMapping
 
 LogLevel = Literal["DEBUG", "INFO", "WARNING", "ERROR"]
 
@@ -61,6 +65,125 @@ class Settings(BaseSettings):
     import_excluded_exceptions: list[str] = Field(
         default_factory=lambda: list(DEFAULT_EXCLUDED_EXCEPTIONS)
     )
+
+    # Fernet 金鑰（urlsafe base64、32 位元組）；空字串＝未設定，此時不得保存 GitHub token，
+    # 也沒有預設金鑰。產生方式見 README
+    token_encryption_key: SecretStr = SecretStr("")
+    # 僅供測試指向本機假 GitHub；正式環境維持預設
+    github_api_base_url: str = "https://api.github.com"
+    # 呼叫 GitHub API 的逾時（連線與讀取皆適用）；數值未經實測
+    github_api_timeout_seconds: float = Field(default=10.0, gt=0, le=120)
+
+    # GitHub clone 的目的地（受信任根目錄，與 repository_roots 分開）。須為絕對路徑；
+    # 空白＝停用 GitHub 註冊。載入設定與建立 app 不會建立或寫入此目錄，使用時才建立
+    managed_repos_dir: Path | None = None
+    # 單次 clone／fetch 的逾時；數值未實測，大型 repo 可能需要調高
+    github_clone_timeout_seconds: float = Field(default=300.0, gt=0, le=3600)
+    # clone 的遠端基底 URL；僅供測試指向本機 fixture，正式環境維持預設
+    github_clone_base_url: str = "https://github.com"
+
+    # --- 背景工作（第二階段切片 2，D39）---
+    # 以下數值皆為規格 5.14 的「擬議起點」，**未經實測**；切片 3 起 dispatcher／worker 才會使用
+    # 租約長度與心跳週期；心跳須明顯短於租約（見 _job_settings_are_consistent）
+    job_lease_seconds: int = Field(default=60, ge=2, le=86_400)
+    job_heartbeat_seconds: int = Field(default=15, ge=1, le=86_400)
+    # 自動執行次數上限（含第一次）；手動 retry 時以「目前 attempt＋此值」作為新額度
+    job_max_attempts: int = Field(default=3, ge=1, le=100)
+    # 暫時性失敗的指數退避：min(max, base × 2^(n-1))，再加上 ±20% 抖動（上限仍為 max）
+    job_retry_base_seconds: int = Field(default=30, ge=1, le=86_400)
+    job_retry_max_seconds: int = Field(default=600, ge=1, le=86_400)
+    # dispatcher 掃描待派送事件的週期（秒，可小於 1）與復原掃描週期
+    dispatch_poll_seconds: float = Field(default=1.0, gt=0, le=3_600)
+    recovery_scan_seconds: float = Field(default=5.0, gt=0, le=3_600)
+    # 已派送但 job 仍是 queued 超過此秒數就重送（之後逐次加倍，上限 60 分鐘）
+    dispatch_resend_after_seconds: int = Field(default=300, ge=1, le=86_400)
+    # dispatcher／worker 寫入 service_heartbeats 的週期；超過 3 倍未更新視為離線（C8）
+    service_heartbeat_seconds: int = Field(default=15, ge=1, le=3_600)
+
+    # --- 背景工作：Celery／Redis 與 worker（第二階段切片 3，D40）---
+    # broker 位址（含連線資訊，同 D14 用 SecretStr）。只有 dispatcher 與 worker 使用，
+    # **API 不讀、不連 Redis**；空字串＝未設定，dispatcher／worker 啟動時會明確拒絕。
+    celery_broker_url: SecretStr = SecretStr("")
+    # 佇列名稱與 Redis 鍵前綴；測試堆疊必須用不同的值（規格 9.4），
+    # 避免與開發堆疊共用任何 broker 資料
+    celery_queue_name: str = Field(default="repopilot.jobs", pattern=r"^[A-Za-z0-9._-]{1,100}$")
+    celery_global_keyprefix: str = Field(default="repopilot:", pattern=r"^[A-Za-z0-9._:-]{0,100}$")
+    # 主機路徑 → 容器路徑（JSON 陣列，每項 {host, container, mode}）；只有 worker 使用，
+    # API 只在建立 job 時檢查「路徑能映射」。空陣列＝沒有映射，API 建立 job 回 503
+    # worker_path_not_mapped
+    worker_path_mappings: Annotated[list[PathMapping], NoDecode] = Field(default_factory=list)
+    # worker 的 Git 逾時（R1）：容器讀取 Windows 掛載（9p）比主機慢，loose 物件極多的 repo 尤其
+    # 明顯（切片 1 實測：20,000 個 loose 物件 ls-tree 100 秒＋cat-file 291 秒，單次量測）。
+    # 預設值未實測；慢的 repo 請調高，或在該 repo 自行執行 `git gc`（RepoPilot 不會替使用者的
+    # repo 執行 gc）。worker 啟動時以它們取代 GIT_TIMEOUT_SECONDS／IMPORT_GIT_TIMEOUT_SECONDS
+    # （API 不受影響）
+    worker_git_timeout_seconds: float = Field(default=120.0, gt=0, le=3_600)
+    worker_import_git_timeout_seconds: float = Field(default=900.0, gt=0, le=7_200)
+    # 單一任務的硬性時間上限（超過即由 Celery 結束子行程→心跳停止→租約過期→復原掃描）；
+    # 軟性上限為它減 60 秒。須大於 Git 逾時的總和，否則 Git 還沒逾時任務就先被殺
+    worker_task_time_limit_seconds: int = Field(default=3_600, ge=120, le=86_400)
+
+    @model_validator(mode="after")
+    def _job_settings_are_consistent(self) -> Self:
+        if self.job_heartbeat_seconds >= self.job_lease_seconds:
+            raise ValueError("JOB_HEARTBEAT_SECONDS must be shorter than JOB_LEASE_SECONDS.")
+        if self.job_retry_base_seconds > self.job_retry_max_seconds:
+            raise ValueError("JOB_RETRY_BASE_SECONDS must not exceed JOB_RETRY_MAX_SECONDS.")
+        # 匯入一次最多做：ensure_repository_root（2 次 Git）、resolve_commit、ls-tree 各一次
+        # git_timeout，讀 blob 一次 import_git_timeout；時間上限必須蓋得住這個最壞情況
+        worst_case = self.worker_import_git_timeout_seconds + 4 * self.worker_git_timeout_seconds
+        if self.worker_task_time_limit_seconds <= worst_case:
+            raise ValueError(
+                "WORKER_TASK_TIME_LIMIT_SECONDS must exceed WORKER_IMPORT_GIT_TIMEOUT_SECONDS "
+                "plus four times WORKER_GIT_TIMEOUT_SECONDS."
+            )
+        return self
+
+    @field_validator("worker_path_mappings", mode="before")
+    @classmethod
+    def _parse_path_mappings(cls, value: Any) -> Any:
+        # 環境變數是 JSON 字串；空白＝沒有映射。NoDecode 讓這裡自己解析
+        # （空字串才不會被當成 JSON 錯誤）
+        if isinstance(value, str):
+            if not value.strip():
+                return []
+            try:
+                return json.loads(value)
+            except ValueError:
+                raise ValueError("WORKER_PATH_MAPPINGS must be a JSON array.") from None
+        return value
+
+    @field_validator("managed_repos_dir", mode="before")
+    @classmethod
+    def _empty_managed_dir_is_disabled(cls, value: Any) -> Any:
+        # .env 的 `MANAGED_REPOS_DIR=` 會是空字串；不處理的話 Path("") 會變成目前目錄
+        if value is None or (isinstance(value, str) and not value.strip()):
+            return None
+        return value
+
+    @field_validator("managed_repos_dir")
+    @classmethod
+    def _managed_dir_must_be_absolute(cls, value: Path | None) -> Path | None:
+        if value is not None and not value.is_absolute():
+            raise ValueError("MANAGED_REPOS_DIR must be an absolute path.")
+        return value
+
+    @field_validator("github_clone_base_url")
+    @classmethod
+    def _clone_base_url_must_be_safe(cls, value: str) -> str:
+        # 只允許 https、file，以及指向本機迴圈位址的 http（僅供測試）；
+        # 避免 token 經明文 http 送往遠端主機，或讓 clone 使用 ssh、git:// 等其他傳輸
+        base = value.strip().rstrip("/")
+        parts = urlsplit(base)
+        loopback = parts.hostname in ("127.0.0.1", "localhost", "::1")
+        allowed = (
+            parts.scheme in ("https", "file") or (parts.scheme == "http" and loopback)
+        ) and not (parts.username or parts.password or parts.query or parts.fragment)
+        if not allowed:
+            raise ValueError(
+                "GITHUB_CLONE_BASE_URL must be an https URL (or file://, or http on loopback)."
+            )
+        return base
 
     @field_validator("repository_roots", mode="before")
     @classmethod

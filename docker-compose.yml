@@ -1,5 +1,30 @@
 # 僅供本機開發與測試。postgres_* volume 只保存資料庫檔，不是被匯入的 Git repo。
 # 帳密為本機用的假值；請勿用於任何共用或正式環境。
+#
+# 第二階段的背景工作服務都用 profile，`docker compose up -d --wait db db-test` 的既有用法不受影響：
+#   開發堆疊（profile jobs）：   redis、worker、dispatcher
+#   測試堆疊（profile jobs-test）：redis-test、worker-test、dispatcher-test（由 pytest 的 stack 測試管理）
+# 映像由 `docker compose --profile jobs build` 建置，worker 與 dispatcher 共用同一個映像、指令不同。
+
+# worker 與 dispatcher 共用的映像與加固設定（非 root UID 10001、唯讀根檔案系統、無 capability）
+x-job-service: &job-service
+  build:
+    context: .
+    dockerfile: docker/worker.Dockerfile
+  image: repopilot-worker:stage02-slice3
+  read_only: true
+  tmpfs:
+    - /tmp
+  cap_drop: [ALL]
+  security_opt:
+    - no-new-privileges:true
+
+# 兩個堆疊相同的環境變數：路徑是「容器內」的掛載點（主機路徑只出現在 WORKER_PATH_MAPPINGS）
+x-job-env: &job-env
+  PYTHONUNBUFFERED: "1"
+  REPOSITORY_ROOTS: /mnt/repos
+  MANAGED_REPOS_DIR: /mnt/managed
+
 services:
   db:
     image: postgres:17
@@ -28,11 +53,203 @@ services:
     # 測試資料庫不保存資料，每次重建都是乾淨環境
     tmpfs:
       - /var/lib/postgresql/data
+    # R5（第二階段切片 3）：測試資料庫只在測試網路上，與開發用的 `db`（default 網路）互相看不到。
+    # 對主機的 5433 埠對應不受網路影響
+    networks: [jobs-test]
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U repopilot -d repopilot_test"]
       interval: 5s
       timeout: 3s
       retries: 10
 
+  # ---- 開發堆疊（profile jobs）----
+  # 啟動：docker compose --profile jobs up -d --wait db redis dispatcher worker
+  # 需要 .env.worker（見 .env.worker.example）與 .env 內的 WORKER_*_HOST_DIR（主機路徑，用正斜線）。
+  redis:
+    image: redis:7.4.12-alpine3.22
+    profiles: ["jobs"]
+    # 只做 broker：不對主機開埠、不得驅逐鍵（Celery 官方文件要求）
+    command: ["redis-server", "--maxmemory-policy", "noeviction", "--appendonly", "yes"]
+    volumes:
+      - redis_dev_data:/data
+    networks: [jobs]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  dispatcher:
+    <<: *job-service
+    profiles: ["jobs"]
+    command: ["python", "-m", "repopilot.jobs.dispatcher"]
+    depends_on:
+      db: { condition: service_healthy }
+      redis: { condition: service_healthy }
+    environment:
+      <<: *job-env
+      # 預設連開發資料庫（容器內以服務名 db 連線，不是 localhost）；煙霧測試可用拋棄式資料庫覆寫
+      DATABASE_URL: ${WORKER_DATABASE_URL:-postgresql+psycopg://repopilot:repopilot_dev@db:5432/repopilot}
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CELERY_QUEUE_NAME: repopilot.jobs
+      CELERY_GLOBAL_KEYPREFIX: "repopilot:"
+    env_file:
+      - path: .env.worker
+        required: false
+    stop_grace_period: 20s
+    healthcheck:
+      test: ["CMD", "python", "-m", "repopilot.jobs.healthcheck", "dispatcher"]
+      interval: 10s
+      timeout: 20s
+      retries: 6
+      start_period: 40s
+    networks: [default, jobs]
+
+  worker:
+    <<: *job-service
+    profiles: ["jobs"]
+    command:
+      - celery
+      - -A
+      - repopilot.jobs.worker
+      - worker
+      - --loglevel=INFO
+      - --concurrency=2
+      - --without-gossip
+      - --without-mingle
+      - --hostname=worker@%h
+    depends_on:
+      db: { condition: service_healthy }
+      redis: { condition: service_healthy }
+    environment:
+      <<: *job-env
+      DATABASE_URL: ${WORKER_DATABASE_URL:-postgresql+psycopg://repopilot:repopilot_dev@db:5432/repopilot}
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CELERY_QUEUE_NAME: repopilot.jobs
+      CELERY_GLOBAL_KEYPREFIX: "repopilot:"
+      # 主機路徑 ↔ 容器路徑；host 用正斜線（D:/repos），與下方 bind mount 的來源相同。
+      # 預設的相對路徑不是合法的主機路徑，worker 會在啟動時明確拒絕（請在 .env 設定兩個 *_HOST_DIR）
+      WORKER_PATH_MAPPINGS: '[{"host":"${WORKER_REPOSITORIES_HOST_DIR:-./.test-repos}","container":"/mnt/repos","mode":"ro"},{"host":"${WORKER_MANAGED_HOST_DIR:-./.test-managed}","container":"/mnt/managed","mode":"rw"}]'
+    env_file:
+      - path: .env.worker
+        required: false
+    # 使用者的本機 repo 唯讀（掛載層強制）；受管目錄（GitHub clone）讀寫
+    volumes:
+      - type: bind
+        source: ${WORKER_REPOSITORIES_HOST_DIR:-./.test-repos}
+        target: /mnt/repos
+        read_only: true
+      - type: bind
+        source: ${WORKER_MANAGED_HOST_DIR:-./.test-managed}
+        target: /mnt/managed
+    # Celery 的 warm shutdown 會等手上的任務；超過寬限期被 SIGKILL 時，租約過期後由復原掃描接手
+    stop_grace_period: 60s
+    healthcheck:
+      test: ["CMD", "python", "-m", "repopilot.jobs.healthcheck", "worker"]
+      interval: 10s
+      timeout: 20s
+      retries: 6
+      start_period: 40s
+    networks: [default, jobs]
+
+  # ---- 測試堆疊（profile jobs-test）----
+  # 由 tests/integration/stack 的 pytest fixture 啟動與停止（會設定 WORKER_TEST_*_HOST_DIR 為專案內的
+  # .test-repos／.test-managed 絕對路徑）。連 db-test，不連開發的 db、redis；佇列名稱與 Redis 鍵前綴
+  # 與開發堆疊不同。租約、掃描週期調得很短，讓故障注入測試在數十秒內完成（只在這個堆疊，數值皆未實測）。
+  redis-test:
+    image: redis:7.4.12-alpine3.22
+    profiles: ["jobs-test"]
+    # 測試用：無持久化、tmpfs，與開發的 redis 完全隔離（不同網路與名稱）
+    command: ["redis-server", "--maxmemory-policy", "noeviction", "--save", "", "--appendonly", "no"]
+    tmpfs:
+      - /data
+    networks: [jobs-test]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  dispatcher-test:
+    <<: *job-service
+    profiles: ["jobs-test"]
+    command: ["python", "-m", "repopilot.jobs.dispatcher"]
+    depends_on:
+      db-test: { condition: service_healthy }
+      redis-test: { condition: service_healthy }
+    environment:
+      <<: *job-env
+      DATABASE_URL: postgresql+psycopg://repopilot:repopilot_test@db-test:5432/repopilot_test
+      CELERY_BROKER_URL: redis://redis-test:6379/0
+      CELERY_QUEUE_NAME: repopilot-test.jobs
+      CELERY_GLOBAL_KEYPREFIX: "repopilot-test:"
+      JOB_LEASE_SECONDS: "12"
+      JOB_HEARTBEAT_SECONDS: "3"
+      JOB_RETRY_BASE_SECONDS: "1"
+      JOB_RETRY_MAX_SECONDS: "4"
+      DISPATCH_POLL_SECONDS: "0.5"
+      RECOVERY_SCAN_SECONDS: "1"
+      DISPATCH_RESEND_AFTER_SECONDS: "15"
+      SERVICE_HEARTBEAT_SECONDS: "3"
+    stop_grace_period: 10s
+    healthcheck:
+      test: ["CMD", "python", "-m", "repopilot.jobs.healthcheck", "dispatcher"]
+      interval: 3s
+      timeout: 15s
+      retries: 20
+      start_period: 5s
+    networks: [jobs-test]
+
+  worker-test:
+    <<: *job-service
+    profiles: ["jobs-test"]
+    command:
+      - celery
+      - -A
+      - repopilot.jobs.worker
+      - worker
+      - --loglevel=INFO
+      - --concurrency=2
+      - --without-gossip
+      - --without-mingle
+      - --hostname=worker@%h
+    depends_on:
+      db-test: { condition: service_healthy }
+      redis-test: { condition: service_healthy }
+    environment:
+      <<: *job-env
+      DATABASE_URL: postgresql+psycopg://repopilot:repopilot_test@db-test:5432/repopilot_test
+      CELERY_BROKER_URL: redis://redis-test:6379/0
+      CELERY_QUEUE_NAME: repopilot-test.jobs
+      CELERY_GLOBAL_KEYPREFIX: "repopilot-test:"
+      WORKER_PATH_MAPPINGS: '[{"host":"${WORKER_TEST_REPOS_HOST_DIR:-./.test-repos}","container":"/mnt/repos","mode":"ro"},{"host":"${WORKER_TEST_MANAGED_HOST_DIR:-./.test-managed}","container":"/mnt/managed","mode":"rw"}]'
+      JOB_LEASE_SECONDS: "12"
+      JOB_HEARTBEAT_SECONDS: "3"
+      JOB_RETRY_BASE_SECONDS: "1"
+      JOB_RETRY_MAX_SECONDS: "4"
+      SERVICE_HEARTBEAT_SECONDS: "3"
+    volumes:
+      - type: bind
+        source: ${WORKER_TEST_REPOS_HOST_DIR:-./.test-repos}
+        target: /mnt/repos
+        read_only: true
+      - type: bind
+        source: ${WORKER_TEST_MANAGED_HOST_DIR:-./.test-managed}
+        target: /mnt/managed
+    stop_grace_period: 10s
+    healthcheck:
+      test: ["CMD", "python", "-m", "repopilot.jobs.healthcheck", "worker"]
+      interval: 3s
+      timeout: 15s
+      retries: 20
+      start_period: 5s
+    networks: [jobs-test]
+
+networks:
+  jobs:
+  # 測試堆疊專用網路：db-test、redis-test、worker-test、dispatcher-test 只在這裡（R5）
+  jobs-test:
+
 volumes:
   postgres_dev_data:
+  redis_dev_data:

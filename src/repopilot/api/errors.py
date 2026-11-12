@@ -11,13 +11,40 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from repopilot.errors import (
     DatabaseUnavailableError,
     GitCommandError,
+    GitHubApiError,
+    GitHubCloneError,
+    GitHubCloneTimeoutError,
+    GitHubFetchError,
+    GitHubFetchTimeoutError,
+    GitHubRegistrationDisabledError,
+    GitHubRepoNotFoundError,
+    GitHubTimeoutError,
+    GitHubTokenInvalidError,
+    GitHubUnreachableError,
     GitTimeoutError,
+    ImportCancelledError,
     ImportLimitExceededError,
+    InvalidGitHubRepoError,
     InvalidRepositoryPathError,
     InvalidRevisionError,
+    JobLeaseLostError,
+    JobNotCancellableError,
+    JobNotFoundError,
+    JobNotRetryableError,
+    ManagedStorageError,
+    PathNotMappedError,
     RepoPilotError,
+    RepositoryBusyError,
     RepositoryNotFoundError,
+    RepositoryNotGitHubError,
+    SnapshotBusyError,
+    SnapshotFileNotFoundError,
     SnapshotImportInProgressError,
+    SnapshotNotCompletedError,
+    SnapshotNotFoundError,
+    SnapshotReferencedError,
+    TokenEncryptionNotConfiguredError,
+    WorkerPathNotMappedError,
 )
 from repopilot.logging_config import APP_LOGGER_NAME
 from repopilot.request_context import request_id_var
@@ -32,8 +59,46 @@ ERROR_STATUS: dict[type[RepoPilotError], int] = {
     InvalidRevisionError: 422,
     ImportLimitExceededError: 422,
     SnapshotImportInProgressError: 409,
+    SnapshotNotFoundError: 404,
+    SnapshotFileNotFoundError: 404,
+    SnapshotNotCompletedError: 409,
+    # 參考版本與移除快照（第二階段切片 3b，D41）：兩者都是「稍後重試／帶 force 重試」的衝突
+    SnapshotBusyError: 409,
+    SnapshotReferencedError: 409,
     GitCommandError: 500,
     GitTimeoutError: 504,
+    # 設定問題（服務端缺金鑰）不是使用者輸入錯誤，故 503 而非 422
+    TokenEncryptionNotConfiguredError: 503,
+    GitHubTokenInvalidError: 422,
+    # 上游（GitHub）問題：連不上／非預期回應為 502，逾時為 504；GitHubTimeoutError 依 MRO 先於父類別
+    GitHubUnreachableError: 502,
+    GitHubTimeoutError: 504,
+    GitHubApiError: 502,
+    # GitHub repo 註冊與 clone／fetch（切片 5c-2）
+    InvalidGitHubRepoError: 422,
+    # 與 token_encryption_not_configured 同理：服務端設定問題，回 503 而非 409／422
+    GitHubRegistrationDisabledError: 503,
+    GitHubRepoNotFoundError: 404,
+    RepositoryNotGitHubError: 409,
+    GitHubCloneError: 502,
+    GitHubCloneTimeoutError: 504,
+    GitHubFetchError: 502,
+    GitHubFetchTimeoutError: 504,
+    ManagedStorageError: 500,
+    # 移除 repo（D33）：有未逾時的匯入、或 GitHub clone／fetch 進行中；稍後重試即可
+    RepositoryBusyError: 409,
+    # 背景工作（第二階段切片 2，D39）。JobLeaseLostError 只在 worker 端寫入時出現，沒有 HTTP 端點
+    # 會拋出它；仍列出對照，避免日後被誤當成 500
+    JobNotFoundError: 404,
+    JobNotRetryableError: 409,
+    JobNotCancellableError: 409,
+    JobLeaseLostError: 409,
+    # 第二階段切片 3：repo 路徑無法映射到 worker 容器是部署設定問題，與
+    # github_registration_disabled 同理回 503。PathNotMappedError／ImportCancelledError 只出現在
+    # worker（成為 job 的 error.code），沒有 HTTP 端點會拋出
+    WorkerPathNotMappedError: 503,
+    PathNotMappedError: 503,
+    ImportCancelledError: 409,
 }
 
 _HTTP_ERROR_CODES = {

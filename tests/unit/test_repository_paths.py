@@ -20,13 +20,15 @@ def root(tmp_path: Path) -> Path:
 def test_repository_roots_are_split_by_path_separator(tmp_path: Path) -> None:
     raw = os.pathsep.join([str(tmp_path / "a"), str(tmp_path / "b")])
 
-    settings = Settings(repository_roots=raw)  # type: ignore[arg-type]
+    settings = Settings(repository_roots=raw)
 
     assert settings.repository_roots == [tmp_path / "a", tmp_path / "b"]
 
 
 def test_repository_roots_default_to_empty() -> None:
-    assert Settings().repository_roots == []
+    assert (
+        Settings(_env_file=None).repository_roots == []
+    )  # 不讀本機 .env，避免開發者設定影響預設值測試
 
 
 def test_git_timeout_must_be_positive() -> None:

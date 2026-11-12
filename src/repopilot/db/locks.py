@@ -16,7 +16,10 @@
 
 鍵空間（`namespace:` 前綴避免互相碰撞）：
 - `repo:local:{repository_id}`、`repo:github:{lower(owner)}/{lower(name)}`：repo 級。worker 的
-  匯入取**共享**鎖，移除 repo（D33）取**獨占**鎖：有匯入在跑就取不到。
+  匯入取**共享**鎖，移除 repo（D33）取**獨占**鎖：有匯入在跑就取不到。第二階段切片 5（D44）起，
+  GitHub 的 clone／註冊／fetch（worker 與同步端點）也取**獨占**鎖，所以註冊階段（資料列還不存在）
+  以 owner／name 為鍵，與已註冊 repo 的 `repository_key()` 是同一把鎖；D32 的行程內鎖
+  （`threading.Lock`）已被取代——每個持有者各用一條專用連線，同一程序內的多個執行緒也互相排斥。
 - `snapshot:{repository_id}:{commit_sha}:{import_profile_hash}`：快照級，獨占。同步
   `POST /imports` 與 worker 的匯入 job 都先取它，所以同一快照不會被兩邊同時匯入；持有它的人
   可以**立即接手**殘留的 `importing` 快照（`takeover`，規格 5.4）——因為活著的匯入者一定
@@ -27,7 +30,8 @@
 
 import hashlib
 import logging
-from collections.abc import Iterator
+import time
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 
 from sqlalchemy import Connection, Engine, text
@@ -40,6 +44,10 @@ from repopilot.logging_config import APP_LOGGER_NAME
 logger = logging.getLogger(f"{APP_LOGGER_NAME}.db.locks")
 
 
+class LockBusyError(Exception):
+    """repo 鎖或快照鎖忙碌：worker 延後重排、不消耗重試額度（不是 `RepoPilotError`）。"""
+
+
 def lock_key(namespace: str, name: str) -> int:
     """`namespace:name` 的 SHA-256 前 8 位元組，轉成 PostgreSQL bigint（有號）。"""
     digest = hashlib.sha256(f"{namespace}:{name}".encode()).digest()
@@ -47,7 +55,10 @@ def lock_key(namespace: str, name: str) -> int:
 
 
 def repo_lock_key(repo_key: str) -> int:
-    """repo 級鎖的鍵；`repo_key` 為 `local:{id}` 或 `github:{lower(owner)}/{lower(name)}`。"""
+    """repo 級鎖的鍵；`repo_key` 為 `local:{id}` 或 `github:{lower(owner)}/{lower(name)}`。
+
+    GitHub 來源以 owner／name 為鍵（不是 id）：註冊階段資料列尚不存在，clone 就要取鎖。
+    """
     return lock_key("repo", repo_key)
 
 
@@ -121,6 +132,31 @@ def acquire_advisory_lock(engine: Engine, key: int, *, shared: bool = False) -> 
         connection.close()  # 沒有持有任何鎖，連線可以安全放回連線池
         return None
     return AdvisoryLock(connection, key, shared=shared)
+
+
+def acquire_advisory_lock_wait(
+    engine: Engine,
+    key: int,
+    *,
+    timeout: float,
+    interval: float = 0.2,
+    shared: bool = False,
+    sleep: Callable[[float], None] = time.sleep,
+    monotonic: Callable[[], float] = time.monotonic,
+) -> AdvisoryLock | None:
+    """反覆 `try` 直到取得或逾時（回傳 `None`）；仍然只用 `try` 版本，不在資料庫端阻塞。
+
+    給同步端點（D32 的註冊、fetch 原本就是「等前一個做完」）使用：等待期間不持有任何連線（每次嘗試
+    失敗就把連線還給連線池），逾時就由呼叫端回 409。`sleep`／`monotonic` 可注入，測試不必真的等。
+    """
+    deadline = monotonic() + timeout
+    while True:
+        lock = acquire_advisory_lock(engine, key, shared=shared)
+        if lock is not None:
+            return lock
+        if monotonic() >= deadline:
+            return None
+        sleep(interval)
 
 
 @contextmanager

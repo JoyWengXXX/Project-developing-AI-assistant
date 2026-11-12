@@ -8,6 +8,7 @@ from repopilot.api.errors import register_exception_handlers
 from repopilot.api.middleware import RequestIdMiddleware
 from repopilot.api.routes import (
     github,
+    github_jobs,
     github_repositories,
     health,
     jobs,
@@ -46,5 +47,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(github_repositories.router)
     app.include_router(snapshots.router)
     app.include_router(github.router)
+    app.include_router(github_jobs.router)
     app.include_router(jobs.router)
     return app

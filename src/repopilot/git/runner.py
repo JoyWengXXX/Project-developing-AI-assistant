@@ -1,9 +1,11 @@
+import contextlib
 import logging
 import os
 import signal
 import subprocess
 import sys
-from collections.abc import Collection, Mapping
+import time
+from collections.abc import Callable, Collection, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -62,6 +64,8 @@ def run_git(
     env: Mapping[str, str | None] | None = None,
     kill_process_tree: bool = False,
     secrets: Collection[str] = (),
+    poll: Callable[[], None] | None = None,
+    poll_interval: float = 1.0,
 ) -> GitResult:
     """在指定目錄執行 Git 指令；不檢查 return code，由呼叫端依指令語意判斷。
 
@@ -73,13 +77,23 @@ def run_git(
     （Windows 的 `git.exe` 啟動器也會再啟動真正的 git），`subprocess.run` 逾時只殺最外層，
     子程序仍握著輸出管線而讓呼叫卡到子程序自己結束；因此逾時時殺掉整個程序樹。
     `secrets`：須從 stderr 遮蔽的秘密字串；在截斷**之前**遮蔽，避免秘密被截斷線切成殘片而漏網。
+    `poll`（第二階段切片 5，D44；只能搭配 `kill_process_tree=True`）：指令執行期間每 `poll_interval`
+    秒呼叫一次（在呼叫端的執行緒內），供 worker 檢查取消旗標與租約、回報進度。`poll` 拋出任何例外
+    就終止整個程序樹（POSIX 先 SIGTERM 讓 git 自己清理鎖檔與暫存檔，寬限後才 SIGKILL）並把例外
+    原樣往外拋；沒有給 `poll` 時行為與切片 5 之前完全相同。
     """
     command = ["git", "-C", str(repo_path), *args]
     final_env = _git_env(env)
+    if poll is not None and not kill_process_tree:
+        raise ValueError("poll requires kill_process_tree=True.")
     try:
         if kill_process_tree:
+            # 只有需要輪詢時才多傳兩個參數（既有測試以固定簽章的函式取代 _run_killing_tree）
+            polling: dict[str, Any] = (
+                {"poll": poll, "poll_interval": poll_interval} if poll is not None else {}
+            )
             returncode, stdout, raw_stderr = _run_killing_tree(
-                command, timeout=timeout, stdin=stdin, env=final_env
+                command, timeout=timeout, stdin=stdin, env=final_env, **polling
             )
         else:
             completed = subprocess.run(  # noqa: S603 - 參數陣列、shell=False，指令名稱固定
@@ -109,9 +123,19 @@ def run_git(
 
 
 def _run_killing_tree(
-    command: list[str], *, timeout: float, stdin: bytes | None, env: dict[str, str]
+    command: list[str],
+    *,
+    timeout: float,
+    stdin: bytes | None,
+    env: dict[str, str],
+    poll: Callable[[], None] | None = None,
+    poll_interval: float = 1.0,
 ) -> tuple[int, bytes, bytes]:
-    """執行指令；逾時時殺掉整個程序樹後拋出 `subprocess.TimeoutExpired`。"""
+    """執行指令；逾時時殺掉整個程序樹後拋出 `subprocess.TimeoutExpired`。
+
+    給了 `poll` 時，等待輸出的過程切成 `poll_interval` 秒一段，每段結束呼叫一次 `poll()`；
+    `poll` 拋出的例外會先終止程序樹（寬限式，見 `_kill_tree`）再原樣往外拋。
+    """
     group: dict[str, Any] = (
         {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP}
         if sys.platform == "win32"
@@ -127,21 +151,59 @@ def _run_killing_tree(
         **group,
     ) as process:
         try:
-            stdout, stderr = process.communicate(stdin, timeout=timeout)
+            if poll is None:
+                stdout, stderr = process.communicate(stdin, timeout=timeout)
+            else:
+                stdout, stderr = _communicate_polling(process, stdin, timeout, poll, poll_interval)
         except subprocess.TimeoutExpired:
             _kill_tree(process)
-            try:
-                process.communicate(timeout=10)
-            except subprocess.TimeoutExpired:
-                logger.error("git_tree_kill_incomplete")
+            _reap(process)
+            raise
+        except BaseException:
+            # poll 要求中止（取消、租約遺失）或呼叫端被打斷：不留下任何 git 程序
+            _kill_tree(process, grace_seconds=_TERMINATE_GRACE_SECONDS)
+            _reap(process)
             raise
         return process.returncode, stdout, stderr
 
 
-def _kill_tree(process: "subprocess.Popen[bytes]") -> None:
+# 寬限式終止：先送 SIGTERM（git 會清理自己的鎖檔、暫存檔，clone 會移除半成品目錄），
+# 這麼多秒內沒結束才 SIGKILL
+_TERMINATE_GRACE_SECONDS = 5.0
+
+
+def _communicate_polling(
+    process: "subprocess.Popen[bytes]",
+    stdin: bytes | None,
+    timeout: float,
+    poll: Callable[[], None],
+    interval: float,
+) -> tuple[bytes, bytes]:
+    deadline = time.monotonic() + timeout
+    first = True
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise subprocess.TimeoutExpired(process.args, timeout)
+        try:
+            # 逾時後重試 communicate 不會遺失輸出；輸入只能在第一次傳入
+            return process.communicate(stdin if first else None, timeout=min(interval, remaining))
+        except subprocess.TimeoutExpired:
+            first = False
+            poll()
+
+
+def _reap(process: "subprocess.Popen[bytes]") -> None:
+    try:
+        process.communicate(timeout=10)
+    except subprocess.TimeoutExpired:
+        logger.error("git_tree_kill_incomplete")
+
+
+def _kill_tree(process: "subprocess.Popen[bytes]", *, grace_seconds: float = 0.0) -> None:
     try:
         if sys.platform == "win32":
-            # /T 連同子孫一起結束；pid 是整數，不含使用者輸入
+            # /T 連同子孫一起結束；pid 是整數，不含使用者輸入。Windows 沒有可靠的寬限式終止
             subprocess.run(  # noqa: S603
                 ["taskkill", "/F", "/T", "/PID", str(process.pid)],  # noqa: S607
                 capture_output=True,
@@ -149,7 +211,11 @@ def _kill_tree(process: "subprocess.Popen[bytes]") -> None:
                 timeout=15,
             )
         else:
-            os.killpg(process.pid, signal.SIGKILL)  # start_new_session 使 pgid == pid
+            if grace_seconds > 0:
+                os.killpg(process.pid, signal.SIGTERM)  # start_new_session 使 pgid == pid
+                with contextlib.suppress(subprocess.TimeoutExpired):
+                    process.wait(timeout=grace_seconds)
+            os.killpg(process.pid, signal.SIGKILL)  # 結束寬限後仍存活的成員（群組已空時 OSError）
     except (OSError, subprocess.SubprocessError):
         pass
     process.kill()  # 保險：至少結束最外層程序（已結束時無作用）

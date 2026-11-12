@@ -157,3 +157,23 @@ def get_decrypted_token(session: Session, settings: Settings) -> str | None:
     if credential is None:
         return None
     return _decrypt(credential, settings)
+
+
+def get_required_token(session: Session, settings: Settings) -> str | None:
+    """worker 版（D44）：沒有保存 token 回 None（公開 repo 可匿名）；**有保存但無法解密就拒絕**。
+
+    同步端點遇到「金鑰缺失或更換」時退回匿名（D31）；worker 不這樣做：私有 repo 會被誤報成
+    404，使用者看不出是設定問題。所以拋 `TokenEncryptionNotConfiguredError`（永久性錯誤，
+    不重試；訊息固定，不含金鑰或密文）。
+    """
+    credential = session.get(GithubCredential, _SINGLE_ROW_ID)
+    if credential is None:
+        return None
+    token = _decrypt(credential, settings)
+    if token is None:
+        raise TokenEncryptionNotConfiguredError(
+            "A GitHub token is saved but cannot be decrypted: set the same "
+            "TOKEN_ENCRYPTION_KEY in the worker environment (.env.worker), "
+            "or submit the token again."
+        )
+    return token

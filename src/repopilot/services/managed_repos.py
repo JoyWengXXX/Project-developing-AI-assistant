@@ -8,19 +8,23 @@
   github/<owner>/<name>/        最終位置（owner／name 為 GitHub 回傳的標準大小寫）
 ```
 
-刪除只發生在兩種情況：①「本次呼叫自己建立」的目錄（`remove_created_tree`：呼叫端傳入建立時取得的路徑與
+刪除只發生在三種情況：①「本次呼叫自己建立」的目錄（`remove_created_tree`：呼叫端傳入建立時取得的路徑與
 預期的父目錄，這裡再驗證位於受管目錄內、父目錄吻合、不是受管目錄本身才遞迴刪除，失敗只記錄）；
-②移除已註冊的 GitHub repo（`remove_github_clone`，D33：驗證不過或刪除失敗都拋出例外）。
+②移除已註冊的 GitHub repo（`remove_github_clone`，D33：驗證不過或刪除失敗都拋出例外）；
+③（第二階段切片 5，D44）上一個 attempt 或已逾時的孤兒暫存目錄（`remove_recorded_temp_dir`、
+`sweep_orphan_temp_dirs`：名稱必須是本系統產生的 16 位 hex、位於 `.tmp` 直接底下、不是連結，
+其餘一律不碰）。
 """
 
 import contextlib
 import logging
 import os
+import re
 import secrets
 import shutil
 import stat
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Collection
 from pathlib import Path
 from typing import Any
 
@@ -32,6 +36,8 @@ from repopilot.services.repositories import GITHUB_DIR_NAME
 logger = logging.getLogger(f"{APP_LOGGER_NAME}.services.managed_repos")
 
 TEMP_DIR_NAME = ".tmp"
+# `new_temp_path` 產生的名稱格式；清理只認這個格式（job 紀錄與目錄名稱都不可信）
+TEMP_NAME = re.compile(r"[0-9a-f]{16}")
 _RENAME_ATTEMPTS = 3
 
 
@@ -51,14 +57,121 @@ def temp_root(managed_root: Path) -> Path:
 
 def create_temp_dir(managed_root: Path) -> Path:
     """建立本次專用的暫存目錄；`mkdir` 不帶 exist_ok，確保目錄一定是本次建立的。"""
+    path = new_temp_path(managed_root)
+    create_temp_dir_at(path)
+    return path
+
+
+def new_temp_path(managed_root: Path) -> Path:
+    """決定本次暫存目錄的路徑（隨機 16 位 hex 名稱），**尚未建立**。
+
+    worker 要先把名稱寫進 `work_state.temp_dir` 才建立目錄（崩潰時才有紀錄可清理，規格 5.12）。
+    """
+    return temp_root(managed_root) / secrets.token_hex(8)
+
+
+def create_temp_dir_at(path: Path) -> None:
+    """建立 `new_temp_path` 決定的目錄；`mkdir` 不帶 exist_ok，確保是本次建立的。"""
     try:
-        temp_root(managed_root).mkdir(exist_ok=True)
-        path = temp_root(managed_root) / secrets.token_hex(8)
+        path.parent.mkdir(exist_ok=True)
         path.mkdir()
     except OSError as exc:
         logger.error("managed_temp_unavailable", extra={"error_type": type(exc).__name__})
         raise ManagedStorageError("Could not create a temporary clone directory.") from None
-    return path
+
+
+def directory_size(path: Path) -> int:
+    """目錄樹內檔案位元組數的總和（`bytes_received` 的量測）；不跟隨連結，錯誤與消失的檔案略過。
+
+    clone 進行中檔案隨時新增與改名，所以每個項目的錯誤都忽略，回傳的是「盡力而為」的瞬間值。
+    """
+    total = 0
+    stack = [path]
+    while stack:
+        current = stack.pop()
+        try:
+            with os.scandir(current) as entries:
+                for entry in entries:
+                    try:
+                        if entry.is_symlink() or entry.is_junction():
+                            continue
+                        if entry.is_dir(follow_symlinks=False):
+                            stack.append(Path(entry.path))
+                        else:
+                            total += entry.stat(follow_symlinks=False).st_size
+                    except OSError:
+                        continue
+        except OSError:
+            continue
+    return total
+
+
+def remove_recorded_temp_dir(managed_root: Path, recorded: object) -> bool:
+    """清理上一個 attempt 記錄在 `work_state.temp_dir` 的暫存目錄；回傳是否刪除了目錄。
+
+    **紀錄不可信**（`work_state` 是資料庫內容，可能被竄改或寫錯）：只接受「16 位小寫十六進位」的
+    單一名稱（`new_temp_path` 的格式），所以絕對路徑、`..`、分隔符號、`.`、空字串、非字串一律拒絕且
+    不刪任何東西；目標必須正好是 `<受管目錄>/.tmp/<名稱>`，`.tmp` 與目標本身都不是 symlink／
+    junction（連結不跟隨、也不刪）；最後仍交給 `remove_created_tree` 做父目錄驗證。
+    """
+    if not isinstance(recorded, str) or not TEMP_NAME.fullmatch(recorded):
+        if recorded not in (None, ""):
+            logger.error("managed_cleanup_refused")
+        return False
+    managed_root = managed_root.resolve()
+    root = temp_root(managed_root)
+    target = root / recorded
+    if _is_link(root) or _is_link(target):
+        logger.error("managed_cleanup_refused")
+        return False
+    if not os.path.lexists(target):
+        return False
+    remove_created_tree(target, managed_root=managed_root, expected_parent=root)
+    return not os.path.lexists(target)
+
+
+def sweep_orphan_temp_dirs(
+    managed_root: Path,
+    *,
+    older_than_seconds: float,
+    keep: Collection[str] = (),
+    now: float | None = None,
+) -> list[str]:
+    """清理 `.tmp` 底下的孤兒暫存目錄；回傳被刪除的名稱。
+
+    只處理**名稱是 16 位小寫十六進位**的直接子目錄（本系統建立的格式；其他名稱一律不碰，例如使用者
+    放進去的目錄）、不是 symlink／junction、不在 `keep`（進行中 job 記錄的名稱）、且最後修改時間距今
+    超過 `older_than_seconds`。年齡門檻必須大於 clone 逾時（設定驗證保證），所以進行中的 clone
+    （含沒有 job 記錄的同步端點）不會被誤判。
+    """
+    root = temp_root(managed_root.resolve())
+    if _is_link(root):
+        return []
+    current = time.time() if now is None else now
+    removed: list[str] = []
+    try:
+        with os.scandir(root) as entries:
+            candidates = [e for e in entries if TEMP_NAME.fullmatch(e.name)]
+    except OSError:
+        return []  # `.tmp` 不存在或讀不到：沒有東西可清
+    for entry in candidates:
+        if entry.name in keep:
+            continue
+        try:
+            if entry.is_symlink() or entry.is_junction() or not entry.is_dir(follow_symlinks=False):
+                continue
+            age = current - entry.stat(follow_symlinks=False).st_mtime
+        except OSError:
+            continue
+        if age <= older_than_seconds or _is_link(Path(entry.path)):
+            continue
+        if remove_recorded_temp_dir(managed_root, entry.name):
+            removed.append(entry.name)
+    return removed
+
+
+def _is_link(path: Path) -> bool:
+    return os.path.islink(path) or os.path.isjunction(path)
 
 
 def github_destination(managed_root: Path, owner: str, name: str) -> Path:

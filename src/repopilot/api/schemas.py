@@ -494,11 +494,14 @@ class JobSubmitResponse(BaseModel):
     - 202：`job` 為新建、重新排入或既有的進行中 job（`reused=false`）。
     - 200：相同快照已 `completed`，不需要 job：`snapshot_id` 有值、`reused=true`；`job` 是
       產生該快照的最近一次成功 job，若快照來自第一階段的同步匯入（沒有 job）則為 `null`。
+    - 切片 5（GitHub 註冊）：`registration-jobs` 回 202 時 `repository_id` 為 `null`（資料列要到
+      worker 成功後才存在，之後讀 `job.result.repository_id`）；repo 已註冊則 200、`job` 為 `null`、
+      `reused=true`、`repository_id` 有值。
     """
 
     job: JobResponse | None
     snapshot_id: int | None
-    repository_id: int
+    repository_id: int | None
     reused: bool
 
 

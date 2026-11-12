@@ -348,12 +348,13 @@ def test_a_job_without_a_valid_commit_sha_fails_permanently(
     assert job_state(db_engine, job_id)["error_code"] == "invalid_revision"
 
 
-def test_only_import_jobs_are_supported(
+def test_only_supported_kinds_run_and_index_jobs_are_not_implemented_yet(
     db_engine: Engine, worker_settings: Settings, clean_jobs: None
 ) -> None:
+    # 切片 5 起 worker 也執行 github_register／github_fetch；索引（snapshot_index）屬切片 6
     with Session(db_engine) as session:
         created = job_service.create_job(
-            session, kind="github_fetch", dedupe_key="fetch:x", settings=worker_settings
+            session, kind="snapshot_index", dedupe_key="index:x", settings=worker_settings
         )
 
     assert _run(created.job.id, db_engine, worker_settings) == "failed"

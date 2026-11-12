@@ -44,10 +44,21 @@ from sqlalchemy.exc import InterfaceError, OperationalError
 from sqlalchemy.orm import Session, sessionmaker
 
 from repopilot.config import Settings
-from repopilot.db.locks import AdvisoryLock, acquire_advisory_lock, repo_lock_key, snapshot_lock_key
+from repopilot.db.locks import (
+    AdvisoryLock,
+    LockBusyError,
+    acquire_advisory_lock,
+    repo_lock_key,
+    snapshot_lock_key,
+)
 from repopilot.db.models import Job
 from repopilot.errors import (
     GitCommandError,
+    GitHubApiError,
+    GitHubCloneError,
+    GitHubCloneTimeoutError,
+    GitHubFetchError,
+    GitHubFetchTimeoutError,
     GitTimeoutError,
     ImportCancelledError,
     InvalidRevisionError,
@@ -56,9 +67,10 @@ from repopilot.errors import (
     RepoPilotError,
     SnapshotImportInProgressError,
 )
+from repopilot.github.client import GitHubClient
 from repopilot.logging_config import APP_LOGGER_NAME
 from repopilot.request_context import request_id_var
-from repopilot.services import job_poison, snapshots
+from repopilot.services import github_job_runner, job_poison, snapshots
 from repopilot.services import jobs as job_service
 from repopilot.services.import_profile import ImportProfile
 from repopilot.services.repositories import get_repository, repository_key, resolve_worker_path
@@ -83,6 +95,13 @@ GIT_TIMEOUT_SUMMARY = (
     "can be slow; running `git gc` in that repository may speed up reading, or raise "
     "WORKER_GIT_TIMEOUT_SECONDS and WORKER_IMPORT_GIT_TIMEOUT_SECONDS."
 )
+# clone／fetch 逾時（D44）：錯誤碼與 Git 逾時相同（暫時性，會退避重試），摘要改指向對應的設定
+NETWORK_TIMEOUT_SUMMARY = (
+    "git clone or fetch timed out. For a large repository raise GITHUB_CLONE_TIMEOUT_SECONDS "
+    "(and WORKER_TASK_TIME_LIMIT_SECONDS); the job will be retried."
+)
+# GitHub API 回 5xx（暫時性）；摘要固定，不含 GitHub 回應內容
+GITHUB_SERVER_ERROR_SUMMARY = "GitHub returned a server error; the job will be retried."
 
 
 def apply_worker_timeouts(settings: Settings) -> Settings:
@@ -169,10 +188,6 @@ class LeaseHeartbeat:
                 )
 
 
-class LockBusyError(Exception):
-    """repo 鎖或快照鎖忙碌：延後重排，不消耗重試額度。"""
-
-
 class UnsupportedJobKindError(RepoPilotError):
     code = "unsupported_job_kind"
 
@@ -183,8 +198,12 @@ def run_job(
     settings: Settings,
     *,
     heartbeat_interval_seconds: float | None = None,
+    github_client: GitHubClient | None = None,
 ) -> JobOutcome:
-    """執行一則 job 訊息；`settings` 應已套用 worker 的 Git 逾時（`apply_worker_timeouts`）。"""
+    """執行一則 job 訊息；`settings` 應已套用 worker 的 Git 逾時（`apply_worker_timeouts`）。
+
+    `github_client` 只給 `github_register` 用；省略時依設定建立（測試以 `MockTransport` 注入）。
+    """
     session_factory = sessionmaker(bind=engine, expire_on_commit=False)
     with session_factory() as session:
         job = job_service.acquire_lease(session, job_id, settings)
@@ -200,7 +219,7 @@ def run_job(
         )
         heartbeat.start()
         try:
-            return _run_leased(session, job, token, heartbeat, engine, settings)
+            return _run_leased(session, job, token, heartbeat, engine, settings, github_client)
         except JobLeaseLostError:
             # 租約已被他人取得（心跳逾時、被復原掃描接手）：不寫任何結果，新的擁有者負責
             logger.warning("job_lease_lost", extra={"job_id": job_id})
@@ -217,12 +236,24 @@ def _run_leased(
     heartbeat: LeaseHeartbeat,
     engine: Engine,
     settings: Settings,
+    github_client: GitHubClient | None = None,
 ) -> JobOutcome:
     finished: dict[str, str] = {}  # 完成交易的結果（由 finalize 回呼寫入）
     try:
-        if job.kind != "snapshot_import":
-            raise UnsupportedJobKindError("This worker only runs snapshot_import jobs.")
-        _run_import(session, job, token, heartbeat, engine, settings, finished)
+        if job.kind == "snapshot_import":
+            _run_import(session, job, token, heartbeat, engine, settings, finished)
+        elif job.kind == "github_register":
+            client = github_client or GitHubClient(
+                base_url=settings.github_api_base_url,
+                timeout_seconds=settings.github_api_timeout_seconds,
+            )
+            github_job_runner.run_register(
+                session, job, token, heartbeat, engine, settings, finished, client
+            )
+        elif job.kind == "github_fetch":
+            github_job_runner.run_fetch(session, job, token, heartbeat, engine, settings, finished)
+        else:
+            raise UnsupportedJobKindError("This worker does not run this kind of job.")
     except JobLeaseLostError:
         raise
     except (LockBusyError, SnapshotImportInProgressError):
@@ -266,10 +297,17 @@ def classify_error(exc: BaseException) -> tuple[str, str]:
     token 或 Git stderr：領域例外的訊息本來就是固定文字，但 `GitCommandError` 的訊息夾帶
     stderr 片段，所以改用固定文字；Git 逾時另附 R1 的 `git gc` 提示。
     """
+    if isinstance(exc, GitHubCloneTimeoutError | GitHubFetchTimeoutError):
+        return "git_timeout", NETWORK_TIMEOUT_SUMMARY
     if isinstance(exc, GitTimeoutError):
         return "git_timeout", GIT_TIMEOUT_SUMMARY
+    if isinstance(exc, GitHubCloneError | GitHubFetchError):
+        # 訊息本來就是固定文字（不含 stderr）；stderr 已遮蔽後只進 worker 日誌
+        return exc.code, exc.message
     if isinstance(exc, GitCommandError):
         return exc.code, "Git failed to read the repository; see the worker log for details."
+    if isinstance(exc, GitHubApiError) and exc.status is not None and exc.status >= 500:
+        return "github_server_error", GITHUB_SERVER_ERROR_SUMMARY
     if isinstance(exc, RepoPilotError):
         return exc.code, exc.message
     if isinstance(exc, OperationalError | InterfaceError):

@@ -2,7 +2,7 @@
 
 AI 輔助專案客製化平台：管理參考 repos 與目標 repo，依自然語言需求產出附程式碼來源引用的修改方案；後續在獨立工作目錄改碼、執行測試並產出可審查的 diff 與驗證報告。
 
-> 狀態（2026-11-12）：**第一階段**（專案骨架、Repo 管理與固定版本匯入）**實作與驗證已完成（附未驗證清單），使用者已於 2026-11-11 確認驗收**。**第二階段**（背景工作、結構索引與搜尋）**進行中**：切片 1～3b 已完成——Docker 背景工作堆疊（Redis、dispatcher、Celery worker）、背景匯入 `import-jobs`、參考版本與移除快照，以及對應的主控台流程；**切片 4～10 未完成**（可靠性驗證、GitHub 註冊與 fetch 背景化、Python／C# 結構索引、搜尋等）。**參考版本只是標記，尚未連到 Agent**；LLM、向量搜尋、改碼都還不存在。不宣稱整套平台完成。未驗證項目見 [roadmap](docs/roadmap.md#第一階段整體驗收結論) 與本文各節。
+> 狀態（2026-11-12）：**第一階段**（專案骨架、Repo 管理與固定版本匯入）**實作與驗證已完成（附未驗證清單），使用者已於 2026-11-11 確認驗收**。**第二階段**（背景工作、結構索引與搜尋）**進行中**：切片 1～4 已完成——Docker 背景工作堆疊（Redis、dispatcher、Celery worker）、背景匯入 `import-jobs`、參考版本與移除快照、可靠性收尾，以及對應的主控台流程；**切片 5 的後端已完成**（GitHub 註冊與 fetch 背景化：`registration-jobs`、`fetch-jobs`、跨程序的 repo 互斥、移除 repo 與進行中工作的互動、暫存目錄清理；**主控台尚未改用它們**）；**切片 6～10 未完成**（Python／C# 結構索引、搜尋等）。**參考版本只是標記，尚未連到 Agent**；LLM、向量搜尋、改碼都還不存在。不宣稱整套平台完成。未驗證項目見 [roadmap](docs/roadmap.md#第一階段整體驗收結論) 與本文各節。
 
 ## 文件
 
@@ -13,8 +13,8 @@ AI 輔助專案客製化平台：管理參考 repos 與目標 repo，依自然�
 | [docs/learning/stage-01.md](docs/learning/stage-01.md) | **學習筆記**：主控台導覽、介面操作 → API → service → Git／資料表的追蹤表、流程圖、.NET 對照、動手練習、第二階段預覽（背景匯入） |
 | [docs/product.md](docs/product.md) | 產品目標、版本範圍、長期願景 |
 | [docs/roadmap.md](docs/roadmap.md) | 九個階段的目標、驗收與目前狀態；各切片驗證紀錄 |
-| [docs/architecture.md](docs/architecture.md) | 架構、資料模型、設計決策（D1～D42）、前端主控台結構 |
-| [docs/stage-02-spec.md](docs/stage-02-spec.md)、[切片 3b 規格](docs/stage-02-slice-3b-spec.md) | 第二階段規格（已確認；切片 1～3b 已完成）與版本管理切片規格 |
+| [docs/architecture.md](docs/architecture.md) | 架構、資料模型、設計決策（D1～D44）、前端主控台結構 |
+| [docs/stage-02-spec.md](docs/stage-02-spec.md)、[切片 3b 規格](docs/stage-02-slice-3b-spec.md) | 第二階段規格（已確認；切片 1～4 與切片 5 後端已完成）與版本管理切片規格 |
 | [切片 5c](docs/stage-01-slice-5c-spec.md)、[5d](docs/stage-01-slice-5d-spec.md)、[5e](docs/stage-01-slice-5e-spec.md) | 第一階段切片規格（GitHub 連動、倉庫總覽、版本瀏覽） |
 
 ## 目前能做什麼
@@ -22,11 +22,12 @@ AI 輔助專案客製化平台：管理參考 repos 與目標 repo，依自然�
 - 註冊 `REPOSITORY_ROOTS` 允許目錄內的**本機 Git repo**，或以 `owner/name` 從 **GitHub** 註冊（clone 到受管目錄 `MANAGED_REPOS_DIR`；使用者自行提供 Personal Access Token，建議 fine-grained、Contents 唯讀）。
 - 把 revision 解析為完整 commit SHA，**只讀 Git 物件**（不讀工作目錄）匯入成**快照**：保存路徑、UTF-8 文字內容、blob ID、SHA-256、位元組大小與跳過原因；同 repo、同 commit、同匯入設定不重複匯入；`.env`、私鑰與憑證檔不讀內容。
 - **背景匯入**（第二階段）：`import-jobs` 立即回 202，由 dispatcher 與 Celery worker（Docker Linux 容器）在背景匯入；同步的 `imports` 保留但**已棄用**。
+- **背景 GitHub 註冊與 fetch**（第二階段切片 5，後端）：`registration-jobs`、`fetch-jobs` 立即回 202，由 worker 在背景 clone／fetch（可取消、有階段與暫存目錄大小進度、worker 被殺後會清理暫存目錄）；同步的 `POST /repositories/github`、`POST /repositories/{id}/fetch` 保留但**已棄用**。主控台目前仍呼叫同步版本。
 - **參考版本**：每個 repo 可把一個已匯入的版本設為參考（固定的快照，不跟著分支前進）；**只是標記，尚未連到 Agent**。可移除已匯入的版本（含批次，只刪資料庫紀錄）。
 - 查詢 repo、快照、檔案、分支與標籤、commit 歷史、repo 概況與背景工作狀態；GitHub 來源可 fetch；可移除已註冊的 repo。
 - 操作主控台（`frontend/`）：repo 卡片總覽、版本管理（已匯入的版本＋分支下拉＋ commit 圖）、檔案樹、背景工作摘要、GitHub 連線。
 
-**尚未有（未完成）**：GitHub 註冊與 fetch 的背景版本、Python／C# 結構索引、搜尋、LLM、向量搜尋、改碼、GitLab 與其他遠端來源、多使用者登入、前端自動化測試。
+**尚未有（未完成）**：主控台改用 GitHub 的背景版本（切片 5 前端）、Python／C# 結構索引、搜尋、LLM、向量搜尋、改碼、GitLab 與其他遠端來源、多使用者登入、前端自動化測試。
 
 ## 環境需求
 
@@ -99,16 +100,17 @@ uv run python -c "from cryptography.fernet import Fernet; print(Fernet.generate_
 | `REPOSITORY_ROOTS` | 空 | 允許註冊的**本機 repo** 根目錄，多個以 `;` 分隔；**空白＝拒絕所有本機註冊** |
 | `GIT_TIMEOUT_SECONDS` | 30 | 單一 Git 指令逾時 |
 | `IMPORT_*` | 見 `.env.example` | 匯入上限（單檔 1 MiB、20,000 檔、快照 200 MiB）、Git 逾時與 `importing` 逾時接手秒數、排除規則；**改任何一項都會改變 `import_profile_hash`**，舊快照不再被重用；數值未經實測。例外：`IMPORT_BLOB_BATCH_MAX_FILES`（200）與 `IMPORT_BLOB_BATCH_MAX_BYTES`（4 MiB）只決定匯入時一批讀幾個 blob（影響進度與取消的粒度，不影響結果），**不會**改變 `import_profile_hash` |
-| `TOKEN_ENCRYPTION_KEY` | 空 | GitHub token 的 Fernet 加密金鑰；**空白時無法保存 token，沒有預設金鑰** |
-| `MANAGED_REPOS_DIR` | 空 | GitHub clone 的**受管目錄**（絕對路徑）；**空白＝停用 GitHub 註冊**；與 `REPOSITORY_ROOTS` 分開 |
+| `TOKEN_ENCRYPTION_KEY` | 空 | GitHub token 的 Fernet 加密金鑰；**空白時無法保存 token，沒有預設金鑰**。**背景 GitHub 工作（切片 5）由 worker 在容器內解密 token，所以 worker 的環境也要有同一把**（放 `.env.worker`，見下）；已保存 token 卻缺金鑰時，job 以永久性錯誤 `token_encryption_not_configured` 失敗（不重試） |
+| `MANAGED_REPOS_DIR` | 空 | GitHub clone 的**受管目錄**（絕對路徑）；**空白＝停用 GitHub 註冊**；與 `REPOSITORY_ROOTS` 分開。背景註冊要求它能映射到 worker 的**可寫**掛載（`WORKER_PATH_MAPPINGS` 的 `mode` 為 `rw`），否則 503 `worker_path_not_mapped` |
 | `GITHUB_*` | 見 `.env.example` | GitHub API／clone 的基底位址（僅供測試指向本機假 GitHub）與逾時（未實測，大型 repo 可能需調高） |
+| `GIT_POLL_SECONDS`、`CLONE_PROGRESS_SECONDS`、`MANAGED_TEMP_ORPHAN_SECONDS` | 1、2、7200 | 切片 5（只影響 worker，未實測）：clone／fetch 期間檢查取消旗標與租約的間隔、量測暫存目錄大小（`progress.bytes_received`）的間隔、孤兒暫存目錄的年齡門檻（須大於 `GITHUB_CLONE_TIMEOUT_SECONDS`） |
 | `WORKER_PATH_MAPPINGS` | 空 | 主機路徑 ↔ 容器路徑（JSON 陣列 `[{host, container, mode}]`）；**API 建立 import-job 時用它檢查路徑可映射**，未涵蓋回 503 `worker_path_not_mapped`；容器內的設定由 docker-compose 提供，所以 **API 的 `.env` 也要設** |
 | `WORKER_REPOSITORIES_HOST_DIR`、`WORKER_MANAGED_HOST_DIR` | 專案內 `.test-repos`、`.test-managed` | 只給 docker compose 插值（後端不讀）：worker 容器掛載的主機目錄 |
 | `WORKER_GIT_TIMEOUT_SECONDS`、`WORKER_IMPORT_GIT_TIMEOUT_SECONDS`、`WORKER_TASK_TIME_LIMIT_SECONDS` | 120、900、3600 | worker 的 Git 與任務逾時；未實測，只影響 worker |
 | `CELERY_*`、`JOB_*`、`DISPATCH_*`、`RECOVERY_SCAN_SECONDS`、`SERVICE_HEARTBEAT_SECONDS` | 見 `.env.example` | 只有 dispatcher 與 worker 使用 Celery／Redis 設定（compose 已設定）；**API 不連 Redis**。租約、重試、派送與心跳秒數皆為未實測的起點 |
 | `TEST_DATABASE_URL` | `db-test` 預設值 | 只供整合測試讀取環境變數（不讀 `.env`）；資料庫名稱必須含 `test` |
 
-選用：複製 `.env.worker.example` 為 `.env.worker`（不納入版控）放 worker 專用設定；沒有這個檔案也能啟動（compose 以 `required: false` 讀取）。
+選用：複製 `.env.worker.example` 為 `.env.worker`（不納入版控）放 worker 專用設定；沒有這個檔案也能啟動（compose 以 `required: false` 讀取）。**要用背景 GitHub 註冊與 fetch 且已保存 token 時，必須在 `.env.worker` 設定與 `.env` 相同的 `TOKEN_ENCRYPTION_KEY`**（`docker inspect` 看得到容器環境變數，僅限本機單人使用，見下方安全注意事項）；設定後請重建 worker 容器（`docker compose --profile jobs up -d worker`，只會重建 worker）。
 
 ### 路徑說明
 
@@ -137,7 +139,7 @@ Invoke-RestMethod http://127.0.0.1:8000/api/v1/jobs/status   # dispatcher.status
 docker compose --profile jobs stop worker dispatcher redis
 ```
 
-- **驗證狀態**：啟動流程與 import-job 流程（註冊 → `import-jobs` → 輪詢 → 查詢快照檔案；含 `docker compose kill worker` 後由復原掃描重排並成功）已於 2026-11-11 以拋棄式資料庫與臨時 API 實跑；上面的指令文字與實跑的相近但**沒有逐字複製執行**。2026-11-12 另確認使用者環境中這五個容器皆 healthy、`GET /api/v1/jobs/status` 回 `online`。**未驗證**：多個 worker／dispatcher、`docker stop` 的 warm shutdown、Redis 或 PostgreSQL 重啟、GitHub 來源的 worker 匯入（切片 5）。
+- **驗證狀態**：啟動流程與 import-job 流程（註冊 → `import-jobs` → 輪詢 → 查詢快照檔案；含 `docker compose kill worker` 後由復原掃描重排並成功）已於 2026-11-11 以拋棄式資料庫與臨時 API 實跑；上面的指令文字與實跑的相近但**沒有逐字複製執行**。2026-11-12 另確認使用者環境中這五個容器皆 healthy、`GET /api/v1/jobs/status` 回 `online`。2026-11-12（切片 5）：GitHub 來源的 worker 匯入、背景註冊與 fetch 已由 `stack` 測試在 `worker-test` 容器以本機假 GitHub 驗證（**沒有連真實 GitHub**）。**未驗證**：多個 worker／dispatcher、`docker stop` 的 warm shutdown、Redis 或 PostgreSQL 重啟、私有 repo 與真實 token。
 - **R1（掛載上讀取 loose 物件很慢）**：容器讀 Windows 掛載比主機慢，從未 `git gc` 且 loose 物件極多的本機 repo 可能超過逾時（切片 1 單次實測：20,000 個 loose 物件約 391 秒，主機約 12 秒）。逾時時 job 的錯誤會提示可在該 repo 自行執行 `git gc`（RepoPilot 不會替你的 repo 執行）。
 - **測試堆疊**：`redis-test`、`dispatcher-test`、`worker-test`（profile `jobs-test`）連 `db-test`，與開發的 `db`、`redis` 分屬不同 Docker 網路；由 `stack` 測試自動啟停，見下方「測試與品質檢查」。
 - 切片 1 的 spike 腳本在 `scripts\spike\`（腳本檔頭有說明）；切片 3 起部分腳本已不適用，未修改也未重跑。
@@ -164,7 +166,7 @@ React + TypeScript + Vite 的最小操作主控台（`frontend/`），用來以�
 
 ## API 一覽
 
-共 29 個端點（可用 `http://127.0.0.1:8000/openapi.json` 對照；2026-11-12 以執行中的後端核對為 29 個 method＋path）。契約與取捨見 [architecture.md](docs/architecture.md#設計決策) 的 D 編號。
+共 31 個端點（可用 `http://127.0.0.1:8000/openapi.json` 對照；2026-11-12 以 `create_app().openapi()` 核對為 31 個 method＋path，切片 5 新增 2 個）。契約與取捨見 [architecture.md](docs/architecture.md#設計決策) 的 D 編號。
 
 | 方法 | 路徑 | 說明 | 主要狀態碼與錯誤碼 |
 | --- | --- | --- | --- |
@@ -173,9 +175,11 @@ React + TypeScript + Vite 的最小操作主控台（`frontend/`），用來以�
 | POST | `/api/v1/repositories` | 註冊本機 repo（body `{"path": "...", "name": "..."}`，`name` 可省略） | 201 新建；200 已註冊（路徑不同寫法會去重）；422 `invalid_repository_path` |
 | GET | `/api/v1/repositories` | repo 列表 `{items}`（含 `source_type`、`github_*` 欄位） | 200 |
 | GET | `/api/v1/repositories/{id}` | 單一 repo | 200；404 `repository_not_found`；422 `validation_error`（id 超出 1～2³¹−1） |
-| DELETE | `/api/v1/repositories/{id}` | 移除 repo 與其快照、檔案；**本機來源只刪紀錄、絕不碰磁碟**；GitHub 來源另刪受管目錄內的 clone | 200 `{repository_id, source_type, deleted_snapshots, deleted_files, removed_clone}`；404；409 `repository_busy`；422；500 `managed_storage_error`；503 `github_registration_disabled`（[D33](docs/architecture.md)） |
-| POST | `/api/v1/repositories/github` | 以 `owner/name`（或 `https://github.com/owner/name`）註冊並 clone（body `{"repo": "..."}`） | 201；200 已註冊（不重新 clone）；422 `invalid_github_repo`、`github_token_invalid`；404 `github_repo_not_found_or_private`；503 `github_registration_disabled`；502 `github_clone_failed`、`github_unreachable`、`github_api_error`；504 `github_clone_timeout`、`github_timeout`；500 `managed_storage_error`（[D32](docs/architecture.md)） |
-| POST | `/api/v1/repositories/{id}/fetch` | 僅 GitHub 來源：`git fetch --prune origin`，回報 ref 變動；不建立快照 | 200 `{repository_id, updated_refs, truncated}`；409 `repository_not_github`；502 `github_fetch_failed`；504 `github_fetch_timeout`；422 |
+| DELETE | `/api/v1/repositories/{id}` | 移除 repo 與其快照、檔案；**本機來源只刪紀錄、絕不碰磁碟**；GitHub 來源另刪受管目錄內的 clone；有 `queued`／`running` 的工作（任何種類）或 repo 鎖被持有（匯入、clone、fetch）時拒絕 | 200 `{repository_id, source_type, deleted_snapshots, deleted_files, removed_clone}`；404；409 `repository_busy`；422；500 `managed_storage_error`；503 `github_registration_disabled`（[D33](docs/architecture.md)、[D44](docs/architecture.md)） |
+| POST | `/api/v1/repositories/github` | **【已棄用 deprecated】**以 `owner/name`（或 `https://github.com/owner/name`）**同步**註冊並 clone（body `{"repo": "..."}`）；請求會占用到 clone 結束，請改用 `registration-jobs`；與 worker 共用 repo 鎖（鎖忙碌時等待，逾時 409） | 201；200 已註冊（不重新 clone）；409 `repository_busy`；422 `invalid_github_repo`、`github_token_invalid`；404 `github_repo_not_found_or_private`；503 `github_registration_disabled`；502 `github_clone_failed`、`github_unreachable`、`github_api_error`；504 `github_clone_timeout`、`github_timeout`；500 `managed_storage_error`（[D32](docs/architecture.md)） |
+| POST | `/api/v1/github/registration-jobs` | **背景 GitHub 註冊**（切片 5）：body `{"repo": "owner/name"}`（同上）；API 只做不需網路的驗證（格式、`MANAGED_REPOS_DIR`、受管目錄可映射到 worker 的可寫掛載），查 GitHub、clone 與寫入資料列由 worker 執行；成功後 `GET /jobs/{id}` 的 `result.repository_id` 是新 repo 的 id。同一 owner/name（不分大小寫）進行中只有一個 job | 202 `{job, snapshot_id: null, repository_id: null, reused: false}`＋`Location`；200 `{job: null, repository_id, reused: true}`（已註冊，不建立 job）；422 `invalid_github_repo`；503 `github_registration_disabled`、`worker_path_not_mapped`；GitHub 相關錯誤碼成為 job 的 `error.code`（[D44](docs/architecture.md)） |
+| POST | `/api/v1/repositories/{id}/fetch` | **【已棄用 deprecated】**僅 GitHub 來源：**同步** `git fetch --prune origin`，回報 ref 變動；不建立快照；請改用 `fetch-jobs` | 200 `{repository_id, updated_refs, truncated}`；409 `repository_not_github`、`repository_busy`；502 `github_fetch_failed`；504 `github_fetch_timeout`；422 |
+| POST | `/api/v1/repositories/{id}/fetch-jobs` | **背景 fetch**（切片 5）：僅 GitHub 來源；`job.result.updated_refs` 的 `name` 可直接作為匯入的 revision（`origin/main`）；進行中（`queued`／`running`）只有一個，結束後可再提交 | 202 `{job, snapshot_id: null, repository_id, reused: false}`＋`Location`；404；409 `repository_not_github`；422 `invalid_repository_path`；503 `github_registration_disabled`、`worker_path_not_mapped` |
 | POST | `/api/v1/repositories/{id}/import-jobs` | **背景匯入**（切片 3）：body `{"revision": "main"}`，可省略＝`HEAD`；API 先在主機端把 revision 解析成完整 SHA（無效回 422、不建立 job）並檢查路徑可映射到 worker 容器，再同一交易建立 job 與待派送事件；以 `GET /jobs/{id}` 輪詢 | 202 `{job, snapshot_id, repository_id, reused}`＋`Location`（新建、重新排入失敗或取消的同一個 job、或回既有進行中的 job）；200 `reused=true`（相同快照已完成）；404；409 `snapshot_import_in_progress`；422 `invalid_revision`、`invalid_repository_path`；503 `worker_path_not_mapped`（[D40](docs/architecture.md)） |
 | POST | `/api/v1/repositories/{id}/imports` | **【已棄用 deprecated】**同步匯入固定版本快照（body 同上）；請求會占用到匯入結束，長時間匯入請改用 `import-jobs`；與 worker 共用快照鎖 | 201 新建；200 相同快照已完成；409 `snapshot_import_in_progress`；422 `invalid_revision`、`invalid_repository_path`、`import_limit_exceeded`；504 `git_timeout` |
 | GET | `/api/v1/repositories/{id}/snapshots` | 快照列表（新的在前；含 `importing`／`failed`；`?status=`、`limit`、`offset`）；每筆另有 `is_referenced`、`is_stale_profile`（匯入設定與目前不同） | 200 `{items, total, limit, offset}` |
@@ -202,7 +206,7 @@ React + TypeScript + Vite 的最小操作主控台（`frontend/`），用來以�
 
 - 錯誤格式一律為 `{"error": {"code": "...", "message": "...", "request_id": "..."}}`（422 另有 `details`，不回顯輸入）；每個回應帶 `X-Request-ID`（請求可自帶 1～64 個英數、`.`、`_`、`-`，不合法時由伺服器重新產生）。
 - 列表分頁參數 `limit`（預設 50、最大 200）與 `offset`（預設 0），超出範圍回 422，不靜默截斷；路徑中的 id 限制在資料庫欄位範圍，超出回 422。
-- clone、fetch 與移除 repo 仍是**同步請求**；匯入另有背景版本 `import-jobs`（GitHub 註冊與 fetch 的背景版本屬切片 5，**未完成**）。job 端點只查詢與操作 job 狀態，不執行工作（工作由 worker 執行）。
+- 匯入、GitHub 註冊與 fetch 各有背景版本（`import-jobs`、`registration-jobs`、`fetch-jobs`）；同步的 `imports`、`POST /repositories/github`、`POST /repositories/{id}/fetch` 保留原契約但已標示 deprecated。移除 repo 仍是同步請求。job 端點只查詢與操作 job 狀態，不執行工作（工作由 worker 執行）。
 
 ### PowerShell 範例
 
@@ -276,6 +280,15 @@ Remove-Variable plain, secure
 Invoke-RestMethod "$api/github/auth"                                # GET；只回狀態
 
 # GitHub：註冊公開 repo（不需要 token）→ fetch；fetch 之後用 origin/<分支> 匯入新 commit
+# 背景版本（建議；需要背景工作堆疊）：提交後輪詢 job，成功時 result.repository_id 是新 repo 的 id。POST＋GET，未驗證文字
+$reg = Invoke-RestMethod -Method Post -Uri "$api/github/registration-jobs" -ContentType "application/json" `
+  -Body (@{ repo = "octocat/Hello-World" } | ConvertTo-Json)      # 202；已註冊時 200 且 job 為 null
+do { Start-Sleep 2; $job = Invoke-RestMethod "$api/jobs/$($reg.job.id)" } while ($job.status -in "queued", "running")
+$job.status, $job.progress.bytes_received                         # succeeded；bytes_received 是暫存目錄大小（非百分比）
+$ghId = $job.result.repository_id
+$fetch = Invoke-RestMethod -Method Post -Uri "$api/repositories/$ghId/fetch-jobs"   # 202；job.result.updated_refs 在成功後出現
+Invoke-RestMethod -Method Post -Uri "$api/repositories/$ghId/import-jobs" -ContentType "application/json" -Body '{"revision": "origin/master"}'
+# 同步版本（已棄用，保留給腳本與沒有背景工作堆疊的情況）
 $gh = Invoke-RestMethod -Method Post -Uri "$api/repositories/github" -ContentType "application/json" `
   -Body (@{ repo = "octocat/Hello-World" } | ConvertTo-Json)
 Invoke-RestMethod -Method Post -Uri "$api/repositories/$($gh.id)/fetch"
@@ -291,7 +304,7 @@ Invoke-RestMethod -Method Delete -Uri "$api/repositories/$($gh.id)"
 - clone 是完整 clone（非 shallow）、`--no-checkout`（受管目錄內只有 `.git`）；大型 repo 佔用時間與磁碟，逾時由 `GITHUB_CLONE_TIMEOUT_SECONDS` 限制，過大 repo 的行為未實測。
 - `owner`／`name` 的驗證比 GitHub 實際允許的更窄：名稱不得以 `-` 開頭、不得以 `.` 結尾（以 `.` 開頭可以，例如 `.github`），也不接受 Windows 保留名稱（`con`、`nul`、`com1` 等）。
 - Windows PowerShell 5.1 的 `Invoke-RestMethod` 可能把 UTF-8 中文顯示成亂碼（回應沒有 charset），只是顯示問題；用 `curl.exe` 或 PowerShell 7 可正常顯示。
-- 多個 API 程序同時註冊同一個 GitHub repo 時，行程內的鎖不共用，輸家可能收到 500 `managed_storage_error`，重試即回 200（多程序**未驗證**）。
+- 同一個 GitHub repo 的 clone、fetch、匯入與移除由 PostgreSQL advisory lock 在**跨程序**序列化（切片 5，D44；取代原本只在單一程序內有效的鎖）：同步的註冊與 fetch 遇到鎖忙碌時等待（逾時回 409 `repository_busy`），worker 取不到鎖則延後重排、不消耗重試額度。多個 API 程序同時註冊同一個 repo 只會有一個 clone（以真的多程序測試驗證）。
 
 ### 自行驗證私有 GitHub repo（**未驗證**，需要你自己的 token）
 
@@ -331,7 +344,7 @@ uv run alembic check               # model 與 migration 無差異（以 DATABAS
 - 整合測試使用真實 PostgreSQL（`db-test`，埠 5433，資料不保存）；**`db-test` 沒啟動時整合測試會明確失敗，不會被跳過**。`pytest` 會重建測試資料庫的 `public` schema，且只允許資料庫名稱含 `test`，不會碰 dev 資料庫。
 - **`stack` 測試**（`tests/integration/stack/`）需要真實的 Redis、dispatcher 與 worker 容器，預設**會執行**；前置是 `docker compose up -d --wait db-test` 與 `docker compose --profile jobs build`。測試自己啟動與停止 `redis-test`、`dispatcher-test`、`worker-test`；Docker 不可用或映像沒建置時**明確失敗，不跳過**。只想跑不需要容器的測試用 `-m "not stack"`。
 - `tests/integration/test_restart_persistence.py` 會在 `db-test` 容器內建立臨時資料庫並啟動真實 uvicorn 子程序（空閒埠，不碰 8000；結束即 DROP 與停止），以 `slow` marker 標記，預設仍會執行。
-- **最近一次完整結果**（2026-11-12，第二階段切片 3b）：`uv run pytest` **1812 passed**（1177 秒）、ruff、`ruff format --check`、`mypy src tests` 通過；之後只改文件與前端，**未重跑完整套件**。2026-11-12 文件對齊時另實跑：`uv run pytest tests/unit -q`（786 passed，74 秒）、`uv run ruff check .`（All checks passed）、`uv run ruff format --check .`（149 files already formatted）、`uv run mypy src tests`（139 個檔案無問題）、`uv run alembic check`（No new upgrade operations detected，對 dev 資料庫，唯讀）。完整套件在 Windows 開發機上約 13～20 分鐘。細節與變異檢查見 [roadmap](docs/roadmap.md)。
+- **最近一次完整結果**（2026-11-12，第二階段切片 5）：`uv run pytest` **2147 passed**（1661 秒，含 30 項 `stack` 測試）、`uv run ruff check .`、`uv run ruff format --check .`（164 files already formatted）、`uv run mypy src tests`（155 個檔案無問題）通過；`alembic current` ＝ `0007 (head)`、`alembic check`（對 test 資料庫）無差異。切片 5 之前的結果：切片 4 為 1945 passed（1329 秒）、切片 3b 為 1812 passed（1177 秒）。完整套件在 Windows 開發機上約 20～28 分鐘。細節與變異檢查見 [roadmap](docs/roadmap.md)。
 - 前端沒有自動化測試（見「主控台操作流程」的驗證狀態）。
 
 ## 安全注意事項

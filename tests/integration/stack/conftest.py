@@ -16,6 +16,7 @@ dispatcher 心跳在線。測試的 repo 與受管目錄在專案內 `.test-repo
 才能在數十秒內完成；數值皆未實測。
 """
 
+import json
 import subprocess
 import time
 from collections.abc import Callable, Iterator
@@ -30,13 +31,20 @@ from sqlalchemy import Engine, text
 from repopilot.config import Settings
 from repopilot.main import create_app
 from repopilot.path_mapping import PathMapping
-from tests.git_helpers import init_repo
+from tests.git_helpers import RemoteRepo, init_repo
 from tests.integration.jobs.conftest import remove_tree
-from tests.stack_control import TEST_MANAGED_DIR, TEST_REPOS_DIR, compose
+from tests.stack_control import (
+    TEST_MANAGED_DIR,
+    TEST_REMOTE_DIR,
+    TEST_REPOS_DIR,
+    TEST_TOKEN_KEY,
+    compose,
+)
 
 SERVICES = ("redis-test", "dispatcher-test", "worker-test")
 TRUNCATE_ALL = (
-    "TRUNCATE jobs, job_dispatches, service_heartbeats, repositories RESTART IDENTITY CASCADE"
+    "TRUNCATE jobs, job_dispatches, service_heartbeats, repositories, github_credentials "
+    "RESTART IDENTITY CASCADE"
 )
 
 
@@ -57,11 +65,69 @@ def wait_until(
         time.sleep(interval)
 
 
+class FakeRemote:
+    """主機端操作假 GitHub 的資料目錄（`.test-remote`，容器內是 `/mnt/remote`）。
+
+    bare repo 由主機的 git 建立與推送；`api.json`（GitHub API 的回應）與 `control.json`
+    （慢速、切斷、要求認證…）由測試寫入，容器內的假伺服器（tests/fake_remote）每個請求都重新讀取。
+    """
+
+    def __init__(self, directory: Path) -> None:
+        self.directory = directory
+        self.git_dir = directory / "git"
+        self._repos: dict[str, dict[str, Any]] = {}
+
+    def add_repo(
+        self,
+        owner: str,
+        name: str,
+        files: dict[str, str] | None = None,
+        *,
+        private: bool = False,
+        bare: bool = True,
+    ) -> RemoteRepo | None:
+        """登錄 GitHub API 的回應；`bare=False` 時只登錄 API（Git 遠端不存在）。"""
+        self._repos[f"{owner}/{name}".lower()] = {
+            "full_name": f"{owner}/{name}",
+            "private": private,
+            "default_branch": "main",
+        }
+        self._write("api.json", self._repos)
+        if not bare:
+            return None
+        return RemoteRepo(self.git_dir, owner, name, files=files)
+
+    def control(self, **values: Any) -> None:
+        """設定假伺服器的行為（整份覆寫）；不帶參數＝恢復正常。"""
+        self._write("control.json", values)
+
+    def requests(self) -> list[dict[str, Any]]:
+        path = self.directory / "requests.log"
+        if not path.exists():
+            return []
+        return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line]
+
+    def _write(self, name: str, payload: Any) -> None:
+        temp = self.directory / f"{name}.tmp"
+        temp.write_text(json.dumps(payload), encoding="utf-8")
+        temp.replace(self.directory / name)
+
+    def clear(self) -> None:
+        for child in self.directory.iterdir():
+            if child.name == "server.ready":
+                continue
+            if child.is_dir():
+                remove_tree(child)
+            else:
+                child.unlink(missing_ok=True)
+
+
 class Stack:
     def __init__(self, engine: Engine, database_url: str) -> None:
         self.engine = engine
         repos, managed = TEST_REPOS_DIR.resolve(), TEST_MANAGED_DIR.resolve()
         self.repos_dir, self.managed_dir = repos, managed
+        self.remote = FakeRemote(TEST_REMOTE_DIR.resolve())
         self.api_settings = Settings(
             database_url=SecretStr(database_url),
             repository_roots=[repos],
@@ -76,6 +142,8 @@ class Stack:
             job_retry_base_seconds=1,
             job_retry_max_seconds=4,
             service_heartbeat_seconds=3,
+            # 與 worker-test 同一把金鑰：測試用它把假 token 加密保存，worker 在容器內解密
+            token_encryption_key=SecretStr(TEST_TOKEN_KEY),
         )
 
     # --- compose 操作 ---
@@ -139,7 +207,18 @@ class Stack:
         with self.engine.begin() as connection:
             connection.execute(text(TRUNCATE_ALL))
         self.flush_redis()
+        # 上一個測試留下的受管目錄與假遠端內容（資料表已清空，目錄不清會讓註冊撞到「已存在」）
+        self.clear_managed()
+        self.remote.clear()
+        self.remote.control()
         self.wait_online(since=marker)
+
+    def clear_managed(self) -> None:
+        for child in self.managed_dir.iterdir():
+            if child.is_dir() or child.is_junction() or child.is_symlink():
+                remove_tree(child)
+            else:
+                child.unlink(missing_ok=True)
 
     # --- fixture repo ---
 
@@ -160,6 +239,7 @@ def stack(db_engine: Engine, test_database_url: str) -> Iterator[Stack]:
         pytest.fail(f"docker compose 無法使用：{probe.stderr[-500:]}")
     TEST_REPOS_DIR.mkdir(exist_ok=True)
     TEST_MANAGED_DIR.mkdir(exist_ok=True)
+    TEST_REMOTE_DIR.mkdir(exist_ok=True)
     instance = Stack(db_engine, test_database_url)
     with db_engine.begin() as connection:
         connection.execute(text(TRUNCATE_ALL))
@@ -180,7 +260,7 @@ def stack(db_engine: Engine, test_database_url: str) -> Iterator[Stack]:
     finally:
         instance.unpause("redis-test")
         compose("stop", *SERVICES, check=False, timeout=180)
-        for child in (TEST_REPOS_DIR, TEST_MANAGED_DIR):
+        for child in (TEST_REPOS_DIR, TEST_MANAGED_DIR, TEST_REMOTE_DIR):
             if child.exists():
                 for entry in child.iterdir():
                     if entry.is_dir() or entry.is_junction() or entry.is_symlink():

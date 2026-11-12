@@ -131,6 +131,17 @@ class Settings(BaseSettings):
     # 軟性上限為它減 60 秒。須大於 Git 逾時的總和，否則 Git 還沒逾時任務就先被殺
     worker_task_time_limit_seconds: int = Field(default=3_600, ge=120, le=86_400)
 
+    # --- GitHub 註冊與 fetch 的背景化（第二階段切片 5，D44；數值皆未實測）---
+    # clone／fetch 子程序執行期間，worker 每隔這麼多秒檢查一次取消旗標與租約（一次單列查詢）。
+    # 取消最多延遲這麼久（加上程序樹終止的時間）
+    git_poll_seconds: float = Field(default=1.0, gt=0, le=60)
+    # clone 期間統計暫存目錄位元組數、寫入 `progress.bytes_received` 的間隔（秒）
+    clone_progress_seconds: float = Field(default=2.0, gt=0, le=600)
+    # `.tmp/<16 位 hex>` 底下超過這麼多秒沒有被任何進行中 job 記錄、也沒有更新的目錄視為孤兒，
+    # worker 啟動與每次註冊 job 開始時清理。必須大於 clone 逾時，否則同步端點（沒有 job 記錄）
+    # 正在進行的 clone 可能被誤判為孤兒
+    managed_temp_orphan_seconds: int = Field(default=7_200, ge=60, le=604_800)
+
     @model_validator(mode="after")
     def _job_settings_are_consistent(self) -> Self:
         if self.job_heartbeat_seconds >= self.job_lease_seconds:
@@ -144,6 +155,21 @@ class Settings(BaseSettings):
             raise ValueError(
                 "WORKER_TASK_TIME_LIMIT_SECONDS must exceed WORKER_IMPORT_GIT_TIMEOUT_SECONDS "
                 "plus four times WORKER_GIT_TIMEOUT_SECONDS."
+            )
+        # 註冊 job：GitHub API 一次、clone 一次、其餘本機 Git 呼叫（保守估兩次）
+        register_worst_case = (
+            self.github_clone_timeout_seconds
+            + self.github_api_timeout_seconds
+            + 2 * self.worker_git_timeout_seconds
+        )
+        if self.worker_task_time_limit_seconds <= register_worst_case:
+            raise ValueError(
+                "WORKER_TASK_TIME_LIMIT_SECONDS must exceed GITHUB_CLONE_TIMEOUT_SECONDS "
+                "plus GITHUB_API_TIMEOUT_SECONDS plus twice WORKER_GIT_TIMEOUT_SECONDS."
+            )
+        if self.managed_temp_orphan_seconds <= self.github_clone_timeout_seconds:
+            raise ValueError(
+                "MANAGED_TEMP_ORPHAN_SECONDS must exceed GITHUB_CLONE_TIMEOUT_SECONDS."
             )
         return self
 

@@ -1,12 +1,16 @@
 """移除已註冊的 repo（D33）：刪除資料庫紀錄，GitHub 來源另外刪除受管目錄內的 clone。
 
 順序（失敗時資料列仍在、可重試）：
-1. 取得 GitHub 來源的行程內鎖（與 clone／fetch 共用，取不到回 409）。
+1. 以 `try` 取得 repo 級**獨占** advisory lock（跨程序；與 clone／fetch／匯入共用，取不到回 409
+   `repository_busy`）。D32 的行程內鎖已被它取代（第二階段切片 5，D44）。
 2. 開交易並以 `SELECT ... FOR UPDATE` 鎖住 repo 資料列：匯入新增快照需要對該列取 `FOR KEY SHARE`，
-   會被擋到本交易結束，所以「檢查沒有匯入中」與「刪除」之間不會被插入新的匯入。
-3. 有未逾時的 `importing` 快照 → 409（逾時者視為可刪除，與 D24 的接手規則一致）。
+   建立 job 的 INSERT 也一樣（外鍵檢查），會被擋到本交易結束，所以「檢查沒有匯入中、沒有進行中的
+   job」與「刪除」之間不會被插入新的匯入或 job。
+3. 有未逾時的 `importing` 快照，或有 `queued`／`running` 的 job（任何種類，`queued` 也擋，避免移除後
+   worker 才醒來）→ 409（逾時的 `importing` 視為可刪除，與 D24 的接手規則一致）。
 4. GitHub 來源：驗證路徑後刪除 clone 目錄（`managed_repos.remove_github_clone`）。
-5. 以 SQL 層級依序刪除 snapshot_files → snapshots → repository，同一交易提交。
+5. 以 SQL 層級依序刪除 snapshot_files → snapshots → repository（`jobs.repository_id` 為
+   `ON DELETE CASCADE`，終態的 job 一併刪除），同一交易提交。
 
 目錄刪除成功但資料庫提交失敗時，重試會把「目錄已不存在」視為成功，不會卡住。刪除過程持有資料庫
 連線與列鎖，但只做本機檔案操作（沒有網路、沒有 Git），對本機 clone 通常是秒級。
@@ -23,15 +27,14 @@ from sqlalchemy.orm import Session
 
 from repopilot.config import Settings
 from repopilot.db.locks import engine_of, repo_lock_key, try_advisory_lock
-from repopilot.db.models import Repository, Snapshot, SnapshotFile
+from repopilot.db.models import Job, Repository, Snapshot, SnapshotFile
 from repopilot.errors import (
     GitHubRegistrationDisabledError,
     RepositoryBusyError,
     RepositoryNotFoundError,
 )
 from repopilot.logging_config import APP_LOGGER_NAME
-from repopilot.services import managed_repos
-from repopilot.services.github_repositories import exclusive_repo_access
+from repopilot.services import job_rules, managed_repos
 from repopilot.services.repositories import get_repository, repository_key
 
 logger = logging.getLogger(f"{APP_LOGGER_NAME}.services.repository_removal")
@@ -49,10 +52,9 @@ class RemovalResult:
 def remove_repository(session: Session, repository_id: int, settings: Settings) -> RemovalResult:
     """移除 repo 與其所有快照、檔案；local 來源絕不碰磁碟上的 repo 目錄。
 
-    第二階段切片 3：先以 `try` 取得 repo 級**獨占** advisory lock（`db/locks.py`）。worker 的
-    匯入持有同一把鎖的共享版，所以有 job 正在匯入這個 repo 時取不到 → 409
-    `repository_busy`（稍後重試）。這是規格 5.11 的最小接線；「有 queued／running job 就擋」
-    與 clone／fetch 取同一把獨占鎖屬切片 5。
+    先以 `try` 取得 repo 級**獨占** advisory lock（`db/locks.py`）。worker 的匯入持有同一把鎖的
+    共享版，clone／fetch 持有獨占版，所以有 job 正在使用這個 repo 時取不到 → 409
+    `repository_busy`（稍後重試）；取得後再檢查有沒有 `queued`／`running` 的 job（規格 5.11）。
     """
     started = time.monotonic()
     repository = get_repository(session, repository_id)  # 不存在 → 404
@@ -64,19 +66,14 @@ def remove_repository(session: Session, repository_id: int, settings: Settings) 
             "GitHub support is disabled: set MANAGED_REPOS_DIR to the managed directory "
             "that holds the clone, then retry."
         )
-    owner = repository.github_owner or ""
-    name = repository.github_name or ""
     session.commit()  # 結束讀取交易
     with try_advisory_lock(engine_of(session), lock_key) as lock:
         if lock is None:
             raise RepositoryBusyError(
                 "A background job is using this repository; retry when it finishes."
             )
-        if source_type != "github":
-            result = _remove_locked(session, repository_id, settings)
-        else:
-            with exclusive_repo_access(owner, name):
-                result = _remove_locked(session, repository_id, settings)
+        result = _remove_locked(session, repository_id, settings)
+
     logger.info(
         "repository_removed",
         extra={
@@ -129,6 +126,18 @@ def _remove_in_transaction(
     if importing:
         raise RepositoryBusyError(
             "A snapshot import is in progress for this repository; retry when it finishes."
+        )
+    active_job = session.scalar(
+        select(
+            exists().where(
+                Job.repository_id == repository_id, Job.status.in_(job_rules.ACTIVE_STATUSES)
+            )
+        )
+    )
+    if active_job:
+        raise RepositoryBusyError(
+            "A background job is queued or running for this repository; "
+            "cancel it or wait for it to finish, then retry."
         )
 
     removed_clone = False

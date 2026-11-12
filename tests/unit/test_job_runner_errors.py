@@ -7,15 +7,34 @@ from repopilot.config import Settings
 from repopilot.errors import (
     DatabaseUnavailableError,
     GitCommandError,
+    GitHubApiError,
+    GitHubCloneError,
     GitHubCloneTimeoutError,
+    GitHubFetchError,
+    GitHubFetchTimeoutError,
+    GitHubRegistrationDisabledError,
+    GitHubRepoNotFoundError,
+    GitHubTimeoutError,
+    GitHubTokenInvalidError,
+    GitHubUnreachableError,
     GitTimeoutError,
     ImportLimitExceededError,
+    InvalidGitHubRepoError,
     InvalidRepositoryPathError,
+    ManagedStorageError,
     PathNotMappedError,
     ProfileMismatchError,
+    RepositoryNotGitHubError,
+    TokenEncryptionNotConfiguredError,
 )
 from repopilot.services import job_rules
-from repopilot.services.job_runner import GIT_TIMEOUT_SUMMARY, apply_worker_timeouts, classify_error
+from repopilot.services.job_runner import (
+    GIT_TIMEOUT_SUMMARY,
+    GITHUB_SERVER_ERROR_SUMMARY,
+    NETWORK_TIMEOUT_SUMMARY,
+    apply_worker_timeouts,
+    classify_error,
+)
 
 
 def test_git_timeout_is_transient_and_mentions_git_gc_and_the_worker_settings() -> None:
@@ -30,6 +49,66 @@ def test_git_timeout_is_transient_and_mentions_git_gc_and_the_worker_settings() 
 
 def test_clone_timeouts_also_map_to_git_timeout_with_the_hint() -> None:
     assert classify_error(GitHubCloneTimeoutError("x"))[0] == "git_timeout"
+
+
+# --- GitHub 註冊與 fetch 的錯誤分類（第二階段切片 5，D44）---
+
+
+@pytest.mark.parametrize("exc", [GitHubCloneTimeoutError("x"), GitHubFetchTimeoutError("x")])
+def test_network_timeouts_are_transient_and_point_at_the_clone_timeout_setting(
+    exc: Exception,
+) -> None:
+    code, summary = classify_error(exc)
+
+    assert code == "git_timeout"
+    assert job_rules.classify_failure(code) == "transient"
+    assert summary == NETWORK_TIMEOUT_SUMMARY
+    assert "GITHUB_CLONE_TIMEOUT_SECONDS" in summary
+    assert "git gc" not in summary  # R1 的提示只適用於讀取使用者 repo
+
+
+@pytest.mark.parametrize(
+    ("exc", "code", "kind"),
+    [
+        (GitHubUnreachableError("m"), "github_unreachable", "transient"),
+        (GitHubTimeoutError("m"), "github_timeout", "transient"),
+        (GitHubApiError("m", status=500), "github_server_error", "transient"),
+        (GitHubApiError("m", status=502), "github_server_error", "transient"),
+        (GitHubApiError("m", status=503), "github_server_error", "transient"),
+        (GitHubApiError("m", status=403), "github_api_error", "permanent"),
+        (GitHubApiError("m", status=429), "github_api_error", "permanent"),
+        (GitHubApiError("m"), "github_api_error", "permanent"),  # 非預期內容（沒有狀態碼）
+        (GitHubRepoNotFoundError("m"), "github_repo_not_found_or_private", "permanent"),
+        (GitHubTokenInvalidError("m"), "github_token_invalid", "permanent"),
+        (InvalidGitHubRepoError("m"), "invalid_github_repo", "permanent"),
+        (TokenEncryptionNotConfiguredError("m"), "token_encryption_not_configured", "permanent"),
+        (GitHubCloneError("m"), "github_clone_failed", "permanent"),
+        (GitHubFetchError("m"), "github_fetch_failed", "permanent"),
+        (ManagedStorageError("m"), "managed_storage_error", "permanent"),
+        (RepositoryNotGitHubError("m"), "repository_not_github", "permanent"),
+        (GitHubRegistrationDisabledError("m"), "github_registration_disabled", "permanent"),
+    ],
+)
+def test_github_errors_are_classified_transient_or_permanent(
+    exc: Exception, code: str, kind: str
+) -> None:
+    assert classify_error(exc)[0] == code
+    assert job_rules.classify_failure(code) == kind
+
+
+def test_github_server_error_summary_is_fixed_and_hides_the_upstream_message() -> None:
+    code, summary = classify_error(GitHubApiError("GitHub returned 503: SECRET-BODY", status=503))
+
+    assert code == "github_server_error"
+    assert summary == GITHUB_SERVER_ERROR_SUMMARY
+    assert "SECRET-BODY" not in summary
+
+
+def test_clone_and_fetch_failures_keep_their_fixed_messages_without_stderr() -> None:
+    for exc in (GitHubCloneError("git clone failed (fixed)."), GitHubFetchError("fixed fetch.")):
+        code, summary = classify_error(exc)
+        assert summary == exc.message
+        assert code == exc.code
 
 
 def test_git_failures_use_a_fixed_summary_without_stderr() -> None:

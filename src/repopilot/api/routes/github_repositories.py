@@ -20,6 +20,7 @@ router = APIRouter(prefix="/api/v1/repositories", tags=["repositories"])
     "/github",
     response_model=RepositoryResponse,
     status_code=status.HTTP_201_CREATED,
+    deprecated=True,
     responses={200: {"model": RepositoryResponse, "description": "已註冊過的 GitHub repo"}},
 )
 def register_github_repository(
@@ -29,10 +30,14 @@ def register_github_repository(
     settings: SettingsDep,
     client: GitHubClientDep,
 ) -> RepositoryResponse:
-    """以 `owner/name` 註冊 GitHub repo 並同步 clone 到受管目錄；已註冊回 200 且不重新 clone。
+    """**已棄用（deprecated）**：以 `owner/name` 註冊 GitHub repo 並同步 clone 到受管目錄。
 
-    流程：驗證輸入 → 確認 MANAGED_REPOS_DIR → 查 GitHub（有保存 token 時帶上）→ clone → 寫入。
-    clone 期間不持有資料庫交易；請求 body 與 token 不會被記錄。
+    已註冊回 200 且不重新 clone。流程：驗證輸入 → 確認 MANAGED_REPOS_DIR → 查 GitHub（有保存
+    token 時帶上）→ 取 repo 獨占鎖 → clone → 寫入；請求會一直占用到 clone 結束
+    （大型 repo 可能數分鐘）。clone 期間不持有資料庫交易；請求 body 與 token 不會被記錄。
+    長時間 clone 請改用 `POST /api/v1/github/registration-jobs`
+    （立即回 202 與 job，由 worker 背景執行）；本端點保留原契約供腳本與既有用戶端使用，
+    並與 worker 共用同一把 repo 鎖（另一邊正在 clone 時會等待，逾時回 409 `repository_busy`）。
     """
     repository, created = github_repository_service.register_github_repository(
         session, raw_repo=body.repo, settings=settings, client=client
@@ -42,13 +47,15 @@ def register_github_repository(
     return RepositoryResponse.model_validate(repository)
 
 
-@router.post("/{repository_id}/fetch", response_model=FetchResponse)
+@router.post("/{repository_id}/fetch", response_model=FetchResponse, deprecated=True)
 def fetch_github_repository(
     repository_id: RepositoryIdPath, session: SessionDep, settings: SettingsDep
 ) -> FetchResponse:
-    """更新 GitHub 來源 repo 的遠端 refs（`git fetch --prune origin`）；local 來源回 409。
+    """**已棄用（deprecated）**：同步更新 GitHub 來源 repo 的遠端 refs（`git fetch --prune`）。
 
-    只更新受管目錄內的 clone，不建立快照；之後以 `POST /{id}/imports` 匯入新 commit。
+    local 來源回 409。只更新受管目錄內的 clone，不建立快照；之後以 `POST /{id}/imports` 匯入新
+    commit。請求會一直占用到 fetch 結束；請改用 `POST /api/v1/repositories/{id}/fetch-jobs`
+    （立即回 202 與 job，由 worker 背景執行）。本端點保留原契約，並與 worker 共用同一把 repo 鎖。
     """
     result = github_repository_service.fetch_github_repository(session, repository_id, settings)
     return FetchResponse(

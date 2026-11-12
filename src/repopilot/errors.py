@@ -99,9 +99,17 @@ class GitHubTimeoutError(GitHubUnreachableError):
 
 
 class GitHubApiError(RepoPilotError):
-    """GitHub 回了非預期的結果（403／速率限制、5xx、非 JSON 等）。"""
+    """GitHub 回了非預期的結果（403／速率限制、5xx、非 JSON 等）。
+
+    `status` 是 GitHub 回應的 HTTP 狀態碼（沒有時為 None）；worker 依它把 5xx 歸為暫時性（D44）。
+    HTTP 回應的錯誤碼不受影響，仍是 `github_api_error`。
+    """
 
     code = "github_api_error"
+
+    def __init__(self, message: str, *, status: int | None = None) -> None:
+        super().__init__(message)
+        self.status = status
 
 
 class InvalidGitHubRepoError(RepoPilotError):

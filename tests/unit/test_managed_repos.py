@@ -1,6 +1,7 @@
 import os
 import shutil
 import stat
+import time
 from pathlib import Path
 
 import pytest
@@ -368,3 +369,183 @@ def test_remove_github_clone_reports_storage_error_without_leaking_the_path(
 
     assert str(clone) not in raised.value.message
     assert (clone / ".git" / "HEAD").exists()
+
+
+# --- 上一個 attempt 的暫存目錄與孤兒清理（第二階段切片 5，D44）---
+
+
+def _hex_dir(root: Path, name: str, *, age_seconds: float = 0) -> Path:
+    path = root / ".tmp" / name
+    (path / ".git" / "objects").mkdir(parents=True)
+    target = path / ".git" / "objects" / "pack.idx"
+    target.write_bytes(b"x")
+    target.chmod(stat.S_IREAD)  # Windows 的唯讀屬性（Git 物件常見）
+    if age_seconds:
+        old = time.time() - age_seconds
+        os.utime(path, (old, old))
+    return path
+
+
+def test_recorded_temp_dir_is_removed_including_readonly_files(managed_root: Path) -> None:
+    leftover = _hex_dir(managed_root, "0123456789abcdef")
+
+    assert managed_repos.remove_recorded_temp_dir(managed_root, "0123456789abcdef") is True
+
+    assert not leftover.exists()
+    assert (managed_root / ".tmp").is_dir()  # `.tmp` 本身不動
+
+
+def test_recorded_temp_dir_that_is_already_gone_is_not_an_error(managed_root: Path) -> None:
+    assert managed_repos.remove_recorded_temp_dir(managed_root, "0123456789abcdef") is False
+    assert managed_repos.remove_recorded_temp_dir(managed_root, None) is False
+
+
+TAMPERED_RECORDS: list[object] = [
+    "..",
+    ".",
+    "",
+    "../victim",
+    "../../victim",
+    "0123456789abcdef/..",
+    "0123456789abcdef/x",  # 子路徑：只接受單一名稱
+    "..\\victim",
+    "/etc",
+    "C:\\Windows",
+    "0123456789ABCDEF",  # 大寫：不是 `secrets.token_hex` 的格式
+    "0123456789abcde",  # 15 碼
+    "0123456789abcdef0",  # 17 碼
+    "0123456789abcdeg",  # 非 hex
+    "0123456789abcdef\n",
+    "x" * 1000,
+    123,
+    ["0123456789abcdef"],
+    {"temp_dir": "0123456789abcdef"},
+    True,
+]
+
+
+@pytest.mark.parametrize("recorded", TAMPERED_RECORDS)
+def test_a_tampered_record_never_deletes_anything(managed_root: Path, recorded: object) -> None:
+    victim = managed_root.parent / "victim"
+    victim.mkdir()
+    (victim / "precious.txt").write_text("keep", encoding="utf-8")
+    sibling = _hex_dir(managed_root, "fedcba9876543210")
+    github = managed_root / "github" / "octo" / "repo"
+    github.mkdir(parents=True)
+    before = sorted(str(p.relative_to(managed_root.parent)) for p in managed_root.parent.rglob("*"))
+
+    assert managed_repos.remove_recorded_temp_dir(managed_root, recorded) is False
+
+    after = sorted(str(p.relative_to(managed_root.parent)) for p in managed_root.parent.rglob("*"))
+    assert after == before
+    assert (victim / "precious.txt").exists()
+    assert sibling.exists()
+
+
+@pytest.mark.parametrize("recorded", TAMPERED_RECORDS)
+def test_a_tampered_record_is_rejected_before_any_deletion_is_attempted(
+    managed_root: Path, recorded: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # 第一層（名稱格式）本身就要擋下：不依賴 remove_created_tree 的第二層驗證
+    def forbidden(*_: object, **__: object) -> None:
+        raise AssertionError("a deletion was attempted for a tampered record")
+
+    monkeypatch.setattr(managed_repos, "remove_created_tree", forbidden)
+    monkeypatch.setattr(shutil, "rmtree", forbidden)
+
+    assert managed_repos.remove_recorded_temp_dir(managed_root, recorded) is False
+
+
+def test_a_recorded_symlink_or_junction_is_neither_followed_nor_removed(
+    managed_root: Path, tmp_path: Path
+) -> None:
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "keep.txt").write_text("keep", encoding="utf-8")
+    (managed_root / ".tmp").mkdir()
+    link_directory(managed_root / ".tmp" / "0123456789abcdef", outside)
+
+    assert managed_repos.remove_recorded_temp_dir(managed_root, "0123456789abcdef") is False
+
+    assert (outside / "keep.txt").read_text(encoding="utf-8") == "keep"
+    assert os.path.lexists(managed_root / ".tmp" / "0123456789abcdef")  # 連結本身也沒被刪
+
+
+def test_a_symlinked_dot_tmp_is_refused(managed_root: Path, tmp_path: Path) -> None:
+    outside = tmp_path / "outside"
+    (outside / "0123456789abcdef").mkdir(parents=True)
+    (outside / "0123456789abcdef" / "keep.txt").write_text("keep", encoding="utf-8")
+    link_directory(managed_root / ".tmp", outside)
+
+    assert managed_repos.remove_recorded_temp_dir(managed_root, "0123456789abcdef") is False
+    assert managed_repos.sweep_orphan_temp_dirs(managed_root, older_than_seconds=0) == []
+
+    assert (outside / "0123456789abcdef" / "keep.txt").exists()
+
+
+def test_sweep_removes_only_old_unreferenced_dirs_named_like_ours(managed_root: Path) -> None:
+    old = _hex_dir(managed_root, "a" * 16, age_seconds=10_000)
+    young = _hex_dir(managed_root, "b" * 16, age_seconds=10)
+    referenced = _hex_dir(managed_root, "c" * 16, age_seconds=10_000)
+    stranger = managed_root / ".tmp" / "someone-elses-dir"
+    stranger.mkdir()
+    (stranger / "keep.txt").write_text("keep", encoding="utf-8")
+    old_time = time.time() - 10_000
+    os.utime(stranger, (old_time, old_time))
+    stray_file = managed_root / ".tmp" / ("d" * 16)
+    stray_file.write_text("a file named like ours", encoding="utf-8")
+    os.utime(stray_file, (old_time, old_time))
+
+    removed = managed_repos.sweep_orphan_temp_dirs(
+        managed_root, older_than_seconds=3_600, keep={"c" * 16}
+    )
+
+    assert removed == ["a" * 16]
+    assert not old.exists()
+    assert young.exists()
+    assert referenced.exists()
+    assert (stranger / "keep.txt").exists()
+    assert stray_file.read_text(encoding="utf-8") == "a file named like ours"
+
+
+def test_sweep_age_boundary_uses_the_directory_modification_time(managed_root: Path) -> None:
+    directory = _hex_dir(managed_root, "a" * 16, age_seconds=100)
+    now = time.time()
+
+    assert managed_repos.sweep_orphan_temp_dirs(managed_root, older_than_seconds=200, now=now) == []
+    assert directory.exists()
+    assert managed_repos.sweep_orphan_temp_dirs(managed_root, older_than_seconds=50, now=now) == [
+        "a" * 16
+    ]
+
+
+def test_sweep_without_a_dot_tmp_dir_does_nothing(managed_root: Path) -> None:
+    assert managed_repos.sweep_orphan_temp_dirs(managed_root, older_than_seconds=0) == []
+    assert not (managed_root / ".tmp").exists()  # 清理不會順手建立目錄
+
+
+def test_new_temp_path_is_not_created_until_asked(managed_root: Path) -> None:
+    path = managed_repos.new_temp_path(managed_root)
+
+    assert not path.exists()
+    assert managed_repos.TEMP_NAME.fullmatch(path.name)
+    managed_repos.create_temp_dir_at(path)
+    assert path.is_dir()
+    with pytest.raises(ManagedStorageError):  # 不帶 exist_ok：一定是本次建立的
+        managed_repos.create_temp_dir_at(path)
+
+
+def test_directory_size_sums_nested_files_and_ignores_links(
+    managed_root: Path, tmp_path: Path
+) -> None:
+    directory = managed_root / "measured"
+    (directory / "sub").mkdir(parents=True)
+    (directory / "a.bin").write_bytes(b"x" * 100)
+    (directory / "sub" / "b.bin").write_bytes(b"y" * 250)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "huge.bin").write_bytes(b"z" * 10_000)
+    link_directory(directory / "link", outside)
+
+    assert managed_repos.directory_size(directory) == 350
+    assert managed_repos.directory_size(directory / "missing") == 0

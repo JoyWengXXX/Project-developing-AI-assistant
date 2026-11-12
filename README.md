@@ -98,7 +98,7 @@ uv run python -c "from cryptography.fernet import Fernet; print(Fernet.generate_
 | `DATABASE_URL`、`DB_*` | 見 `.env.example` | PostgreSQL 連線字串（psycopg 3，`postgresql+psycopg://…`）、連線逾時與連線池（預設同 SQLAlchemy，未經實測） |
 | `REPOSITORY_ROOTS` | 空 | 允許註冊的**本機 repo** 根目錄，多個以 `;` 分隔；**空白＝拒絕所有本機註冊** |
 | `GIT_TIMEOUT_SECONDS` | 30 | 單一 Git 指令逾時 |
-| `IMPORT_*` | 見 `.env.example` | 匯入上限（單檔 1 MiB、20,000 檔、快照 200 MiB）、Git 逾時與 `importing` 逾時接手秒數、排除規則；**改任何一項都會改變 `import_profile_hash`**，舊快照不再被重用；數值未經實測 |
+| `IMPORT_*` | 見 `.env.example` | 匯入上限（單檔 1 MiB、20,000 檔、快照 200 MiB）、Git 逾時與 `importing` 逾時接手秒數、排除規則；**改任何一項都會改變 `import_profile_hash`**，舊快照不再被重用；數值未經實測。例外：`IMPORT_BLOB_BATCH_MAX_FILES`（200）與 `IMPORT_BLOB_BATCH_MAX_BYTES`（4 MiB）只決定匯入時一批讀幾個 blob（影響進度與取消的粒度，不影響結果），**不會**改變 `import_profile_hash` |
 | `TOKEN_ENCRYPTION_KEY` | 空 | GitHub token 的 Fernet 加密金鑰；**空白時無法保存 token，沒有預設金鑰** |
 | `MANAGED_REPOS_DIR` | 空 | GitHub clone 的**受管目錄**（絕對路徑）；**空白＝停用 GitHub 註冊**；與 `REPOSITORY_ROOTS` 分開 |
 | `GITHUB_*` | 見 `.env.example` | GitHub API／clone 的基底位址（僅供測試指向本機假 GitHub）與逾時（未實測，大型 repo 可能需調高） |
@@ -194,8 +194,8 @@ React + TypeScript + Vite 的最小操作主控台（`frontend/`），用來以�
 | DELETE | `/api/v1/github/auth` | 刪除本機保存的 token（不在 GitHub 端撤銷） | 204（冪等） |
 | GET | `/api/v1/jobs` | 背景工作列表（新的在前；`status`＝`queued`／`running`／`succeeded`／`failed`／`cancelled`／`active`、`kind`、`repository_id`、`snapshot_id`、`limit`、`offset`） | 200 `{items, total, limit, offset}`；422 |
 | GET | `/api/v1/jobs/status` | dispatcher／worker 是否在線（讀 `service_heartbeats`，**不連 Redis**；`online`／`stale`／`absent`）與 `queued`／`running` 數量 | 200 |
-| GET | `/api/v1/jobs/{job_id}` | 單一工作（階段、進度、嘗試次數、安全的 `error`、`result`；**不含租約令牌**） | 200；404 `job_not_found`；422（id 超出 1～2⁶³−1） |
-| POST | `/api/v1/jobs/{job_id}/cancel` | 取消：`queued` 立即 `cancelled`；`running` 只記錄取消請求；已取消者冪等 | 200 已取消；202 已記錄請求；404；409 `job_not_cancellable` |
+| GET | `/api/v1/jobs/{job_id}` | 單一工作（階段、進度、嘗試次數、安全的 `error`、`result`、取消請求時間 `cancel_requested_at`、失敗追查摘要 `diagnostics`；**不含租約令牌**）。背景匯入的 `progress.processed_files` 隨每一批 blob 讀完而前進；`total_files` 為 `null` 時（還在列舉檔案）請不要顯示百分比 | 200；404 `job_not_found`；422（id 超出 1～2⁶³−1） |
+| POST | `/api/v1/jobs/{job_id}/cancel` | 取消：`queued` 立即 `cancelled`；`running` 只記錄取消請求，worker 在目前這一批 blob 讀完後中止（最多延遲一批的時間，未實測大型 repo），快照標為 `failed`、不留檔案；已取消者冪等 | 200 已取消；202 已記錄請求；404；409 `job_not_cancellable` |
 | POST | `/api/v1/jobs/{job_id}/retry` | 重試 `failed` 的工作（同一 job id，重新排入佇列） | 202；404；409 `job_not_retryable` |
 
 通則：

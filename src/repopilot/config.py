@@ -54,8 +54,16 @@ class Settings(BaseSettings):
     import_max_file_bytes: int = Field(default=1024 * 1024, ge=1)
     import_max_files: int = Field(default=20_000, ge=1)
     import_max_snapshot_bytes: int = Field(default=200 * 1024 * 1024, ge=1)
-    # 讀取整個快照 blob 的 Git 呼叫逾時（比單一 Git 指令的逾時長）
+    # 讀取整個快照 blob 的總時間上限（比單一 Git 指令的逾時長）。分批讀取（D43）時是**所有批次共用**
+    # 的期限，不是每批各一份，所以最壞情況與切片 3 之前相同
     import_git_timeout_seconds: float = Field(default=300.0, gt=0, le=3600)
+    # blob 分批讀取（第二階段切片 4，D43）：每批最多這麼多個不同的 blob、且（依 ls-tree 的大小）
+    # 合計最多這麼多位元組；每批一個 `git cat-file --batch`，批與批之間回報進度並檢查取消。
+    # 只影響「怎麼切」，**不影響匯入結果**，所以不納入 import_profile_hash。單一 blob 超過位元組上限
+    # 時獨占一批（它本來就受 import_max_file_bytes 限制）。數值是未實測的起點（本機 Windows 單次
+    # 量測：每多一批約多 70～80 毫秒的 git 子程序啟動成本，見 D43）
+    import_blob_batch_max_files: int = Field(default=200, ge=1, le=100_000)
+    import_blob_batch_max_bytes: int = Field(default=4 * 1024 * 1024, ge=1)
     # importing 超過此秒數視為程序中斷，允許後續請求接手；須大於實際匯入所需時間
     import_stale_seconds: int = Field(default=1800, ge=60)
     # 以檔名（不分大小寫、fnmatch）比對；環境變數為 JSON 陣列。納入 import_profile_hash

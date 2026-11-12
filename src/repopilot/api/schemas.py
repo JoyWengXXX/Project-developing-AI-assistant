@@ -430,6 +430,29 @@ class JobErrorResponse(BaseModel):
     message: str
 
 
+class JobUnitResponse(BaseModel):
+    """worker 目前處理的單位（只在 running 時有值）：種類與第幾個，沒有識別、路徑或內容。"""
+
+    kind: str
+    index: int | None
+    count: int | None
+
+
+class JobPoisonResponse(BaseModel):
+    """毒藥單位的計數（D43）：同一單位連續讓 worker 崩潰的次數、被略過的單位數、總崩潰次數。"""
+
+    suspect_crashes: int
+    skipped_units: int
+    total_crashes: int
+
+
+class JobDiagnosticsResponse(BaseModel):
+    """失敗追查用的 `work_state` 安全摘要（第二階段切片 4）；`work_state` 本身不外露。"""
+
+    current_unit: JobUnitResponse | None
+    poison: JobPoisonResponse
+
+
 class JobResponse(BaseModel):
     """背景工作。刻意**不含**租約令牌與 `work_state`（worker 內部資料）。"""
 
@@ -444,7 +467,10 @@ class JobResponse(BaseModel):
     max_attempts: int
     next_attempt_at: datetime | None
     cancel_requested: bool
+    # 使用者要求取消的時間（切片 4 新增）；null＝沒有要求。cancel_requested 是它的布林版本
+    cancel_requested_at: datetime | None
     progress: JobProgressResponse
+    diagnostics: JobDiagnosticsResponse
     error: JobErrorResponse | None
     result: dict[str, Any] | None
     request_id: str | None

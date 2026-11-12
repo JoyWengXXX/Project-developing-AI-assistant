@@ -22,9 +22,10 @@ Redis 都不在這個模組裡，所以流程可以用真實 PostgreSQL 直接�
    （不含參數值，D37）。
 8. `finally` 停止心跳、釋放鎖。
 
-**檢查點**（取消與租約遺失）：取得租約後、載入設定後、取鎖後、匯入的三個進度回報點
-（總數已知／不需讀取的檔案分類完成／全部讀完）、發布結果前（`complete_job` 在列鎖內再檢查
-一次，那是決定性的）。匯入的 blob 讀取是單一 `cat-file --batch`（D23），中途無法中止。
+**檢查點**（取消與租約遺失）：取得租約後、載入設定後、取鎖後、匯入的進度回報點（總數已知／不需讀取
+的檔案分類完成／**每一批 blob 讀完**）、每一批讀取前、發布結果前（`complete_job` 在列鎖內再檢查
+一次，那是決定性的）。blob 以分批方式讀取（D43，每批一個 `cat-file --batch`），所以取消與租約遺失
+最多延遲「一批」的時間；進度回報本身會讀取取消旗標（不必等心跳執行緒的下一輪）。
 
 .NET 對照：像背景服務（`BackgroundService`）裡處理一則佇列訊息的方法；租約心跳類似可見性
 逾時的續租，令牌柵欄像 ETag／樂觀並行：寫入時帶著「我還是不是擁有者」的證明。
@@ -57,8 +58,8 @@ from repopilot.errors import (
 )
 from repopilot.logging_config import APP_LOGGER_NAME
 from repopilot.request_context import request_id_var
+from repopilot.services import job_poison, snapshots
 from repopilot.services import jobs as job_service
-from repopilot.services import snapshots
 from repopilot.services.import_profile import ImportProfile
 from repopilot.services.repositories import get_repository, repository_key, resolve_worker_path
 
@@ -319,12 +320,38 @@ def _run_import(
             raise LockBusyError
         held_repo_lock = repo_lock
         heartbeat.checkpoint()
+        # 毒藥單位框架（D43）：先結算上一個 attempt 留下的「目前單位」（上次以 worker_lost 結束
+        # 且指標還在＝崩潰在那個單位），之後每一批 blob 讀取前寫入新的目前單位。匯入不可略過
+        # 任何一批（會讓快照殘缺），所以這裡只留下紀錄；重複崩潰的結局仍是達上限後 failed
+        # （worker_lost）
+        tracker = job_poison.PoisonTracker(
+            job.work_state,
+            lambda patch: (
+                job_service.update_progress(session, job.id, token, work_state=patch).work_state
+            ),
+        )
+        tracker.begin_attempt(job.error_code)
+        if tracker.summary.suspect_crashes >= job_poison.SKIP_THRESHOLD:
+            logger.warning(
+                "job_unit_crashed_repeatedly",
+                extra={"job_id": job.id, "crashes": tracker.summary.suspect_crashes},
+            )
         job_service.update_progress(session, job.id, token, phase="importing")
 
         def on_progress(processed: int, total: int | None) -> None:
             heartbeat.checkpoint()
-            job_service.update_progress(
+            updated = job_service.update_progress(
                 session, job.id, token, processed_files=processed, total_files=total
+            )
+            # 進度寫入本來就要鎖 job 列，順便讀取取消旗標：取消在下一次進度回報（最多一批之後）
+            # 生效，不必等心跳執行緒的下一輪（JOB_HEARTBEAT_SECONDS）
+            if updated.cancel_requested_at is not None:
+                raise ImportCancelledError("The job was cancelled.")
+
+        def on_batch(batch_id: str, number: int, count: int) -> None:
+            heartbeat.checkpoint()
+            tracker.enter(
+                job_poison.WorkUnit(batch_id, "blob_batch", "worker_crash", number, count)
             )
 
         def finalize(snapshot_id: int, complete: Callable[[Session], None]) -> bool:
@@ -352,6 +379,7 @@ def _run_import(
             path=path,
             takeover=snapshot_lock,
             on_progress=on_progress,
+            on_batch=on_batch,
             finalize=finalize,
         )
         if "status" not in finished:

@@ -15,6 +15,7 @@ from repopilot.db.locks import AdvisoryLock, engine_of, snapshot_lock_key, try_a
 from repopilot.db.models import Repository, Snapshot, SnapshotFile
 from repopilot.errors import (
     GitCommandError,
+    GitTimeoutError,
     ImportCancelledError,
     ImportLimitExceededError,
     InvalidRepositoryPathError,
@@ -22,7 +23,13 @@ from repopilot.errors import (
     RepositoryNotFoundError,
     SnapshotImportInProgressError,
 )
-from repopilot.git.objects import TreeEntry, list_tree, read_blobs, resolve_commit
+from repopilot.git.objects import (
+    TreeEntry,
+    list_tree,
+    plan_blob_batches,
+    read_blobs,
+    resolve_commit,
+)
 from repopilot.git.repository import ensure_repository_root
 from repopilot.logging_config import APP_LOGGER_NAME
 from repopilot.services.import_profile import ImportProfile
@@ -44,8 +51,13 @@ _MAX_ACQUIRE_ATTEMPTS = 3
 
 FileRecord = dict[str, Any]
 # 進度回呼（processed_files, total_files）：只供 worker 的 job 使用；回呼可以拋例外來中止
-# 匯入（例如使用者要求取消、租約已遺失），匯入服務會把快照標記為 failed 後讓例外繼續往上傳
+# 匯入（例如使用者要求取消、租約已遺失），匯入服務會把快照標記為 failed 後讓例外繼續往上傳。
+# 分批讀取（D43）下，它在「總數已知」「不需讀取者分類完成」與**每一批 blob 讀完後**各呼叫一次
 ProgressCallback = Callable[[int, int | None], None]
+# 批次回呼（batch_id, 第幾批（0 起算）, 總批數）：在**讀取每一批 blob 之前**呼叫（毒藥檔案框架用它
+# 記下「正在處理的單位」，D43）。batch_id 是該批 object ID 的指紋，同一個 commit 與同樣的批次設定下
+# 每次都相同。與 ProgressCallback 一樣可以拋例外來中止
+BatchCallback = Callable[[str, int, int], None]
 # 完成交易的接手者（`finalize(snapshot_id, complete) -> 是否已發布`）：worker 傳入
 # `complete_job` 的包裝，讓「快照 completed＋檔案列」與「job succeeded」在**同一個交易**提交
 # （規格 5.8 的提交前檢查點）。`complete(session)` 做快照的完成寫入（不 commit）；
@@ -62,6 +74,7 @@ def import_snapshot(
     path: Path | None = None,
     takeover: AdvisoryLock | None = None,
     on_progress: ProgressCallback | None = None,
+    on_batch: BatchCallback | None = None,
     finalize: Finalizer | None = None,
 ) -> tuple[Snapshot, bool]:
     """匯入 repo 在指定 revision 的固定版本快照；回傳 (Snapshot, 是否本次新建完成)。
@@ -72,13 +85,13 @@ def import_snapshot(
     互斥。同步路徑（`takeover=None`）自己取鎖，取不到回 `SnapshotImportInProgressError`
     （409，與 D3 一致）。
 
-    後四個是 worker 專用的選用參數，預設 `None` 時行為與第一階段完全相同：
+    後五個是 worker 專用的選用參數，預設 `None` 時行為與第一階段完全相同：
     - `path`：worker 已在容器內驗證過的 repo 路徑；省略則依 D28 重新驗證資料庫中的主機路徑。
     - `takeover`：呼叫者**已持有的**該快照的快照鎖。活著的匯入者一定持有這把鎖，所以持鎖者
       可以立即接手殘留的 `importing` 快照（不必等 `IMPORT_STALE_SECONDS`，規格 5.4）；鎖的
       鍵必須與這次要匯入的快照一致，發布前會確認鎖連線仍存活。被接手的舊寫入者仍會在完成時
       因 `started_at` 不符而失敗，不會產生半套資料。
-    - `on_progress`、`finalize`：見型別說明。
+    - `on_progress`、`on_batch`、`finalize`：見型別說明。
     """
     started = time.monotonic()
     repository = get_repository(session, repository_id)
@@ -115,6 +128,7 @@ def import_snapshot(
             lock=takeover,
             takeover=True,
             on_progress=on_progress,
+            on_batch=on_batch,
             finalize=finalize,
         )
 
@@ -139,6 +153,7 @@ def import_snapshot(
             lock=lock,
             takeover=False,
             on_progress=on_progress,
+            on_batch=on_batch,
             finalize=finalize,
         )
 
@@ -156,6 +171,7 @@ def _import_with_lock(
     lock: AdvisoryLock,
     takeover: bool,
     on_progress: ProgressCallback | None,
+    on_batch: BatchCallback | None,
     finalize: Finalizer | None,
 ) -> tuple[Snapshot, bool]:
     snapshot, owned = _acquire_snapshot(
@@ -173,12 +189,13 @@ def _import_with_lock(
     snapshot_id = snapshot.id
     token = snapshot.started_at
     try:
-        if on_progress is None:
-            records, stats = _build_records(path, commit_sha, profile, settings)
-        else:
-            records, stats = _build_records(
-                path, commit_sha, profile, settings, on_progress=on_progress
-            )
+        # 只在 worker 傳了回呼時才帶這兩個關鍵字（同步路徑與既有測試的呼叫形狀不變）
+        build_options: dict[str, Any] = {}
+        if on_progress is not None:
+            build_options["on_progress"] = on_progress
+        if on_batch is not None:
+            build_options["on_batch"] = on_batch
+        records, stats = _build_records(path, commit_sha, profile, settings, **build_options)
         lock.assert_alive()  # 持鎖期間連線若被中斷，鎖已默默消失：發布前確認（規格 5.10）
         if finalize is None:
             _complete_snapshot(session, snapshot_id, token, records, stats)
@@ -396,6 +413,7 @@ def _build_records(
     settings: Settings,
     *,
     on_progress: ProgressCallback | None = None,
+    on_batch: BatchCallback | None = None,
 ) -> tuple[list[FileRecord], dict[str, int]]:
     entries = sorted(
         list_tree(path, commit_sha, timeout=settings.git_timeout_seconds),
@@ -417,9 +435,10 @@ def _build_records(
             f"(longest: {max(long_paths)} bytes)."
         )
 
-    # 進度回報（只有 job 路徑會傳回呼）：`ls-tree` 完成後才知道總數；匯入的 blob 讀取是單一
-    # `cat-file --batch`（D23），無法逐檔回報，所以只在三個點回報：總數已知、不需讀取者分類
-    # 完成、全部完成。回呼也是取消與租約遺失的檢查點（它可以拋例外來中止）
+    # 進度回報（只有 job 路徑會傳回呼）：`ls-tree` 完成後才知道總數，所以先回報 (0, 總數)，之後
+    # 是「不需讀取者分類完成」與**每一批 blob 讀完**（D43；切片 3 時 blob 是單一
+    # `cat-file --batch`，只有三個點，大型 repo 的進度會長時間停在 0）。回呼同時是取消與租約遺失
+    # 的檢查點（它可以拋例外來中止），所以取消最多延遲「一批」的時間
     total = len(entries)
     if on_progress is not None:
         on_progress(0, total)
@@ -442,12 +461,31 @@ def _build_records(
     if on_progress is not None:
         on_progress(len(records), total)
 
+    # 相同的 blob 只讀一次（D23），再套用到每個引用它的檔案；順序以第一次出現為準
     expected_sizes = {entry.object_id: entry.size or 0 for entry in to_read.values()}
-    blobs = read_blobs(path, expected_sizes, timeout=settings.import_git_timeout_seconds)
+    entries_by_blob: dict[str, list[int]] = {}
     for index, entry in to_read.items():
-        records[index] = _classify_content(entry, blobs[entry.object_id])
-    if on_progress is not None:
-        on_progress(total, total)
+        entries_by_blob.setdefault(entry.object_id, []).append(index)
+    batches = plan_blob_batches(
+        expected_sizes,
+        max_files=settings.import_blob_batch_max_files,
+        max_bytes=settings.import_blob_batch_max_bytes,
+    )
+    # 所有批次共用 IMPORT_GIT_TIMEOUT_SECONDS 這一個期限（不是每批各一份），最壞情況與一次讀完相同
+    deadline = time.monotonic() + settings.import_git_timeout_seconds
+    for number, batch in enumerate(batches):
+        if on_batch is not None:
+            on_batch(_batch_id(batch), number, len(batches))
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise GitTimeoutError("Git command timed out.")
+        blobs = read_blobs(path, batch, timeout=remaining)
+        for object_id in batch:
+            for index in entries_by_blob[object_id]:
+                records[index] = _classify_content(to_read[index], blobs[object_id])
+        del blobs  # 這一批的位元組不需要再留著（解碼後的文字已在 records 裡），記憶體不隨批數累積
+        if on_progress is not None:
+            on_progress(len(records), total)
 
     ordered = [records[index] for index in range(len(entries))]
     imported = sum(1 for record in ordered if record["status"] == "imported")
@@ -457,6 +495,12 @@ def _build_records(
         "total_bytes": total_bytes,
     }
     return ordered, stats
+
+
+def _batch_id(batch: dict[str, int]) -> str:
+    """一批 blob 的指紋（object ID 依序串接的 SHA-256 前 16 碼）：同一批內容每次都相同。"""
+    digest = hashlib.sha256("\n".join(batch).encode("ascii")).hexdigest()
+    return f"blobs-{digest[:16]}"
 
 
 def _write_completion(

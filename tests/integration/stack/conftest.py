@@ -129,8 +129,9 @@ class Stack:
         wait_until(online, "worker and dispatcher heartbeats", timeout=timeout)
 
     def reset(self) -> None:
-        """每個測試前的已知狀態。"""
-        self.unpause("redis-test")
+        """每個測試前的已知狀態（含解除上一個測試可能留下的 docker pause）。"""
+        for service in SERVICES:
+            self.unpause(service)
         marker = self.db_now()
         for service in SERVICES:
             if self.state(service) != "running":

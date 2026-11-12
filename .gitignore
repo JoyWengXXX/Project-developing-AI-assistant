@@ -5,6 +5,9 @@ AGENTS.md
 .github/prompts/
 .github/skills/
 
+# 專案文件（本機參考用，不納入版本控制；README.md 仍納入）
+docs/
+
 # Python
 .venv/
 __pycache__/
@@ -18,7 +21,12 @@ dist/
 build/
 *.egg-info/
 
-# 環境設定（保留 .env.example）
+# 環境設定（保留範例檔）
 .env
 .env.*
 !.env.example
+!.env.worker.example
+
+# 第二階段：測試用 repo 與受管目錄（掛載給容器；內容由腳本與測試產生）
+.test-repos/
+.test-managed/

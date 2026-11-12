@@ -1,0 +1,19 @@
+# 映像的 build context 是專案根目錄（docker/worker.Dockerfile）；只需要 pyproject.toml、uv.lock、
+# README.md、src/。其餘（版本庫、虛擬環境、前端、文件、測試、環境設定檔）一律不送進 build。
+.git
+.github
+.venv
+.mypy_cache
+.ruff_cache
+.pytest_cache
+**/__pycache__
+frontend
+docs
+tests
+scripts
+migrations
+.test-repos
+.test-managed
+.env
+.env.*
+AGENTS.md

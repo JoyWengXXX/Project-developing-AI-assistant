@@ -1,0 +1,1696 @@
+/* 簡潔的自寫樣式：不使用 CSS 框架。 */
+
+:root {
+  --bg: #f4f5f7;
+  --panel: #ffffff;
+  --border: #d5d9e0;
+  --text: #1f2933;
+  --muted: #667085;
+  --accent: #2457c5;
+  --ok-bg: #e3f6e8;
+  --ok-fg: #14602b;
+  --warn-bg: #fff3d6;
+  --warn-fg: #7a4b00;
+  --bad-bg: #fde6e6;
+  --bad-fg: #8f1d1d;
+  --bad-border: #f0b4b4;
+  --header-bg: #ffffff;
+  --input-bg: #ffffff;
+  --input-border: #aab2bf;
+  --code-bg: #eef0f4;
+  --pre-bg: #f7f8fa;
+  --soft-bg: #eef3ff;
+  --row-border: #e6e9ee;
+  --overlay: rgba(255, 255, 255, 0.6);
+  --accent-fg: #ffffff;
+  --focus: #f59e0b;
+  /* commit 圖：8 色循環（在白底上對比 ≥ 3:1） */
+  --graph-0: #2563eb;
+  --graph-1: #d9480f;
+  --graph-2: #2b8a3e;
+  --graph-3: #9c36b5;
+  --graph-4: #c2255c;
+  --graph-5: #0c8599;
+  --graph-6: #8a6d00;
+  --graph-7: #5f3dc4;
+  color-scheme: light;
+  font-family: system-ui, 'Segoe UI', 'Microsoft JhengHei', sans-serif;
+  color: var(--text);
+  background: var(--bg);
+  line-height: 1.5;
+}
+
+/* 暗黑模式：由 <html data-theme="dark"> 觸發（見 useTheme.ts）。 */
+:root[data-theme='dark'] {
+  --bg: #12161c;
+  --panel: #1a2029;
+  --border: #323b49;
+  --text: #e4e8ee;
+  --muted: #9aa5b5;
+  --accent: #6c9bff;
+  --accent-fg: #0b1220;
+  --ok-bg: #16351f;
+  --ok-fg: #7ddc9a;
+  --warn-bg: #3d2e0c;
+  --warn-fg: #f2c56b;
+  --bad-bg: #3d1a1a;
+  --bad-fg: #ff9b9b;
+  --bad-border: #6b2b2b;
+  --header-bg: #1a2029;
+  --input-bg: #12161c;
+  --input-border: #4a5568;
+  --code-bg: #2a3240;
+  --pre-bg: #12161c;
+  --soft-bg: #1f2b44;
+  --row-border: #2a3240;
+  --overlay: rgba(0, 0, 0, 0.35);
+  --focus: #fbbf24;
+  --graph-0: #6c9bff;
+  --graph-1: #ff9a52;
+  --graph-2: #5fd38a;
+  --graph-3: #d68cf0;
+  --graph-4: #ff7aa8;
+  --graph-5: #4fd1e0;
+  --graph-6: #e6c453;
+  --graph-7: #a99bff;
+  color-scheme: dark;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-size: 14px;
+}
+
+h1,
+h2,
+h3,
+h4 {
+  margin: 0 0 8px;
+  line-height: 1.3;
+}
+h1 {
+  font-size: 20px;
+}
+h2 {
+  font-size: 17px;
+}
+h3 {
+  font-size: 15px;
+  margin-top: 16px;
+}
+h4 {
+  font-size: 13px;
+  margin-top: 8px;
+}
+
+code,
+pre {
+  font-family: Consolas, 'Courier New', monospace;
+  font-size: 12.5px;
+}
+code {
+  background: var(--code-bg);
+  padding: 1px 4px;
+  border-radius: 3px;
+}
+code.wrap {
+  word-break: break-all;
+}
+
+/* ---------- 版面 ---------- */
+
+.app-header {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 20px;
+  background: var(--header-bg);
+  border-bottom: 1px solid var(--border);
+}
+.subtitle {
+  margin: 0;
+  color: var(--muted);
+}
+.header-status {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+}
+
+.layout {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 16px 20px;
+  max-width: 1280px; /* 單欄：寬螢幕上限制行寬，避免文字拉得太長 */
+  margin: 0 auto;
+  min-width: 0;
+}
+
+.panel {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 14px 16px;
+  min-width: 0;
+}
+
+/* ---------- 表單與按鈕 ---------- */
+
+.form {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-width: 560px;
+}
+label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-weight: 600;
+}
+input,
+select {
+  font: inherit;
+  padding: 6px 8px;
+  border: 1px solid var(--input-border);
+  border-radius: 4px;
+  background: var(--input-bg);
+  color: var(--text);
+  font-weight: 400;
+}
+button {
+  font: inherit;
+  padding: 6px 12px;
+  border: 1px solid var(--accent);
+  border-radius: 4px;
+  background: var(--accent);
+  color: var(--accent-fg);
+  cursor: pointer;
+  align-self: flex-start;
+}
+button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+button[aria-pressed='true'] {
+  background: var(--panel);
+  color: var(--accent);
+}
+/* 次要按鈕：白底＋主色框線；危險按鈕：紅字紅框 */
+button.secondary {
+  background: var(--panel);
+  color: var(--accent);
+}
+button.danger {
+  background: var(--panel);
+  color: var(--bad-fg);
+  border-color: var(--bad-border);
+}
+a {
+  color: var(--accent);
+}
+[hidden] {
+  display: none !important;
+}
+:focus-visible {
+  outline: 3px solid var(--focus);
+  outline-offset: 2px;
+}
+.toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 12px;
+  margin: 8px 0;
+}
+
+/* ---------- 文字提示 ---------- */
+
+.api-hint {
+  margin: 0 0 8px;
+  color: var(--muted);
+  font-size: 12.5px;
+}
+.api-hint code {
+  margin-left: 6px;
+}
+.note {
+  color: var(--muted);
+  margin: 6px 0;
+}
+.muted {
+  color: var(--muted);
+}
+.empty {
+  color: var(--muted);
+}
+.success {
+  background: var(--ok-bg);
+  color: var(--ok-fg);
+  border-radius: 4px;
+  padding: 8px 12px;
+  margin: 8px 0;
+}
+.success p {
+  margin: 0 0 6px;
+}
+.success code {
+  background: var(--overlay);
+}
+
+.error-box {
+  background: var(--bad-bg);
+  color: var(--bad-fg);
+  border: 1px solid var(--bad-border);
+  border-radius: 4px;
+  padding: 8px 12px;
+  margin: 8px 0;
+}
+.error-box code {
+  background: var(--overlay);
+}
+.error-box ul {
+  margin: 4px 0 0;
+  padding-left: 20px;
+}
+.error-title {
+  font-weight: 700;
+}
+.error-hint {
+  margin: 6px 0 0;
+}
+
+.badge {
+  display: inline-block;
+  padding: 0 8px;
+  border-radius: 10px;
+  font-size: 12.5px;
+  font-weight: 600;
+}
+.badge-completed {
+  background: var(--ok-bg);
+  color: var(--ok-fg);
+}
+.badge-importing {
+  background: var(--warn-bg);
+  color: var(--warn-fg);
+}
+.badge-failed {
+  background: var(--bad-bg);
+  color: var(--bad-fg);
+}
+/* 檔案樹：skipped 檔案的 skip_reason 徽章（bad＝排除／不安全，warn＝內容無法保存，info＝特殊 Git 項目） */
+.badge-skip-bad {
+  background: var(--bad-bg);
+  color: var(--bad-fg);
+}
+.badge-skip-warn {
+  background: var(--warn-bg);
+  color: var(--warn-fg);
+}
+.badge-skip-info {
+  background: var(--soft-bg);
+  color: var(--accent);
+}
+
+/* ---------- 清單與表格 ---------- */
+
+.tabs {
+  display: flex;
+  gap: 4px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 8px;
+}
+button.tab {
+  background: var(--panel);
+  color: var(--text);
+  border-color: var(--border);
+  border-bottom: none;
+  border-radius: 4px 4px 0 0;
+}
+button.tab[aria-selected='true'] {
+  background: var(--soft-bg);
+  color: var(--accent);
+  border-color: var(--accent);
+  font-weight: 700;
+}
+.steps {
+  margin: 4px 0;
+  padding-left: 20px;
+}
+.badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.badge-neutral {
+  background: var(--code-bg);
+  color: var(--text);
+}
+.repo-item {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.repo-actions {
+  padding-left: 12px;
+  border-left: 3px solid var(--border);
+}
+.action-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.action-row .api-hint {
+  margin: 0;
+}
+/* 移除確認區塊：紅底提醒；確定移除用實心紅，取消用次要按鈕，兩種主題的對比由變數決定 */
+.remove-confirm {
+  background: var(--bad-bg);
+  color: var(--bad-fg);
+  border: 1px solid var(--bad-border);
+  border-radius: 4px;
+  padding: 8px 12px;
+  margin: 8px 0;
+}
+.remove-confirm p {
+  margin: 0 0 6px;
+}
+button.danger-solid {
+  background: var(--bad-fg);
+  border-color: var(--bad-fg);
+  color: var(--bad-bg);
+  font-weight: 600;
+}
+.ref-list {
+  margin: 4px 0;
+  padding-left: 20px;
+}
+.warning ol {
+  margin: 4px 0 0;
+  padding-left: 20px;
+}
+.warning code {
+  background: var(--overlay);
+}
+
+.kv {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 2px 12px;
+  margin: 6px 0;
+}
+.kv dt {
+  color: var(--muted);
+}
+.kv dd {
+  margin: 0;
+  word-break: break-word;
+}
+
+.pick-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+button.pick {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  width: 100%;
+  text-align: left;
+  background: var(--panel);
+  color: var(--text);
+  border-color: var(--border);
+}
+button.pick.selected {
+  border-color: var(--accent);
+  box-shadow: inset 4px 0 0 var(--accent);
+  background: var(--soft-bg);
+}
+.pick .path {
+  font-family: Consolas, 'Courier New', monospace;
+  font-size: 12.5px;
+  word-break: break-all;
+}
+
+.table {
+  width: 100%;
+  border-collapse: collapse;
+}
+.table th,
+.table td {
+  text-align: left;
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--row-border);
+  vertical-align: top;
+}
+.table.compact th,
+.table.compact td {
+  padding: 2px 6px;
+}
+
+.pager {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin: 8px 0;
+}
+
+.detail {
+  margin-top: 8px;
+  border-top: 1px solid var(--border);
+}
+.two-col {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 16px;
+}
+
+.files-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 16px;
+}
+@media (min-width: 900px) {
+  .files-layout {
+    grid-template-columns: minmax(0, 2fr) minmax(0, 3fr);
+    align-items: start;
+  }
+}
+.file-list {
+  min-width: 0;
+}
+
+/* ---------- 檔案樹 ---------- */
+
+progress {
+  width: 100%;
+  max-width: 420px;
+  accent-color: var(--accent);
+}
+.warning {
+  background: var(--warn-bg);
+  color: var(--warn-fg);
+  border-radius: 4px;
+  padding: 8px 12px;
+  margin: 8px 0;
+}
+.tree,
+.tree ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.tree {
+  background: var(--pre-bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  max-height: 560px;
+  overflow: auto;
+  padding: 4px 0;
+}
+.tree li {
+  outline: none; /* 焦點外框畫在 .tree-row 上，避免整個子樹被框起來 */
+}
+.tree-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px 2px 6px; /* 左側縮排由元件以 inline style 依層級覆寫 */
+  cursor: pointer;
+  user-select: none;
+  min-width: 0;
+}
+.tree-row:hover {
+  background: var(--code-bg);
+}
+.tree-row.selected {
+  background: var(--soft-bg);
+  box-shadow: inset 3px 0 0 var(--accent);
+  font-weight: 600;
+}
+.tree li:focus-visible > .tree-row {
+  outline: 3px solid var(--focus);
+  outline-offset: -3px;
+}
+.tree-chevron-box {
+  display: inline-flex;
+  flex: none;
+  width: 14px;
+  height: 14px;
+  color: var(--muted);
+}
+.tree-chevron {
+  transition: transform 0.1s;
+}
+.tree-chevron-box.open .tree-chevron {
+  transform: rotate(90deg);
+}
+.tree-icon {
+  flex: none;
+}
+.tree-icon-folder {
+  color: var(--accent);
+}
+.tree-icon-file {
+  color: var(--muted);
+}
+.tree-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: Consolas, 'Courier New', 'Microsoft JhengHei', monospace;
+  font-size: 12.5px;
+}
+.tree-count {
+  flex: none;
+  color: var(--muted);
+  font-size: 12px;
+}
+.tree-row .badge {
+  flex: none;
+  font-size: 11.5px;
+  padding: 0 6px;
+}
+.viewer {
+  min-width: 0;
+}
+pre.content {
+  background: var(--pre-bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 8px;
+  margin: 4px 0;
+  overflow: auto;
+  max-height: 480px;
+  white-space: pre;
+  tab-size: 4;
+}
+
+/* ---------- 版本區：commit 圖 ---------- */
+
+button.small {
+  padding: 1px 8px;
+  font-size: 12.5px;
+}
+.commit-graph {
+  background: var(--pre-bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  max-height: 480px;
+  overflow: auto;
+}
+.commit-row {
+  display: flex;
+  align-items: center;
+  min-width: 640px; /* 視窗太窄時圖形欄與文字不擠壓，改由外層捲動 */
+  cursor: pointer;
+  user-select: none;
+}
+.commit-row:hover {
+  background: var(--code-bg);
+}
+.commit-row.selected {
+  background: var(--soft-bg);
+  box-shadow: inset 3px 0 0 var(--accent); /* 選取不只靠底色：左側色條＋節點外框＋aria-selected */
+}
+.commit-row:focus-visible {
+  outline: 3px solid var(--focus);
+  outline-offset: -3px;
+}
+.graph-cell {
+  flex: none;
+  display: block;
+}
+.graph-line {
+  fill: none;
+  stroke-width: 2;
+}
+.graph-node {
+  stroke: var(--panel);
+  stroke-width: 1.5;
+}
+.graph-node-merge {
+  fill: var(--panel); /* 空心：外框顏色由元件以 inline style 指定 */
+  stroke-width: 2.5;
+}
+.graph-selected-ring {
+  fill: none;
+  stroke: var(--text);
+  stroke-width: 2;
+}
+.commit-text {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1 1 auto;
+  min-width: 0;
+  padding-right: 10px;
+}
+.ref-badges {
+  display: flex;
+  gap: 4px;
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 45%;
+  overflow: hidden;
+}
+.ref-badge {
+  flex: none;
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 0 7px;
+  border: 1px solid var(--accent);
+  border-radius: 10px;
+  background: var(--panel);
+  color: var(--accent);
+  font-size: 12px;
+  font-weight: 600;
+}
+.ref-badge.ref-tag {
+  border-style: dashed;
+  border-color: var(--warn-fg);
+  background: var(--warn-bg);
+  color: var(--warn-fg);
+}
+.ref-badge.ref-default {
+  background: var(--accent);
+  color: var(--accent-fg);
+}
+.commit-sha {
+  flex: none;
+}
+.commit-subject {
+  flex: 1 1 0;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.commit-author {
+  flex: 0 0 130px; /* 固定寬度：每列的作者、日期欄才會對齊 */
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--muted);
+}
+.commit-time {
+  flex: none;
+  color: var(--muted);
+  font-size: 12.5px;
+  font-variant-numeric: tabular-nums;
+}
+.commit-loaded-slot {
+  flex: none;
+  width: 54px; /* 預留「已匯入」標記的位置，有沒有標記都不會推動其他欄 */
+  font-size: 11.5px;
+}
+.graph-footer {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  margin: 8px 0;
+}
+.graph-legend {
+  margin: 4px 0;
+}
+.commit-detail {
+  margin-top: 8px;
+  border-top: 1px solid var(--border);
+}
+.commit-detail code + code {
+  margin-left: 6px;
+}
+.version-summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin: 6px 0;
+}
+/* 選取的 commit 的匯入區（未匯入的按鈕、背景工作的進度、錯誤與重試、已匯入的管理動作） */
+.version-load {
+  margin-top: 8px;
+  padding-top: 4px;
+  border-top: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.version-load h3,
+.version-load p {
+  margin: 0;
+}
+.version-load .job-progress,
+.version-load .error-box,
+.version-load .warning,
+.version-load .job-error {
+  align-self: stretch;
+}
+.version-load .error-box,
+.version-load .warning {
+  margin: 0;
+}
+details.advanced > summary {
+  cursor: pointer;
+  font-weight: 700;
+  font-size: 15px;
+}
+.advanced-body {
+  margin-top: 8px;
+}
+details.advanced[open] > summary {
+  margin-bottom: 8px;
+}
+
+/* ---------- 倉庫總覽 ---------- */
+
+.home-panels {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+/* 摺疊區摘要列：不用 display:flex（會讓展開三角形消失），狀態以行內元素接在標題後面 */
+.summary-status > * {
+  margin-left: 10px;
+  font-weight: 400;
+  font-size: 13.5px;
+}
+.summary-status > span:first-child {
+  margin-left: 0;
+  font-weight: 700;
+  font-size: 15px;
+}
+.overview {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-width: 0;
+}
+.overview-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.overview-head h2 {
+  margin: 0;
+}
+.reference-summary {
+  margin-top: 8px;
+  padding: 8px 12px;
+  background: var(--soft-bg);
+  border-radius: 4px;
+}
+.reference-summary h3 {
+  margin: 0 0 6px;
+}
+.reference-summary .note {
+  margin: 0;
+}
+.reference-list {
+  list-style: none;
+  margin: 0 0 6px;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.reference-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 4px 2px 10px;
+  border: 1px solid var(--accent);
+  border-radius: 14px;
+  background: var(--panel);
+}
+.overview-grid {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  /* 窄螢幕自動變單欄：每欄至少 340px，但不超過容器寬度 */
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 340px), 1fr));
+  gap: 16px;
+}
+.repo-card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  overflow-wrap: anywhere;
+}
+.repo-card:hover {
+  border-color: var(--accent);
+}
+.card-body {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  cursor: pointer;
+}
+.card-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 4px 10px;
+}
+.card-title {
+  margin: 0;
+  font-size: 16px;
+  min-width: 0;
+}
+.card-meta {
+  margin: 0;
+}
+.card-commit {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.card-commit code {
+  flex: none;
+}
+.card-body h4 {
+  margin: 6px 0 0;
+  color: var(--muted);
+}
+.card-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 20px;
+  margin: 0;
+}
+.card-stats div {
+  display: flex;
+  gap: 6px;
+}
+.card-stats dt {
+  color: var(--muted);
+}
+.card-stats dd {
+  margin: 0;
+  font-weight: 600;
+}
+.card-footer {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-top: 10px;
+  border-top: 1px solid var(--row-border);
+}
+label.check-label {
+  flex-direction: row;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+}
+.check-label input {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  padding: 0;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+.card-footer .repo-actions {
+  padding-left: 0;
+  border-left: none;
+}
+.detail-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+}
+.detail-header h2 {
+  margin: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+/* README 預覽：純文字、保留換行；預設只顯示約 6 行。
+   外框（內距、底色）放在 .readme-box：line-clamp 的元素若自己有內距，第 7 行會從內距處露出一截 */
+.readme-box {
+  margin: 4px 0;
+  padding: 8px;
+  background: var(--pre-bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+}
+.readme-text {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 6;
+  line-clamp: 6;
+  overflow: hidden;
+}
+.readme-text.expanded {
+  display: block;
+  max-height: 420px;
+  overflow: auto;
+}
+.readme-path {
+  font-size: 12.5px;
+}
+
+/* 語言分布：顏色只是輔助，圖例文字（名稱、百分比、檔案數）才是主要資訊 */
+.lang-bar {
+  display: flex;
+  gap: 2px; /* 分段之間留縫隙，相鄰顏色相近時仍分得出來 */
+  height: 12px;
+  border-radius: 6px;
+  overflow: hidden;
+  background: var(--code-bg);
+}
+.lang-seg {
+  flex-basis: 0; /* 寬度比例由 inline 的 flex-grow（檔案數）決定 */
+  min-width: 3px;
+}
+.lang-legend {
+  list-style: none;
+  margin: 6px 0 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+}
+.lang-legend li {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+.lang-swatch {
+  flex: none;
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+}
+.lang-name {
+  font-weight: 600;
+}
+.lang-pct {
+  font-variant-numeric: tabular-nums;
+}
+.lang-note {
+  margin: 6px 0 0;
+  font-size: 12.5px;
+}
+
+/* 專案資訊 */
+.project-list {
+  list-style: none;
+  margin: 4px 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.project-item {
+  padding-left: 8px;
+  border-left: 3px solid var(--border);
+}
+.project-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 6px;
+}
+.project-name {
+  min-width: 0;
+}
+.project-problem {
+  margin: 4px 0;
+}
+.dep-list {
+  list-style: none;
+  margin: 4px 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+/* ---------- 背景工作（頂端摘要、完整列表對話框、repo 提示） ---------- */
+
+/* 頁面頂端的一行摘要（取代原本的大面板標題）：緊湊的狀態列，完整列表按連結才開啟 */
+.jobs-bar {
+  position: relative;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 16px;
+  padding: 6px 12px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 13.5px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.jobs-bar-items {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 16px;
+}
+/* 只給螢幕閱讀器的文字（畫面上看不到，但仍在可及性樹中；live 區用） */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+/* 完整列表對話框（原生 <dialog>，showModal）：寬螢幕置中、窄螢幕幾乎滿版；內容太長時對話框自己捲動 */
+.jobs-dialog {
+  width: min(960px, calc(100vw - 16px));
+  max-width: none;
+  max-height: calc(100vh - 24px);
+  padding: 0 16px 16px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel);
+  color: var(--text);
+  overflow: auto;
+  overflow-wrap: anywhere;
+}
+.jobs-dialog::backdrop {
+  background: rgba(0, 0, 0, 0.5);
+}
+.jobs-dialog-head {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
+  padding: 12px 0 8px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
+}
+.jobs-dialog-head h2 {
+  margin: 0;
+}
+/* repo 卡片與詳情版本區的背景工作提示 */
+.repo-job-notice {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+  cursor: default;
+}
+.job-notice {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  margin: 0;
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-left-width: 5px; /* 左側色條是輔助；狀態一律另有文字 */
+  border-radius: 4px;
+  background: var(--pre-bg);
+  overflow-wrap: anywhere;
+}
+.job-notice p {
+  margin: 0;
+}
+.job-notice-active {
+  border-left-color: var(--warn-fg);
+}
+.job-notice-failed {
+  border-left-color: var(--bad-fg);
+}
+.job-notice-old {
+  border-left-color: var(--muted);
+}
+.job-notice-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+}
+.job-notice-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.job-notice-code {
+  margin-left: 6px;
+  opacity: 0.85;
+}
+.job-notice-note {
+  margin: 0;
+  font-size: 12.5px;
+}
+.repo-job-notice > .job-notice-note {
+  padding: 0 2px;
+}
+.jobs-backend {
+  margin-bottom: 8px;
+}
+.service-list {
+  list-style: none;
+  margin: 4px 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.service-state {
+  overflow-wrap: anywhere;
+}
+.job-list {
+  list-style: none;
+  margin: 8px 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.job-item {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-left-width: 5px; /* 左側色條是輔助；狀態一律另有文字徽章 */
+  border-radius: 6px;
+  background: var(--panel);
+  overflow-wrap: anywhere;
+}
+.job-running {
+  border-left-color: var(--warn-fg);
+}
+.job-succeeded {
+  border-left-color: var(--ok-fg);
+}
+.job-failed {
+  border-left-color: var(--bad-fg);
+}
+.job-queued,
+.job-cancelled {
+  border-left-color: var(--muted);
+}
+/* 工作列表（白話版）：第一行＝徽章＋說明＋相對時間，第二行＝結果句；已完成／已取消預設精簡成單行 */
+.job-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 10px;
+}
+.job-title {
+  font-weight: 600;
+  min-width: 0;
+}
+.job-when {
+  font-size: 12.5px;
+}
+.job-outcome {
+  margin: 0;
+}
+.job-retried {
+  color: var(--muted);
+}
+.job-error .job-retried {
+  color: inherit;
+  opacity: 0.85;
+}
+.job-item.job-compact {
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 12px;
+  padding: 6px 12px;
+}
+.job-compact .job-detail {
+  flex: 1 1 100%;
+}
+.jobs-intro {
+  margin-top: 0;
+}
+.job-meta,
+.job-retry {
+  margin: 0;
+}
+.job-retry {
+  color: var(--warn-fg);
+  font-weight: 600;
+}
+.job-error {
+  margin: 0;
+  padding: 6px 10px;
+  border-radius: 4px;
+  background: var(--bad-bg);
+  color: var(--bad-fg);
+}
+.job-error code {
+  background: var(--overlay);
+}
+/* queued 帶的錯誤是「上次失敗原因」，不是現在的狀態：改用警告色 */
+.job-error-previous {
+  background: var(--warn-bg);
+  color: var(--warn-fg);
+}
+.job-progress {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.job-progress-text {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 14px;
+}
+.progress-track {
+  width: 100%;
+  max-width: 420px;
+  height: 10px;
+  border-radius: 5px;
+  background: var(--code-bg);
+  border: 1px solid var(--border);
+  overflow: hidden;
+}
+.progress-fill {
+  height: 100%;
+  background: var(--accent);
+}
+/* 總數未知：只有「進行中」的動態條，不代表任何百分比 */
+.progress-track.indeterminate .progress-fill {
+  width: 30%;
+  animation: job-indeterminate 1.4s ease-in-out infinite;
+}
+@keyframes job-indeterminate {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(340%);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .progress-track.indeterminate .progress-fill {
+    width: 100%;
+    animation: none;
+    opacity: 0.45;
+  }
+}
+.job-confirm {
+  padding: 8px 12px;
+  border: 1px solid var(--accent);
+  border-radius: 4px;
+  background: var(--soft-bg);
+}
+.job-confirm p {
+  margin: 0 0 6px;
+}
+.job-detail {
+  margin-top: 4px;
+  padding-top: 6px;
+  border-top: 1px solid var(--border);
+}
+.job-timeline {
+  margin: 4px 0;
+  padding-left: 20px;
+}
+.timeline-label {
+  display: inline-block;
+  min-width: 6.5em;
+  color: var(--muted);
+}
+.job-json {
+  margin: 4px 0;
+  padding: 8px;
+  max-height: 260px;
+  overflow: auto;
+  background: var(--pre-bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  white-space: pre-wrap; /* 不可信內容：只當文字顯示，長行自動換行 */
+  overflow-wrap: anywhere;
+}
+
+/* ---------- 版本管理（切片 3b）：匯入、參考版本、移除 ---------- */
+
+/* 版本區：已匯入版本的管理動作 */
+.version-actions {
+  align-self: stretch;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.version-actions .note,
+.version-actions .success,
+.version-actions .error-box {
+  margin: 0;
+}
+.version-load button {
+  align-self: flex-start;
+}
+.remove-confirm .action-row {
+  margin-top: 4px;
+}
+
+/* 總覽卡片：匯入狀態與參考版本 */
+.import-run,
+.unanalyzed,
+.card-reference {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  min-width: 0;
+}
+.import-run > *,
+.unanalyzed > *,
+.card-reference > * {
+  margin-top: 0;
+  margin-bottom: 0;
+  max-width: 100%;
+}
+.import-run .job-progress,
+.import-run .error-box,
+.card-reference .warning,
+.card-reference .error-box,
+.card-reference .reference-pick {
+  align-self: stretch;
+}
+.card-reference {
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--pre-bg);
+}
+.card-reference h4 {
+  margin: 0;
+  color: var(--muted);
+}
+.card-reference .warning p {
+  margin: 0 0 6px;
+}
+.card-reference select {
+  width: 100%;
+  min-width: 0;
+}
+.reference-pick {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 8px;
+}
+.reference-pick label {
+  flex: 1 1 200px;
+  min-width: 0;
+}
+
+/* ---------- 版本管理：選取的 commit 操作列、已匯入的版本、commit 圖 ---------- */
+
+/* 看起來像連結的按鈕（動作仍是按鈕，鍵盤與螢幕閱讀器行為正確） */
+button.linklike {
+  background: none;
+  border: none;
+  padding: 0 2px;
+  color: var(--accent);
+  text-decoration: underline;
+  align-self: auto;
+}
+
+/* 選取的 commit 的操作列：在分支下拉之後、commit 圖上方（右欄）。寬而高的視窗才固定在頂端：窄螢幕或矮視窗上它會占掉太多畫面。
+   頁首與其他區塊都不是 sticky，所以 top:0 不會被遮住；內容很多（進度、錯誤）時自己捲動，不超過半個視窗。
+   sticky 的範圍是它所在的右欄（.version-main），捲過整張 commit 圖之後才會跟著離開 */
+.selected-bar {
+  margin: 8px 0 12px;
+  padding: 6px 12px 8px;
+  background: var(--panel);
+  border: 1px solid var(--accent);
+  border-radius: 6px;
+  min-width: 0;
+}
+@media (min-width: 1000px) and (min-height: 700px) {
+  .selected-bar {
+    position: sticky;
+    top: 0;
+    z-index: 5;
+    max-height: 50vh;
+    overflow: auto;
+    box-shadow: 0 3px 8px rgba(0, 0, 0, 0.18);
+  }
+}
+.selected-bar .commit-detail {
+  margin-top: 0;
+  border-top: none;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 2px 14px;
+}
+.commit-more[open] {
+  flex: 1 1 100%; /* 展開後獨占一整行；收合時「完整資訊」接在摘要後面，不多占一行 */
+}
+.commit-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 10px;
+  margin: 0;
+  min-width: 0;
+}
+.commit-line-subject {
+  font-weight: 600;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.commit-more {
+  margin: 0;
+}
+.commit-more > summary {
+  cursor: pointer;
+  color: var(--accent);
+  font-size: 12.5px;
+}
+.selected-bar .version-load {
+  margin-top: 4px;
+}
+.selected-bar .version-load-summary {
+  font-size: 13.5px;
+}
+.selected-bar .success {
+  margin: 6px 0 0;
+}
+
+/* 寬螢幕：左＝已匯入的版本、右＝分支下拉＋操作列＋commit 圖；窄螢幕上下排列（已匯入的版本在最上面） */
+.version-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 16px;
+  align-items: start;
+}
+@media (min-width: 1000px) {
+  .version-layout {
+    grid-template-columns: minmax(0, 5fr) minmax(0, 7fr);
+  }
+}
+.version-main {
+  min-width: 0;
+}
+.version-graph {
+  min-width: 0;
+}
+.version-main > .toolbar {
+  margin-top: 0;
+}
+.version-graph h3,
+.imported-versions h3 {
+  margin-top: 0;
+}
+.imported-versions {
+  min-width: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+.imported-title-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.imported-title-row h3 {
+  margin-bottom: 0;
+}
+.quick-select {
+  margin: 6px 0;
+}
+/* 清單有最大高度與內部捲動；表頭（全選）在捲動時固定在清單頂端 */
+.imported-scroll {
+  max-height: min(420px, 55vh);
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--pre-bg);
+}
+.imported-head {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 4px 12px;
+  padding: 6px 8px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
+}
+.imported-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.imported-versions input[type='checkbox'] {
+  width: 16px;
+  height: 16px;
+  margin: 2px 0 0;
+  padding: 0;
+  accent-color: var(--accent);
+  cursor: pointer;
+  flex: none;
+}
+.imported-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 8px;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--row-border);
+}
+.imported-row:last-child {
+  border-bottom: none;
+}
+.imported-row.current {
+  background: var(--soft-bg);
+  box-shadow: inset 3px 0 0 var(--accent); /* 目前選取的 commit：左側色條＋aria-current，不只靠底色 */
+}
+button.imported-main {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  width: 100%;
+  min-width: 0;
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--text);
+  text-align: left;
+  align-self: stretch;
+}
+.imported-line,
+.imported-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px 8px;
+  min-width: 0;
+  max-width: 100%;
+}
+.imported-subject {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
+}
+.imported-meta {
+  color: var(--muted);
+  font-size: 12.5px;
+}
+.imported-meta .badge {
+  font-size: 11.5px;
+}
+.snapshot-detail-toggle {
+  margin-top: 8px;
+}
+.snapshot-detail-toggle > summary {
+  cursor: pointer;
+  color: var(--accent);
+  font-size: 12.5px;
+}
+/* 固定在視窗底部的操作區（確認對話、批次進度、「已選 N 個」）；內容多時自己捲動 */
+.imported-dock {
+  position: sticky;
+  bottom: 0;
+  z-index: 4;
+  margin-top: 8px;
+  padding: 8px 10px;
+  max-height: 45vh;
+  overflow: auto;
+  background: var(--panel);
+  border: 1px solid var(--accent);
+  border-radius: 6px;
+  box-shadow: 0 -3px 8px rgba(0, 0, 0, 0.18);
+}
+.imported-dock .remove-confirm {
+  margin: 0;
+}
+.imported-dock .batch-result {
+  margin: 0;
+}
+.imported-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+}
+.imported-bar > span {
+  flex: 1 1 200px;
+  min-width: 0;
+}
+.batch-result {
+  margin: 8px 0;
+}
+.batch-list {
+  margin: 4px 0;
+  padding-left: 20px;
+  max-height: 160px;
+  overflow: auto;
+  overflow-wrap: anywhere;
+}

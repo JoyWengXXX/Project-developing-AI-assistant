@@ -2,14 +2,14 @@ import { useRef, useState } from 'react'
 import type { ApiError } from '../api'
 import { toApiError } from '../format'
 import { cancelJob } from '../jobActions'
-import { isCancelling } from '../jobFormat'
+import { cancelConsequence, cancelNoun, isCancelling } from '../jobFormat'
 import type { Job } from '../types'
 import { ErrorBox } from '../ui'
 import { ConfirmBox } from './ConfirmBox'
 
 interface Props {
   job: Job
-  /** 按鈕文字（版本區與匯入狀態用「取消匯入」；卡片提示的一行內用「取消」）。 */
+  /** 按鈕文字（預設依工作種類：「取消匯入」「取消註冊」「取消更新」；卡片提示的一行內用「取消」）。 */
   label?: string
   small?: boolean
   /** 取消請求成功（或 409＝工作早已結束而重新讀取了結果）：交給呼叫端更新它持有的狀態。 */
@@ -17,19 +17,18 @@ interface Props {
 }
 
 /**
- * 「取消匯入」：按下先出現行內確認（ConfirmBox：焦點移到「不取消」，Esc 關閉），確認後 POST /jobs/{id}/cancel。
+ * 「取消匯入／註冊／更新」：按下先出現行內確認（ConfirmBox：焦點移到「不取消」，Esc 關閉），確認後 POST /jobs/{id}/cancel。
+ * 說明依工作種類（cancelConsequence）：例如註冊「會停止這次複製，已下載的暫存內容會被清除」。
  * 結果由 onResult 交回最新的 job：queued 會是 cancelled（200）；running 仍是 running 但 cancel_requested＝true（202），
  * 這時按鈕變成停用的「取消中…」，直到呼叫端輪詢到 cancelled。錯誤（404 等）顯示在按鈕下方，按鈕恢復可用。
  */
-export function CancelJobButton({ job, label = '取消匯入', small = false, onResult }: Props) {
+export function CancelJobButton({ job, label, small = false, onResult }: Props) {
   const [confirming, setConfirming] = useState(false)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<ApiError | null>(null)
   const sending = useRef(false) // 同步擋住連按（state 要等下一次 render 才看得到）
   const cancelling = busy || isCancelling(job)
-  // 目前只有匯入會在版本區與卡片出現；其他種類的工作（之後的 GitHub 背景工作）用通用的說法
-  const isImport = job.kind === 'snapshot_import'
-  const what = isImport ? '匯入' : '背景工作'
+  const what = cancelNoun(job.kind)
 
   async function confirm() {
     if (sending.current) return
@@ -61,7 +60,7 @@ export function CancelJobButton({ job, label = '取消匯入', small = false, on
           if (!cancelling) setConfirming(true)
         }}
       >
-        {cancelling ? '取消中…' : label}
+        {cancelling ? '取消中…' : (label ?? `取消${what}`)}
       </button>
       {confirming && (
         <ConfirmBox
@@ -72,7 +71,7 @@ export function CancelJobButton({ job, label = '取消匯入', small = false, on
           onConfirm={() => void confirm()}
           onCancel={() => setConfirming(false)}
         >
-          <p>{isImport ? '會停止這次匯入；已讀取的內容不會保留，之後可以重新匯入。' : '會停止這個工作；已完成的部分不會保留，之後可以重新執行。'}</p>
+          <p>{cancelConsequence(job.kind)}</p>
         </ConfirmBox>
       )}
       <ErrorBox error={error} />

@@ -10,6 +10,7 @@ import type { RepoListState } from '../useRepoList'
 import { ReferenceSummary } from './ReferenceSummary'
 import { RepoCard } from './RepoCard'
 import type { JobsOverview } from '../useJobsOverview'
+import type { GitHubJobs } from '../useGitHubJobs'
 
 interface Props {
   list: RepoListState
@@ -17,12 +18,12 @@ interface Props {
   imports: RepoImports
   /** 頁面共用的背景工作輪詢（App 持有）；依 repo 分給各張卡片，卡片不各自發請求。 */
   jobs: JobsOverview
+  /** GitHub 更新（fetch）的送出與結果（App 持有）；依 repo 分給各張卡片。 */
+  github: GitHubJobs
   /** 點卡片或「查看詳情」：進入該 repo 的詳情；「管理已匯入版本」同樣進入詳情，並把焦點移到「已匯入的版本」。 */
   onOpen: (repo: Repository, options?: { focusImported?: boolean }) => void
   /** repo 已從後端消失（移除成功或回 404）後通知 App，讓它清除對該 repo 的選取。 */
   onRemoved: (repoId: number) => void
-  /** GitHub 來源 fetch 成功後通知 App（詳情的版本區據此重新整理）。 */
-  onFetched: (repoId: number) => void
   /** 從詳情回來時，把焦點移到標題（鍵盤與讀屏使用者不會迷路）。 */
   focusTitle: boolean
 }
@@ -40,7 +41,7 @@ type RemoveNotice =
  * 參考版本清單（GET /references）在這裡載入，設定、取消、匯入完成、移除 repo 之後重新讀取；
  * 在詳情頁移除版本後回到總覽，這一頁會重新掛載並讀取最新資料。
  */
-export function RepoOverviewGrid({ list, imports, jobs, onOpen, onRemoved, onFetched, focusTitle }: Props) {
+export function RepoOverviewGrid({ list, imports, jobs, github, onOpen, onRemoved, focusTitle }: Props) {
   const references = useReferences()
   const clearAction = useAction()
   const titleRef = useRef<HTMLHeadingElement>(null)
@@ -135,12 +136,13 @@ export function RepoOverviewGrid({ list, imports, jobs, onOpen, onRemoved, onFet
             'DELETE /api/v1/repositories/{id}/reference（取消參考）',
             'POST /api/v1/repositories/{id}/import-jobs（按「匯入」、註冊後的一次性匯入與取消後的「重新匯入」；背景工作，取消的工作以同一個 job id 重新排入）',
             'GET /api/v1/jobs/status、GET /api/v1/jobs/{id}（決定用背景工作，並輪詢進度）',
-            'GET /api/v1/jobs?status=active、GET /api/v1/jobs?status=failed（頁面共用的輪詢：卡片上「背景工作進行中」與「上次背景匯入失敗」，不是每張卡片各發一次）',
+            'GET /api/v1/jobs?status=active、GET /api/v1/jobs?status=failed（頁面共用的輪詢：卡片上「背景匯入進行中」「上次背景更新失敗」等提示，不是每張卡片各發一次）',
             'POST /api/v1/jobs/{id}/retry（卡片上失敗提示的「重試」）',
-            'POST /api/v1/jobs/{id}/cancel（匯入進行中的「取消」，先確認；同步回退的匯入無法取消）',
+            'POST /api/v1/jobs/{id}/cancel（背景工作進行中的「取消」，先確認；同步回退的請求無法取消）',
             'POST /api/v1/repositories/{id}/imports（deprecated：worker 不可用時的同步回退）',
-            'POST /api/v1/repositories/{id}/fetch（GitHub 更新）',
-            'DELETE /api/v1/repositories/{id}（移除）',
+            'POST /api/v1/repositories/{id}/fetch-jobs（GitHub 更新；背景工作，進度為階段與已耗時；完成後 job.result 帶 refs 變更清單）',
+            'POST /api/v1/repositories/{id}/fetch（deprecated：worker 不可用時的同步回退）',
+            'DELETE /api/v1/repositories/{id}（移除；有背景工作進行中時回 409 repository_busy，卡片先停用按鈕）',
           ]}
         />
         <ReferenceSummary
@@ -177,13 +179,13 @@ export function RepoOverviewGrid({ list, imports, jobs, onOpen, onRemoved, onFet
               repo={r}
               imports={imports}
               jobs={jobs}
+              github={github}
               reference={references.byRepo.get(r.id) ?? null}
               onReferenceChanged={reloadReferences}
               onOpen={onOpen}
               removing={r.id === removingId}
               removeLocked={removingId !== null}
               onRemove={removeRepo}
-              onFetched={onFetched}
               onMissing={handleMissing}
             />
           ))}

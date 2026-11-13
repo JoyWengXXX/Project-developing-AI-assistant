@@ -1183,6 +1183,27 @@ label.check-label {
 .repo-job-notice > .job-notice-note {
   padding: 0 2px;
 }
+/* 獨立區塊版本（「GitHub 註冊工作」，用 .panel 外框）的標題 */
+.job-notice-heading {
+  margin: 0;
+  font-size: 15px;
+}
+/* GitHub 註冊／更新工作的進度：第一行是階段（aria-live），其餘每秒或每數秒更新的數字不朗讀 */
+.github-progress-headline {
+  margin: 0;
+}
+.github-progress .note {
+  margin: 0;
+  font-size: 12.5px;
+}
+.registration-notices {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.registration-notices p {
+  margin: 0;
+}
 .jobs-backend {
   margin-bottom: 8px;
 }

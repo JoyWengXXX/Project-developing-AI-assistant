@@ -1,4 +1,4 @@
-import { batchText, formatSize, progressPercent, progressText } from '../jobFormat'
+import { batchText, bytesReceivedText, progressPercent, progressText } from '../jobFormat'
 import type { Job } from '../types'
 import { Elapsed } from './JobTimes'
 
@@ -49,6 +49,7 @@ export function JobProgress({ job }: { job: Job }) {
   const p = job.progress
   const running = job.status === 'running'
   const batch = batchText(job)
+  const received = bytesReceivedText(p.bytes_received)
 
   return (
     <div className="job-progress">
@@ -58,7 +59,7 @@ export function JobProgress({ job }: { job: Job }) {
         {batch !== null && <span className="muted job-batch">{batch}</span>}
         {p.indexed_files > 0 && <span>已建立索引 {p.indexed_files} 個檔案</span>}
         {p.parse_error_count > 0 && <span>解析錯誤 {p.parse_error_count}</span>}
-        {p.bytes_received !== null && <span>已接收約 {formatSize(p.bytes_received)}（暫存目錄大小，非百分比）</span>}
+        {received !== null && <span>{received}</span>}
         {running && job.phase_started_at !== null && (
           <span className="muted">
             此階段已進行 <Elapsed sinceIso={job.phase_started_at} />

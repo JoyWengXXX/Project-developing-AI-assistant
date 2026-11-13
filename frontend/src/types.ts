@@ -50,11 +50,20 @@ export interface RefChange {
   new_sha: string | null
 }
 
-// POST /api/v1/repositories/{id}/fetch 的回應
+// fetch 的結果：同步的 POST /repositories/{id}/fetch（deprecated）的回應，
+// 與背景工作 github_fetch 成功後的 job.result 共用這個形狀（job 版多一個 changed_refs）。
 export interface FetchResult {
   repository_id: number
   updated_refs: RefChange[]
   truncated: boolean // true：變動超過後端上限（100 筆），只回傳部分
+  changed_refs?: number // 只有 job.result 有：實際變動的 ref 數（可能大於 updated_refs 的筆數）
+}
+
+// github_register 成功後的 job.result；already_registered＝worker 發現這個 repo 已經註冊過（沒有新建、沒有 clone）
+export interface RegisterJobResult {
+  repository_id: number
+  github_repo: string
+  already_registered: boolean
 }
 
 // ---------- 版本瀏覽（切片 5e：refs 與 commits） ----------
@@ -327,13 +336,19 @@ export interface Job {
   status_url: string
 }
 
-// POST /api/v1/repositories/{id}/import-jobs 的回應（JobSubmitResponse）：
-//   202＝job 為新建、重新排入或既有的進行中 job（reused=false，snapshot_id 為 null）；
-//   200＝該版本快照早已存在（reused=true，snapshot_id 有值；job 可能為 null＝快照來自同步匯入）。
+// 建立背景工作的回應（JobSubmitResponse），三個端點共用：
+//   POST /repositories/{id}/import-jobs
+//     202＝job 為新建、重新排入或既有的進行中 job（reused=false，snapshot_id 為 null）；
+//     200＝該版本快照早已存在（reused=true，snapshot_id 有值；job 可能為 null＝快照來自同步匯入）。
+//   POST /repositories/{id}/fetch-jobs
+//     202＝job 為新建或既有的進行中 job（repository_id 有值）。
+//   POST /github/registration-jobs
+//     202＝job 為新建或既有的進行中 job（註冊成功前還沒有 repo：repository_id 為 null）；
+//     200＝這個 repo 早已註冊（reused=true，job 為 null，repository_id 有值）：直接用它，不輪詢。
 export interface JobSubmitResponse {
   job: Job | null
   snapshot_id: number | null
-  repository_id: number
+  repository_id: number | null
   reused: boolean
 }
 

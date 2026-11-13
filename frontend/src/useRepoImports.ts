@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { api, ApiError, isAbortError } from './api'
 import { jobFailure, toApiError } from './format'
+import { currentLoadMode } from './jobActions'
 import { setReference } from './useReferences'
-import type { Job, JobSubmitResponse, JobsStatus, Snapshot } from './types'
-import { chooseLoadMode, isFinished, newerJob, type LoadMethod } from './versionJobs'
+import type { Job, JobSubmitResponse, Snapshot } from './types'
+import { isFinished, newerJob, type LoadMethod } from './versionJobs'
 
 /**
  * 總覽卡片（與註冊後的一次性匯入）的「匯入一個版本」。
@@ -103,15 +104,7 @@ export function useRepoImports(): RepoImports {
     async (repoId: number, revision: string): Promise<number | null> => {
       const signal = lifetime.signal
       // 送出當下才查一次 worker 狀態（不另外輪詢）；查不到就視為不可用，回退同步
-      let statusSnapshot: { data: JobsStatus | null; error: unknown; loading: boolean }
-      try {
-        const res = await api<JobsStatus>('GET', '/api/v1/jobs/status', { signal })
-        statusSnapshot = { data: res.data, error: null, loading: false }
-      } catch (e) {
-        if (isAbortError(e)) throw e
-        statusSnapshot = { data: null, error: e, loading: false }
-      }
-      const decision = chooseLoadMode(statusSnapshot)
+      const decision = await currentLoadMode('匯入', signal)
 
       if (decision.mode !== 'job') {
         const reason = decision.mode === 'sync' ? decision.reason : '改用同步匯入'

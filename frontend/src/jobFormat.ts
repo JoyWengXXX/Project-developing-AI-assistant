@@ -1,6 +1,7 @@
 // 背景工作的顯示對照表與純函式（只負責「怎麼顯示」；狀態機與重試規則都在後端，前端不重做）。
 
 import { ERROR_HINT, formatTime } from './format'
+import { githubRepoOf, githubSucceededText } from './githubJobs'
 import type { Job, JobKind, JobPhase, JobProgress, JobsStatus, JobStatus, JobStatusFilter, ServiceStatus } from './types'
 
 export const JOB_KIND_LABEL: Record<JobKind, string> = {
@@ -8,6 +9,58 @@ export const JOB_KIND_LABEL: Record<JobKind, string> = {
   snapshot_index: '建立索引',
   github_register: '註冊 GitHub repo',
   github_fetch: '更新 GitHub repo',
+}
+
+/** 卡片與詳情提示的用語：「背景匯入進行中」「上次背景更新失敗」。 */
+export const JOB_BACKGROUND_LABEL: Record<JobKind, string> = {
+  snapshot_import: '背景匯入',
+  snapshot_index: '背景索引',
+  github_register: '背景註冊',
+  github_fetch: '背景更新',
+}
+
+// 取消的說明：名詞、取消後的狀況、取消生效前的等待（依工作種類，三處共用：取消按鈕、工作列表、卡片提示）
+const CANCEL_NOUN: Record<JobKind, string> = {
+  snapshot_import: '匯入',
+  snapshot_index: '背景工作',
+  github_register: '註冊',
+  github_fetch: '更新',
+}
+const AFTER_CANCEL: Record<JobKind, string> = {
+  snapshot_import: '之後可以重新匯入。',
+  snapshot_index: '之後可以重新執行。',
+  github_register: '之後可以重新註冊。',
+  github_fetch: '之後可以再更新。',
+}
+const CANCEL_CONSEQUENCE: Record<JobKind, string> = {
+  snapshot_import: '會停止這次匯入；已讀取的內容不會保留，之後可以重新匯入。',
+  snapshot_index: '會停止這個工作；已完成的部分不會保留，之後可以重新執行。',
+  github_register: '會停止這次複製，已下載的暫存內容會被清除；之後可以重新註冊。',
+  github_fetch: '會停止這次更新（fetch）；本機的 clone 保持原狀，之後可以再更新。',
+}
+
+/** 「確定要取消這次○○嗎？」的○○：匯入、註冊、更新；其他種類用「背景工作」。 */
+export function cancelNoun(kind: JobKind): string {
+  return CANCEL_NOUN[kind]
+}
+
+/** 取消對話的說明：取消會發生什麼事。 */
+export function cancelConsequence(kind: JobKind): string {
+  return CANCEL_CONSEQUENCE[kind]
+}
+
+/** 工作列表的取消確認說明：排隊中立即取消；執行中則依種類說明（匯入等批次處理完，GitHub 工作會終止 git 程序）。 */
+export function cancelExplain(job: Job): string {
+  if (job.status === 'queued') return `排隊中的工作會立即取消；${AFTER_CANCEL[job.kind]}`
+  if (job.kind === 'snapshot_import') {
+    return '執行中的工作會先記錄取消請求，等目前這一批處理完才會停止；已讀取的內容不會保留，之後可以重新匯入。'
+  }
+  return CANCEL_CONSEQUENCE[job.kind]
+}
+
+/** 已要求取消、執行中的工作還沒停下來時的說明：匯入要等目前這一批，GitHub 工作約數秒內停止。 */
+export function cancellingWait(kind: JobKind): string {
+  return kind === 'github_register' || kind === 'github_fetch' ? '約數秒內就會停止' : '等目前這一批處理完就會停止'
 }
 
 export const JOB_STATUS_LABEL: Record<JobStatus, string> = {
@@ -31,8 +84,8 @@ export const JOB_PHASE_LABEL: Record<JobPhase, string> = {
   pending: '等待中',
   importing: '匯入檔案',
   indexing: '建立索引',
-  resolving: '連線 GitHub、解析 repo',
-  cloning: '複製（clone）中',
+  resolving: '連線 GitHub 並確認 repo',
+  cloning: '複製 repo 中',
   registering: '寫入資料庫',
   fetching: '更新（fetch）中',
   completed: '已完成',
@@ -81,6 +134,14 @@ export function progressPercent(progress: Pick<JobProgress, 'processed_files' | 
   const { processed_files: done, total_files: total } = progress
   if (total === null || total <= 0) return null
   return Math.max(0, Math.min(100, Math.floor((done / total) * 100)))
+}
+
+/**
+ * clone 期間的「已接收」說明；bytes_received 為 null（不在 clone 期間，或 worker 還沒量到）時回傳 null，不顯示 0。
+ * 數字是暫存目錄的大小，不是百分比（git clone 不提供百分比）。
+ */
+export function bytesReceivedText(bytes: number | null): string | null {
+  return bytes === null ? null : `已接收約 ${formatSize(bytes)}（暫存目錄大小，非百分比）`
 }
 
 /** 毫秒 → 「3 分 05 秒」這類短字串（負數視為 0）。 */
@@ -232,10 +293,12 @@ export function jobTitle(job: Job, repoName: string | null): string {
       return sha !== null ? `匯入 ${repo} 的版本 ${sha}` : `匯入 ${repo} 的版本`
     case 'snapshot_index':
       return sha !== null ? `為 ${repo} 的版本 ${sha} 建立索引` : `為 ${repo} 建立索引`
-    case 'github_register':
-      return repoName !== null ? `註冊 GitHub repo（${repoName}）` : '註冊 GitHub repo'
+    case 'github_register': {
+      const target = githubRepoOf(job) ?? repoName
+      return target !== null ? `註冊 GitHub repo ${target}` : '註冊 GitHub repo'
+    }
     case 'github_fetch':
-      return repoName !== null ? `更新 GitHub repo ${repoName}` : '更新 GitHub repo'
+      return repoName !== null ? `更新 ${repoName} 的 GitHub 內容` : '更新 GitHub repo 的內容'
   }
 }
 
@@ -252,13 +315,17 @@ export function jobOutcome(job: Job, options: { workerOffline: boolean }): strin
       if (options.workerOffline) return '排隊中（背景執行器目前不在線，暫時不會執行）'
       return job.error !== null ? '排隊中（上次嘗試失敗，等待自動重試）' : '排隊中（等待背景執行器）'
     case 'running': {
-      if (job.cancel_requested) return '取消中…（等目前這一批處理完就會停止）'
-      if (job.kind !== 'snapshot_import') return `進行中：${JOB_PHASE_LABEL[job.phase]}`
+      if (job.cancel_requested) return `取消中…（${cancellingWait(job.kind)}）`
+      if (job.kind !== 'snapshot_import') {
+        // 註冊 clone 期間才有 bytes_received（其他階段與其他種類為 null，不顯示）
+        const received = bytesReceivedText(job.progress.bytes_received)
+        return `進行中：${JOB_PHASE_LABEL[job.phase]}${received !== null ? `，${received}` : ''}`
+      }
       if (isEnumerating(job)) return '進行中：正在列舉檔案…'
       return files > 0 ? `進行中：已處理 ${files.toLocaleString('zh-TW')} 個檔案` : '進行中：正在讀取版本內容'
     }
     case 'succeeded': {
-      const parts = ['已完成']
+      const parts = [githubSucceededText(job) ?? '已完成']
       const total = job.progress.total_files ?? files
       if (job.kind === 'snapshot_import' && total > 0) parts.push(`共 ${total.toLocaleString('zh-TW')} 個檔案`)
       const ms = durationBetween(job.started_at, job.finished_at)

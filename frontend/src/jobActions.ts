@@ -1,8 +1,24 @@
-// 對背景工作的兩個動作（不含 React，只包 API 呼叫）：取消，以及取消後重新提交匯入。
+// 對背景工作的動作（不含 React，只包 API 呼叫）：決定用背景工作還是同步回退、取消，以及取消後重新提交匯入。
 
-import { api, ApiError } from './api'
+import { api, ApiError, isAbortError } from './api'
 import { toApiError } from './format'
-import type { Job, JobSubmitResponse } from './types'
+import type { Job, JobSubmitResponse, JobsStatus } from './types'
+import { chooseLoadMode, type LoadModeDecision } from './versionJobs'
+
+/**
+ * 送出背景工作前「現在」查一次 GET /jobs/status 並決定方式（不依賴輪詢的舊資料）：
+ * worker 與 dispatcher 皆在線 → { mode: 'job' }；否則（含查不到狀態）→ { mode: 'sync', reason }。
+ * action 是回退說明裡的動作（匯入、註冊、更新）。只有請求被中止（AbortError）才會拋出。
+ */
+export async function currentLoadMode(action: string, signal?: AbortSignal): Promise<LoadModeDecision> {
+  try {
+    const res = await api<JobsStatus>('GET', '/api/v1/jobs/status', { signal })
+    return chooseLoadMode({ data: res.data, error: null, loading: false }, action)
+  } catch (e) {
+    if (isAbortError(e)) throw e
+    return chooseLoadMode({ data: null, error: e, loading: false }, action)
+  }
+}
 
 /**
  * POST /api/v1/jobs/{id}/cancel，回傳後端最新的工作：

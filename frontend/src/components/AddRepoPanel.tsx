@@ -3,15 +3,21 @@ import { api, type ApiError } from '../api'
 import { toApiError } from '../format'
 import type { Repository } from '../types'
 import { ApiHint, ErrorBox } from '../ui'
+import type { GitHubJobs } from '../useGitHubJobs'
 import { GitHubRegisterForm } from './GitHubRegisterForm'
 
 interface Props {
-  /** 註冊成功（201 新建或 200 已存在）後通知父元件：重新載入列表；created 為 true（201）時由 App 自動匯入一次。 */
-  onRegistered: (repo: Repository, created: boolean) => void
+  /** GitHub 註冊（背景工作或同步回退）由 App 的 useGitHubJobs 送出與追蹤。 */
+  github: GitHubJobs
+  /** 本機路徑註冊成功（201 新建或 200 已存在）後通知父元件：重新載入列表；created 為 true（201）時由 App 自動匯入一次。 */
+  onRegistered: (repoId: number, created: boolean) => void
 }
 
-/** 「新增 repo」摺疊區（預設收合）：從 GitHub 或本機路徑註冊。成功訊息留在表單下方，新卡片出現在總覽。 */
-export function AddRepoPanel({ onRegistered }: Props) {
+/**
+ * 「新增 repo」摺疊區（預設收合）：從 GitHub 或本機路徑註冊。成功訊息留在表單下方，新卡片出現在總覽。
+ * GitHub 註冊是背景工作：進行中與失敗的註冊列在上方的「GitHub 註冊工作」區（不在這個摺疊區內）。
+ */
+export function AddRepoPanel({ github, onRegistered }: Props) {
   const [tab, setTab] = useState<'github' | 'local'>('github')
 
   const [path, setPath] = useState('')
@@ -36,7 +42,7 @@ export function AddRepoPanel({ onRegistered }: Props) {
           ? `201 Created：已註冊新 repo（id ${result.data.id}），卡片已加入總覽，並自動匯入預設分支最新版本（只此一次，進度顯示在卡片上）。`
           : `200 OK：這個路徑先前已註冊過，回傳既有的 repo（id ${result.data.id}），不會匯入。`,
       )
-      onRegistered(result.data, created)
+      onRegistered(result.data.id, created)
     } catch (err) {
       setError(toApiError(err))
     } finally {
@@ -49,9 +55,10 @@ export function AddRepoPanel({ onRegistered }: Props) {
       <summary>新增 repo（從 GitHub 或本機路徑註冊）</summary>
       <ApiHint
         apis={[
-          'POST /api/v1/repositories/github（GitHub）',
+          'POST /api/v1/github/registration-jobs（GitHub：背景工作；已註冊回 200，不建立工作）',
+          'POST /api/v1/repositories/github（deprecated：worker 不可用時的同步回退）',
           'POST /api/v1/repositories（本機路徑）',
-          'POST /api/v1/repositories/{id}/import-jobs（註冊回 201 時自動提交一次，revision=HEAD；worker 不可用時回退同步 /imports）',
+          'POST /api/v1/repositories/{id}/import-jobs（註冊成功且是新建時自動提交一次，revision=HEAD；worker 不可用時回退同步 /imports）',
         ]}
       />
       <div role="tablist" aria-label="註冊方式" className="tabs">
@@ -79,9 +86,9 @@ export function AddRepoPanel({ onRegistered }: Props) {
         </button>
       </div>
 
-      {/* 兩個分頁都保持掛載（只用 hidden 隱藏），切換分頁不會丟失輸入或進行中的 clone 狀態 */}
+      {/* 兩個分頁都保持掛載（只用 hidden 隱藏），切換分頁不會丟失輸入或進行中的請求狀態 */}
       <div role="tabpanel" id="tabpanel-github" aria-labelledby="tab-github" hidden={tab !== 'github'}>
-        <GitHubRegisterForm onRegistered={onRegistered} />
+        <GitHubRegisterForm register={github.register} />
       </div>
 
       <div role="tabpanel" id="tabpanel-local" aria-labelledby="tab-local" hidden={tab !== 'local'}>

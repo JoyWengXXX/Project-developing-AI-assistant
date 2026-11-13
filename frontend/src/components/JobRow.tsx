@@ -2,6 +2,7 @@ import { useEffect, useId, useRef, useState } from 'react'
 import {
   canCancel,
   canRetry,
+  cancelExplain,
   isCancelling,
   JOB_ACTION_LABEL,
   jobOutcome,
@@ -182,11 +183,7 @@ export function JobRow({ job, repoShort, repoFull, workerOffline, acting, onActi
             <strong>
               確定要{actionLabel}「{title}」嗎？
             </strong>{' '}
-            {confirming === 'cancel'
-              ? job.status === 'queued'
-                ? '排隊中的工作會立即取消；之後可以重新匯入。'
-                : '執行中的工作會先記錄取消請求，等目前這一批處理完才會停止；已讀取的內容不會保留，之後可以重新匯入。'
-              : '會重新排入背景執行器，再做一次。'}
+            {confirming === 'cancel' ? cancelExplain(job) : '會重新排入背景執行器，再做一次。'}
           </p>
           <div className="action-row">
             <button

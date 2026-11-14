@@ -211,23 +211,22 @@ def test_concurrent_submissions_create_exactly_one_job(
 # --- 200：快照已完成 ---
 
 
-def test_a_completed_snapshot_from_the_sync_endpoint_is_reused_without_a_job(
+def test_a_completed_snapshot_without_an_index_gets_an_indexing_job_instead_of_a_200(
     mapped_client: TestClient, repository_id: int, db_engine: Engine
 ) -> None:
+    """規格 4.4：快照 completed 但目前設定的索引缺少 → 建立 job（匯入階段重用快照，只做索引）。"""
     sync = mapped_client.post(f"/api/v1/repositories/{repository_id}/imports", json={})
     assert sync.status_code == 201
 
     response = submit_import_job(mapped_client, repository_id, revision="HEAD")
 
-    assert response.status_code == 200
-    assert response.json() == {
-        "job": None,  # 第一階段同步匯入的快照沒有 job
-        "snapshot_id": sync.json()["id"],
-        "repository_id": repository_id,
-        "reused": True,
-    }
-    assert "Location" not in response.headers
-    assert _jobs(db_engine) == []
+    assert response.status_code == 202
+    body = response.json()
+    assert body["reused"] is False
+    assert body["snapshot_id"] == sync.json()["id"]
+    assert body["job"]["kind"] == "snapshot_import" and body["job"]["status"] == "queued"
+    assert response.headers["Location"] == f"/api/v1/jobs/{body['job']['id']}"
+    assert [status for _, status in _jobs(db_engine)] == ["queued"]
 
 
 def test_a_completed_snapshot_from_a_job_returns_that_job(

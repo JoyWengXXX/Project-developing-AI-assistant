@@ -343,3 +343,257 @@ class ServiceHeartbeat(Base):
     info: Mapped[dict[str, Any]] = mapped_column(
         JSONB, default=dict, server_default=text("'{}'::jsonb")
     )
+
+
+class SnapshotIndex(Base):
+    """某個快照在特定索引設定下的結構索引（第二階段切片 6，migration 0008）。
+
+    衍生資料，與快照分離（規格 6.3）：索引失敗不使快照失效，`building`／`failed` 的索引不被任何
+    查詢採用。`owner_token` 在 `building` 時＝建立它的 job 的 `lease_token`（資料面的柵欄：
+    舊 worker 不能覆寫新 attempt 的索引），結束時清為 NULL。
+    """
+
+    __tablename__ = "snapshot_indexes"
+    __table_args__ = (
+        UniqueConstraint("snapshot_id", "index_profile_hash"),
+        CheckConstraint("status IN ('building', 'completed', 'failed')", name="status_valid"),
+        CheckConstraint(
+            "(status = 'building') = (owner_token IS NOT NULL)", name="owner_matches_status"
+        ),
+        CheckConstraint(
+            "file_count >= 0 AND symbol_count >= 0 AND parse_error_count >= 0",
+            name="counts_nonnegative",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    snapshot_id: Mapped[int] = mapped_column(ForeignKey("snapshots.id", ondelete="CASCADE"))
+    index_profile_hash: Mapped[str] = mapped_column(String(64))
+    status: Mapped[str] = mapped_column(String(20))
+    owner_token: Mapped[UUID | None] = mapped_column(Uuid)
+    # 各語言抽取器與版本（`IndexProfile.analyzers()`），不含秘密
+    analyzers: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, default=dict, server_default=text("'{}'::jsonb")
+    )
+    file_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    symbol_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    parse_error_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    started_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, server_default=func.now()
+    )
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    error_summary: Mapped[str | None] = mapped_column(Text)
+
+
+class IndexedFile(Base):
+    """索引過的檔案（只有 Python／C# 檔；其他檔案沒有列，不宣稱理解其結構）。"""
+
+    __tablename__ = "indexed_files"
+    __table_args__ = (
+        UniqueConstraint("snapshot_index_id", "snapshot_file_id"),
+        # 冗餘的唯一約束：讓 symbols 等表以複合外鍵保證「同一個索引」
+        UniqueConstraint("id", "snapshot_index_id"),
+        CheckConstraint("language IN ('python', 'csharp')", name="language_valid"),
+        CheckConstraint(
+            "parse_status IN ('parsed', 'parsed_with_errors', 'failed')", name="parse_status_valid"
+        ),
+        CheckConstraint(
+            "error_kind IS NULL OR error_kind IN "
+            "('syntax_error', 'tree_error', 'too_deep', 'parser_crash')",
+            name="error_kind_valid",
+        ),
+        CheckConstraint(
+            "(parse_status = 'parsed') = (error_kind IS NULL AND error_count = 0)",
+            name="error_matches_status",
+        ),
+        # 快照檔案被 SQL 刪除（D33）時，級聯需要用 snapshot_file_id 找到對應的列
+        Index("ix_indexed_files_snapshot_file_id", "snapshot_file_id"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    snapshot_index_id: Mapped[int] = mapped_column(
+        ForeignKey("snapshot_indexes.id", ondelete="CASCADE")
+    )
+    snapshot_file_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("snapshot_files.id", ondelete="CASCADE")
+    )
+    language: Mapped[str] = mapped_column(String(10))
+    parse_status: Mapped[str] = mapped_column(String(20))
+    error_kind: Mapped[str | None] = mapped_column(String(20))
+    error_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    first_error_line: Mapped[int | None] = mapped_column(Integer)
+    first_error_column: Mapped[int | None] = mapped_column(Integer)
+    module_name: Mapped[str | None] = mapped_column(Text)
+    symbol_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    symbols_truncated: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default=text("false")
+    )
+
+
+class Symbol(Base):
+    """符號（模組、類別、函式…）。`(id, snapshot_index_id)` 讓複合外鍵禁止跨索引的父子關係。"""
+
+    __tablename__ = "symbols"
+    __table_args__ = (
+        UniqueConstraint("id", "snapshot_index_id"),
+        # 不假設名稱唯一：C# 多載與 partial 會有相同的 qualified name，以位置區分
+        UniqueConstraint(
+            "indexed_file_id",
+            "kind",
+            "qualified_name",
+            "start_line",
+            "start_column",
+            name="uq_symbols_file_kind_qualified_name_position",
+        ),
+        ForeignKeyConstraint(
+            ["indexed_file_id", "snapshot_index_id"],
+            ["indexed_files.id", "indexed_files.snapshot_index_id"],
+            ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["parent_symbol_id", "snapshot_index_id"],
+            ["symbols.id", "symbols.snapshot_index_id"],
+            ondelete="CASCADE",
+        ),
+        CheckConstraint("language IN ('python', 'csharp')", name="language_valid"),
+        CheckConstraint(
+            "kind IN ('module', 'namespace', 'class', 'struct', 'record', 'interface', 'enum', "
+            "'enum_member', 'delegate', 'function', 'method', 'constructor', 'property', 'field')",
+            name="kind_valid",
+        ),
+        CheckConstraint("start_line >= 1 AND end_line >= start_line", name="lines_valid"),
+        CheckConstraint("start_column >= 0 AND end_column >= 0", name="columns_valid"),
+        Index("ix_symbols_snapshot_index_id_kind_name", "snapshot_index_id", "kind", "name"),
+        Index(
+            "ix_symbols_snapshot_index_id_indexed_file_id_start_line",
+            "snapshot_index_id",
+            "indexed_file_id",
+            "start_line",
+        ),
+        Index(
+            "ix_symbols_snapshot_index_id_parent_symbol_id", "snapshot_index_id", "parent_symbol_id"
+        ),
+        # 前綴查詢（LIKE 'a.b.%'）
+        Index(
+            "ix_symbols_snapshot_index_id_qualified_name",
+            "snapshot_index_id",
+            "qualified_name",
+            postgresql_ops={"qualified_name": "text_pattern_ops"},
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    snapshot_index_id: Mapped[int] = mapped_column(Integer)
+    indexed_file_id: Mapped[int] = mapped_column(BigInteger)
+    parent_symbol_id: Mapped[int | None] = mapped_column(BigInteger)
+    language: Mapped[str] = mapped_column(String(10))
+    kind: Mapped[str] = mapped_column(String(20))
+    name: Mapped[str] = mapped_column(Text)
+    qualified_name: Mapped[str] = mapped_column(Text)
+    start_line: Mapped[int] = mapped_column(Integer)
+    end_line: Mapped[int] = mapped_column(Integer)
+    start_column: Mapped[int] = mapped_column(Integer)
+    end_column: Mapped[int] = mapped_column(Integer)
+    leading_start_line: Mapped[int | None] = mapped_column(Integer)
+    modifiers: Mapped[str | None] = mapped_column(Text)
+    is_async: Mapped[bool] = mapped_column(Boolean, default=False, server_default=text("false"))
+    type_parameter_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    has_errors: Mapped[bool] = mapped_column(Boolean, default=False, server_default=text("false"))
+    conditional: Mapped[bool] = mapped_column(Boolean, default=False, server_default=text("false"))
+
+
+class ImportReference(Base):
+    """同檔的 import／using 參照（只記文字，不解析到實際模組）。"""
+
+    __tablename__ = "import_references"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["indexed_file_id", "snapshot_index_id"],
+            ["indexed_files.id", "indexed_files.snapshot_index_id"],
+            ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["source_symbol_id", "snapshot_index_id"],
+            ["symbols.id", "symbols.snapshot_index_id"],
+            ondelete="CASCADE",
+        ),
+        CheckConstraint("language IN ('python', 'csharp')", name="language_valid"),
+        CheckConstraint(
+            "kind IN ('import', 'from_import', 'using', 'using_static', 'using_alias', "
+            "'global_using')",
+            name="kind_valid",
+        ),
+        CheckConstraint("line >= 1", name="line_valid"),
+        Index(
+            "ix_import_references_snapshot_index_id_indexed_file_id",
+            "snapshot_index_id",
+            "indexed_file_id",
+        ),
+        Index(
+            "ix_import_references_snapshot_index_id_source_symbol_id",
+            "snapshot_index_id",
+            "source_symbol_id",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    snapshot_index_id: Mapped[int] = mapped_column(Integer)
+    indexed_file_id: Mapped[int] = mapped_column(BigInteger)
+    # 所在的符號（Python 的模組、類別或函式）；C# 位於 compilation unit 層級時為 NULL
+    source_symbol_id: Mapped[int | None] = mapped_column(BigInteger)
+    language: Mapped[str] = mapped_column(String(10))
+    kind: Mapped[str] = mapped_column(String(20))
+    target: Mapped[str] = mapped_column(Text)
+    imported_name: Mapped[str | None] = mapped_column(Text)
+    alias: Mapped[str | None] = mapped_column(Text)
+    relative_level: Mapped[int | None] = mapped_column(Integer)
+    line: Mapped[int] = mapped_column(Integer)
+
+
+class SymbolRelation(Base):
+    """符號之間的關係（基底類別、裝飾器…）；`target_name` 是原始名稱，不宣稱已解析。"""
+
+    __tablename__ = "symbol_relations"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["source_symbol_id", "snapshot_index_id"],
+            ["symbols.id", "symbols.snapshot_index_id"],
+            ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["target_symbol_id", "snapshot_index_id"],
+            ["symbols.id", "symbols.snapshot_index_id"],
+            ondelete="CASCADE",
+        ),
+        CheckConstraint(
+            "relation_type IN ('base_class', 'base_type', 'decorator', 'attribute')",
+            name="relation_type_valid",
+        ),
+        CheckConstraint(
+            "resolution IN ('resolved_same_file', 'ambiguous', 'unresolved')",
+            name="resolution_valid",
+        ),
+        CheckConstraint(
+            "(resolution = 'resolved_same_file') = (target_symbol_id IS NOT NULL)",
+            name="target_matches_resolution",
+        ),
+        Index(
+            "ix_symbol_relations_snapshot_index_id_source_symbol_id",
+            "snapshot_index_id",
+            "source_symbol_id",
+        ),
+        Index(
+            "ix_symbol_relations_snapshot_index_id_target_symbol_id",
+            "snapshot_index_id",
+            "target_symbol_id",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    snapshot_index_id: Mapped[int] = mapped_column(Integer)
+    source_symbol_id: Mapped[int] = mapped_column(BigInteger)
+    relation_type: Mapped[str] = mapped_column(String(20))
+    target_name: Mapped[str] = mapped_column(Text)
+    target_symbol_id: Mapped[int | None] = mapped_column(BigInteger)
+    resolution: Mapped[str] = mapped_column(String(25))
+    line: Mapped[int] = mapped_column(Integer)

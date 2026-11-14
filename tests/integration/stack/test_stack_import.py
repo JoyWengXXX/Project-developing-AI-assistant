@@ -88,7 +88,9 @@ def test_a_job_is_accepted_while_the_worker_is_blocked_and_completes_when_releas
     final = client.get(f"/api/v1/jobs/{job['id']}").json()
     assert processed == sorted(processed)  # 進度單調不倒退
     assert final["phase"] == "completed"
-    assert final["progress"]["processed_files"] == final["progress"]["total_files"] == len(FILES)
+    # 進度：匯入處理了全部檔案；進入索引階段後 total_files 改成可索引（.py）的檔案數
+    assert final["progress"]["processed_files"] == len(FILES)
+    assert final["progress"]["total_files"] == final["progress"]["indexed_files"] == 2
     assert final["attempt"] == 1
     # 快照 completed、檔案內容與主機端 Git 一致（比對全部少量檔案與計數）
     snapshot_id = final["snapshot_id"]

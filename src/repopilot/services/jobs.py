@@ -28,7 +28,19 @@ from datetime import datetime, timedelta
 from typing import Any, Literal
 from uuid import UUID, uuid4
 
-from sqlalchemy import ColumnElement, DateTime, delete, func, literal, or_, select, text, update
+from sqlalchemy import (
+    ColumnElement,
+    DateTime,
+    cast,
+    delete,
+    func,
+    literal,
+    or_,
+    select,
+    text,
+    update,
+)
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -416,6 +428,72 @@ def update_progress(
     return updated
 
 
+def merge_work_state(
+    session: Session,
+    job_id: int,
+    token: UUID,
+    patch: dict[str, Any],
+    *,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    """以**單一語句**把 patch 淺層合併進 `work_state` 並回傳合併後的整份（令牌柵欄）。
+
+    給「每個檔案一次」的毒藥單位標記使用（切片 6）：`update_progress` 要先鎖列、讀、再寫，
+    三個往返；這裡是一個 `UPDATE ... RETURNING`，數萬個檔案時差別明顯。不延長租約、不改進度。
+    令牌不符拋 `JobLeaseLostError`。
+    """
+    job_rules.assert_no_secret_keys(patch, where="work_state")
+    row = session.execute(
+        update(Job)
+        .where(*_fence(job_id, token))
+        .values(
+            work_state=Job.work_state.op("||")(cast(patch, JSONB)),
+            updated_at=db_now(now),
+        )
+        .returning(Job.work_state)
+        .execution_options(synchronize_session=False)
+    ).first()
+    session.commit()
+    if row is None:
+        raise JobLeaseLostError("The job lease is no longer held by this worker.")
+    return dict(row[0])
+
+
+def publish_step(
+    session: Session,
+    job_id: int,
+    token: UUID,
+    *,
+    snapshot_id: int,
+    before_publish: Callable[[Session], Any],
+    now: datetime | None = None,
+) -> Job:
+    """發布「中間成果」但 job 繼續執行（切片 6：快照完成後還要建立索引）。
+
+    與 `complete_job` 同樣在單一交易內鎖定 job 列、比對令牌、檢查取消旗標：已有取消請求 → 同一交易
+    內把 job 設為 `cancelled` 並回傳（**不**呼叫 `before_publish`，呼叫端據此中止並回復自己的
+    未完成資料）；否則在同一交易內執行 `before_publish`（完成快照）並把 `snapshot_id` 記到 job，
+    job 仍是 `running`。取消與發布的先後由列鎖決定，所以**已發布的快照不會被改回失敗**。
+    """
+    job = _lock_fenced(session, job_id, token)
+    now_expr = db_now(now)
+    try:
+        if job.cancel_requested_at is not None:
+            result = finish_locked(session, job, "cancelled", now_expr)
+        else:
+            before_publish(session)
+            result = _update_locked(session, job_id, now_expr, snapshot_id=snapshot_id)
+        session.commit()
+    except IntegrityError as exc:
+        session.rollback()
+        _raise_for_foreign_key(exc)
+        raise
+    except BaseException:
+        session.rollback()
+        raise
+    return result
+
+
 # --- 結束狀態 ---
 
 
@@ -751,6 +829,7 @@ def resubmit_job(
     *,
     request_id: str | None = None,
     params: dict[str, Any] | None = None,
+    index_profile_hash: str | None = None,
     now: datetime | None = None,
 ) -> Job | None:
     """使用者再次提交同一份工作，而最近的 job 是 `failed` 或 `cancelled`：重新排入**同一個 job**
@@ -777,6 +856,8 @@ def resubmit_job(
         extra: dict[str, Any] = {}
         if request_id is not None:
             extra["request_id"] = request_id
+        if index_profile_hash is not None:
+            extra["index_profile_hash"] = index_profile_hash
         if params is not None:
             job_rules.assert_no_secret_keys(params, where="params")
             extra["params"] = params

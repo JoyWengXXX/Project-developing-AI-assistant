@@ -56,6 +56,25 @@ class SnapshotNotCompletedError(RepoPilotError):
     code = "snapshot_not_completed"
 
 
+class SnapshotIndexNotReadyError(RepoPilotError):
+    """快照已完成，但沒有（目前設定下）`completed` 的結構索引（第二階段切片 6）。
+
+    `index_status` 是 `none`（尚未建立）、`building` 或 `failed`；API 把它放在錯誤的 `details`。
+    """
+
+    code = "snapshot_index_not_ready"
+
+    def __init__(self, message: str, *, index_status: str) -> None:
+        super().__init__(message)
+        self.index_status = index_status
+
+
+class SymbolNotFoundError(RepoPilotError):
+    """指定的符號不存在，或不屬於該快照目前的索引。"""
+
+    code = "symbol_not_found"
+
+
 class SnapshotBusyError(RepoPilotError):
     """快照正被使用（未逾時的匯入、進行中的 job，或快照鎖被持有），暫時不能移除。"""
 

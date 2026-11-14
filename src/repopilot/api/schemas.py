@@ -521,3 +521,131 @@ class JobsStatusResponse(BaseModel):
     running: int
     # 心跳超過此秒數未更新視為離線（SERVICE_HEARTBEAT_SECONDS 的 3 倍）
     heartbeat_timeout_seconds: int
+
+
+# --- 結構索引（第二階段切片 6，規格 4.7）---
+IndexStatus = Literal["none", "building", "completed", "failed"]
+IndexLanguage = Literal["python", "csharp"]
+ParseStatusValue = Literal["parsed", "parsed_with_errors", "failed"]
+SymbolIdPath = Annotated[int, Path(ge=1, le=_INT64_MAX)]
+IndexedFileIdQuery = Annotated[int, Query(ge=1, le=_INT64_MAX, description="只看此快照檔案的符號")]
+ParentIdQuery = Annotated[int, Query(ge=1, le=_INT64_MAX, description="只看此符號的直接子符號")]
+SymbolKindFilter = Literal[
+    "module",
+    "namespace",
+    "class",
+    "struct",
+    "record",
+    "interface",
+    "enum",
+    "enum_member",
+    "delegate",
+    "function",
+    "method",
+    "constructor",
+    "property",
+    "field",
+]
+
+
+class IndexCountsResponse(BaseModel):
+    files_by_language: dict[str, int]
+    files_by_parse_status: dict[str, int]
+    symbols: int
+    symbols_by_kind: dict[str, int]
+    # 符號數超過單檔上限而被截斷的檔案數
+    truncated_files: int
+
+
+class SnapshotIndexResponse(BaseModel):
+    """快照在**目前設定**下的結構索引狀態；沒有索引時 200＋`status="none"`（不是錯誤）。
+
+    只有 `completed` 才有 `counts`。`analyzers` 是抽取器與版本（Python 主次版本、演算法版本），
+    不含秘密；`error_summary` 是固定的安全摘要。
+    """
+
+    snapshot_id: int
+    status: IndexStatus
+    index_id: int | None
+    started_at: datetime | None
+    completed_at: datetime | None
+    analyzers: dict[str, Any]
+    counts: IndexCountsResponse | None
+    error_summary: str | None
+
+
+class FirstErrorResponse(BaseModel):
+    line: int
+    # 0-based UTF-8 位元組位移（規格 7.1）
+    column: int
+
+
+class IndexedFileResponse(BaseModel):
+    """被索引的檔案與解析狀態；**不含任何原始程式碼片段或語法錯誤訊息**。"""
+
+    indexed_file_id: int
+    file_id: int
+    path: str
+    language: IndexLanguage
+    parse_status: ParseStatusValue
+    error_count: int
+    first_error: FirstErrorResponse | None
+    symbol_count: int
+    symbols_truncated: bool
+
+
+class IndexedFileListResponse(PageResponse):
+    items: list[IndexedFileResponse]
+
+
+class SymbolSummaryResponse(BaseModel):
+    symbol_id: int
+    kind: str
+    language: IndexLanguage
+    name: str
+    qualified_name: str
+    file_id: int
+    path: str
+    start_line: int
+    end_line: int
+    parent_id: int | None
+    modifiers: str | None
+    is_async: bool
+    has_errors: bool
+    conditional: bool
+    # 是否有直接子符號（符號樹逐層載入用）
+    has_children: bool
+
+
+class SymbolListResponse(PageResponse):
+    items: list[SymbolSummaryResponse]
+
+
+class ImportReferenceResponse(BaseModel):
+    kind: str
+    target: str
+    imported_name: str | None
+    alias: str | None
+    relative_level: int | None
+    line: int
+
+
+class SymbolRelationResponse(BaseModel):
+    relation_type: str
+    target_name: str
+    # 只有 resolved_same_file 才有值；ambiguous 與 unresolved 一律為 null（不猜測）
+    target_symbol_id: int | None
+    resolution: str
+    line: int
+
+
+class SymbolDetailResponse(SymbolSummaryResponse):
+    # 0-based UTF-8 位元組位移
+    start_column: int
+    end_column: int
+    # Python 裝飾器的起始行（沒有則 null）
+    leading_start_line: int | None
+    type_parameter_count: int
+    # 同一檔案的 import（最多 200 筆，依行號排序）
+    imports: list[ImportReferenceResponse]
+    relations: list[SymbolRelationResponse]

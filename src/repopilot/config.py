@@ -142,6 +142,17 @@ class Settings(BaseSettings):
     # 正在進行的 clone 可能被誤判為孤兒
     managed_temp_orphan_seconds: int = Field(default=7_200, ge=60, le=604_800)
 
+    # --- 結構索引（第二階段切片 6；數值皆未實測）---
+    # 單檔符號數上限，超過時截斷並標記 symbols_truncated（不使 job 失敗）。納入 index_profile_hash
+    index_max_symbols_per_file: int = Field(default=5_000, ge=1, le=1_000_000)
+    # C# 的欄位（field_declaration，每個 variable_declarator 一個符號）預設不抽取：數量大、
+    # 對「看結構」的價值低。納入 index_profile_hash，切換會得到另一份索引（切片 7）
+    index_csharp_include_fields: bool = False
+    # 索引階段以 snapshot_files.id 的 keyset 分頁讀取：每批最多這麼多檔、且（依 byte_size）合計最多
+    # 這麼多位元組。只影響「怎麼切」，不影響索引結果，所以不納入 index_profile_hash
+    index_batch_max_files: int = Field(default=200, ge=1, le=100_000)
+    index_batch_max_bytes: int = Field(default=8 * 1024 * 1024, ge=1)
+
     @model_validator(mode="after")
     def _job_settings_are_consistent(self) -> Self:
         if self.job_heartbeat_seconds >= self.job_lease_seconds:

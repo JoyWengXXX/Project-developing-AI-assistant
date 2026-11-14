@@ -2,7 +2,7 @@
 
 AI 輔助專案客製化平台：管理參考 repos 與目標 repo，依自然語言需求產出附程式碼來源引用的修改方案；後續在獨立工作目錄改碼、執行測試並產出可審查的 diff 與驗證報告。
 
-> 狀態（2026-11-12）：**第一階段**（專案骨架、Repo 管理與固定版本匯入）**實作與驗證已完成（附未驗證清單），使用者已於 2026-11-11 確認驗收**。**第二階段**（背景工作、結構索引與搜尋）**進行中**：切片 1～4 已完成——Docker 背景工作堆疊（Redis、dispatcher、Celery worker）、背景匯入 `import-jobs`、參考版本與移除快照、可靠性收尾，以及對應的主控台流程；**切片 5 的後端已完成**（GitHub 註冊與 fetch 背景化：`registration-jobs`、`fetch-jobs`、跨程序的 repo 互斥、移除 repo 與進行中工作的互動、暫存目錄清理；**主控台尚未改用它們**）；**切片 6～10 未完成**（Python／C# 結構索引、搜尋等）。**參考版本只是標記，尚未連到 Agent**；LLM、向量搜尋、改碼都還不存在。不宣稱整套平台完成。未驗證項目見 [roadmap](docs/roadmap.md#第一階段整體驗收結論) 與本文各節。
+> 狀態（2026-11-13）：**第一階段**（專案骨架、Repo 管理與固定版本匯入）**實作與驗證已完成（附未驗證清單），使用者已於 2026-11-11 確認驗收**。**第二階段**（背景工作、結構索引與搜尋）**進行中**：切片 1～5 已完成——Docker 背景工作堆疊（Redis、dispatcher、Celery worker）、背景匯入 `import-jobs`、參考版本與移除快照、可靠性收尾、GitHub 註冊與 fetch 背景化，以及對應的主控台流程；**切片 6（Python 結構索引：`ast` 符號、import 與關係、部分解析的檔案清單、符號樹）與切片 7（C# 結構索引：tree-sitter）後端與前端已完成**；**切片 8～10 未完成**（搜尋、整體驗收等）。**參考版本只是標記，尚未連到 Agent**；LLM、向量搜尋、改碼都還不存在。不宣稱整套平台完成。未驗證項目見 [roadmap](docs/roadmap.md#第一階段整體驗收結論) 與本文各節。
 
 ## 文件
 
@@ -13,8 +13,8 @@ AI 輔助專案客製化平台：管理參考 repos 與目標 repo，依自然�
 | [docs/learning/stage-01.md](docs/learning/stage-01.md) | **學習筆記**：主控台導覽、介面操作 → API → service → Git／資料表的追蹤表、流程圖、.NET 對照、動手練習、第二階段預覽（背景匯入） |
 | [docs/product.md](docs/product.md) | 產品目標、版本範圍、長期願景 |
 | [docs/roadmap.md](docs/roadmap.md) | 九個階段的目標、驗收與目前狀態；各切片驗證紀錄 |
-| [docs/architecture.md](docs/architecture.md) | 架構、資料模型、設計決策（D1～D44）、前端主控台結構 |
-| [docs/stage-02-spec.md](docs/stage-02-spec.md)、[切片 3b 規格](docs/stage-02-slice-3b-spec.md) | 第二階段規格（已確認；切片 1～4 與切片 5 後端已完成）與版本管理切片規格 |
+| [docs/architecture.md](docs/architecture.md) | 架構、資料模型、設計決策（D1～D45）、前端主控台結構 |
+| [docs/stage-02-spec.md](docs/stage-02-spec.md)、[切片 3b 規格](docs/stage-02-slice-3b-spec.md) | 第二階段規格（已確認；切片 1～6 已完成）與版本管理切片規格 |
 | [切片 5c](docs/stage-01-slice-5c-spec.md)、[5d](docs/stage-01-slice-5d-spec.md)、[5e](docs/stage-01-slice-5e-spec.md) | 第一階段切片規格（GitHub 連動、倉庫總覽、版本瀏覽） |
 
 ## 目前能做什麼
@@ -22,12 +22,13 @@ AI 輔助專案客製化平台：管理參考 repos 與目標 repo，依自然�
 - 註冊 `REPOSITORY_ROOTS` 允許目錄內的**本機 Git repo**，或以 `owner/name` 從 **GitHub** 註冊（clone 到受管目錄 `MANAGED_REPOS_DIR`；使用者自行提供 Personal Access Token，建議 fine-grained、Contents 唯讀）。
 - 把 revision 解析為完整 commit SHA，**只讀 Git 物件**（不讀工作目錄）匯入成**快照**：保存路徑、UTF-8 文字內容、blob ID、SHA-256、位元組大小與跳過原因；同 repo、同 commit、同匯入設定不重複匯入；`.env`、私鑰與憑證檔不讀內容。
 - **背景匯入**（第二階段）：`import-jobs` 立即回 202，由 dispatcher 與 Celery worker（Docker Linux 容器）在背景匯入；同步的 `imports` 保留但**已棄用**。
-- **背景 GitHub 註冊與 fetch**（第二階段切片 5，後端）：`registration-jobs`、`fetch-jobs` 立即回 202，由 worker 在背景 clone／fetch（可取消、有階段與暫存目錄大小進度、worker 被殺後會清理暫存目錄）；同步的 `POST /repositories/github`、`POST /repositories/{id}/fetch` 保留但**已棄用**。主控台目前仍呼叫同步版本。
+- **背景 GitHub 註冊與 fetch**（第二階段切片 5）：`registration-jobs`、`fetch-jobs` 立即回 202，由 worker 在背景 clone／fetch（可取消、有階段與暫存目錄大小進度、worker 被殺後會清理暫存目錄）；同步的 `POST /repositories/github`、`POST /repositories/{id}/fetch` 保留但**已棄用**。
+- **程式結構索引**（第二階段切片 6、7）：匯入 job 在快照發布後接著建立結構索引（**Python** 用標準庫 `ast`、**C#** 用 tree-sitter 做語法層級解析，**不執行、不編譯、不 import** 受分析的程式，不含語意分析；符號、import／using、基底型別與裝飾器／attribute 關係；語法錯誤只影響單檔，一律稱「部分解析」，不宣稱完整；C# 的 partial 類別每檔各一筆、不合併，`#if` 各分支都列出並標示條件式定義；欄位預設不抽取，可設 `INDEX_CSHARP_INCLUDE_FIELDS=true`）；也可對已匯入的快照單獨 `POST /snapshots/{id}/index-jobs`。其他語言的檔案只保存文字，不產生符號。主控台在版本管理的「程式結構」顯示索引狀態、部分解析的檔案與符號樹。**升級到切片 7 後，worker 映像需重建（`docker compose --profile jobs build`）才有 tree-sitter；既有的 Python 索引會因設定雜湊改變而在下次匯入／建立索引時重建。**
 - **參考版本**：每個 repo 可把一個已匯入的版本設為參考（固定的快照，不跟著分支前進）；**只是標記，尚未連到 Agent**。可移除已匯入的版本（含批次，只刪資料庫紀錄）。
-- 查詢 repo、快照、檔案、分支與標籤、commit 歷史、repo 概況與背景工作狀態；GitHub 來源可 fetch；可移除已註冊的 repo。
-- 操作主控台（`frontend/`）：repo 卡片總覽、版本管理（已匯入的版本＋分支下拉＋ commit 圖）、檔案樹、背景工作摘要、GitHub 連線。
+- 查詢 repo、快照、檔案、分支與標籤、commit 歷史、repo 概況、符號與背景工作狀態；GitHub 來源可 fetch；可移除已註冊的 repo。
+- 操作主控台（`frontend/`）：repo 卡片總覽、版本管理（已匯入的版本＋分支下拉＋ commit 圖）、程式結構、檔案樹、背景工作摘要、GitHub 連線。
 
-**尚未有（未完成）**：主控台改用 GitHub 的背景版本（切片 5 前端）、Python／C# 結構索引、搜尋、LLM、向量搜尋、改碼、GitLab 與其他遠端來源、多使用者登入、前端自動化測試。
+**尚未有（未完成）**：搜尋、LLM、向量搜尋、改碼、GitLab 與其他遠端來源、多使用者登入、前端自動化測試。
 
 ## 環境需求
 
@@ -49,9 +50,9 @@ docker compose up -d --wait db db-test
 #    已經有 .env 時不要再執行這行（Copy-Item 會直接覆蓋）
 Copy-Item .env.example .env
 
-# 3. 建立資料表（目前最新 migration 為 0007；升級既有資料庫也是這行）
+# 3. 建立資料表（目前最新 migration 為 0008；升級既有資料庫也是這行）
 uv run alembic upgrade head
-uv run alembic current        # 預期 0007 (head)
+uv run alembic current        # 預期 0008 (head)
 
 # 4. 啟動後端（終端機 1）
 uv run uvicorn repopilot.main:create_app --factory --reload
@@ -166,7 +167,7 @@ React + TypeScript + Vite 的最小操作主控台（`frontend/`），用來以�
 
 ## API 一覽
 
-共 31 個端點（可用 `http://127.0.0.1:8000/openapi.json` 對照；2026-11-12 以 `create_app().openapi()` 核對為 31 個 method＋path，切片 5 新增 2 個）。契約與取捨見 [architecture.md](docs/architecture.md#設計決策) 的 D 編號。
+共 36 個端點（可用 `http://127.0.0.1:8000/openapi.json` 對照；2026-11-13 以 `create_app().openapi()` 核對為 36 個 method＋path，切片 6 新增 5 個）。契約與取捨見 [architecture.md](docs/architecture.md#設計決策) 的 D 編號。
 
 | 方法 | 路徑 | 說明 | 主要狀態碼與錯誤碼 |
 | --- | --- | --- | --- |
@@ -180,7 +181,7 @@ React + TypeScript + Vite 的最小操作主控台（`frontend/`），用來以�
 | POST | `/api/v1/github/registration-jobs` | **背景 GitHub 註冊**（切片 5）：body `{"repo": "owner/name"}`（同上）；API 只做不需網路的驗證（格式、`MANAGED_REPOS_DIR`、受管目錄可映射到 worker 的可寫掛載），查 GitHub、clone 與寫入資料列由 worker 執行；成功後 `GET /jobs/{id}` 的 `result.repository_id` 是新 repo 的 id。同一 owner/name（不分大小寫）進行中只有一個 job | 202 `{job, snapshot_id: null, repository_id: null, reused: false}`＋`Location`；200 `{job: null, repository_id, reused: true}`（已註冊，不建立 job）；422 `invalid_github_repo`；503 `github_registration_disabled`、`worker_path_not_mapped`；GitHub 相關錯誤碼成為 job 的 `error.code`（[D44](docs/architecture.md)） |
 | POST | `/api/v1/repositories/{id}/fetch` | **【已棄用 deprecated】**僅 GitHub 來源：**同步** `git fetch --prune origin`，回報 ref 變動；不建立快照；請改用 `fetch-jobs` | 200 `{repository_id, updated_refs, truncated}`；409 `repository_not_github`、`repository_busy`；502 `github_fetch_failed`；504 `github_fetch_timeout`；422 |
 | POST | `/api/v1/repositories/{id}/fetch-jobs` | **背景 fetch**（切片 5）：僅 GitHub 來源；`job.result.updated_refs` 的 `name` 可直接作為匯入的 revision（`origin/main`）；進行中（`queued`／`running`）只有一個，結束後可再提交 | 202 `{job, snapshot_id: null, repository_id, reused: false}`＋`Location`；404；409 `repository_not_github`；422 `invalid_repository_path`；503 `github_registration_disabled`、`worker_path_not_mapped` |
-| POST | `/api/v1/repositories/{id}/import-jobs` | **背景匯入**（切片 3）：body `{"revision": "main"}`，可省略＝`HEAD`；API 先在主機端把 revision 解析成完整 SHA（無效回 422、不建立 job）並檢查路徑可映射到 worker 容器，再同一交易建立 job 與待派送事件；以 `GET /jobs/{id}` 輪詢 | 202 `{job, snapshot_id, repository_id, reused}`＋`Location`（新建、重新排入失敗或取消的同一個 job、或回既有進行中的 job）；200 `reused=true`（相同快照已完成）；404；409 `snapshot_import_in_progress`；422 `invalid_revision`、`invalid_repository_path`；503 `worker_path_not_mapped`（[D40](docs/architecture.md)） |
+| POST | `/api/v1/repositories/{id}/import-jobs` | **背景匯入**（切片 3）：body `{"revision": "main"}`，可省略＝`HEAD`；API 先在主機端把 revision 解析成完整 SHA（無效回 422、不建立 job）並檢查路徑可映射到 worker 容器，再同一交易建立 job 與待派送事件；以 `GET /jobs/{id}` 輪詢 | 202 `{job, snapshot_id, repository_id, reused}`＋`Location`（新建、重新排入失敗或取消的同一個 job、或回既有進行中的 job；**快照已完成但目前設定的索引缺少或失敗時也是 202**，匯入階段重用快照、只做索引）；200 `reused=true`（相同快照與目前設定的索引都已完成）；404；409 `snapshot_import_in_progress`；422 `invalid_revision`、`invalid_repository_path`；503 `worker_path_not_mapped`（[D40](docs/architecture.md)、[D45](docs/architecture.md)） |
 | POST | `/api/v1/repositories/{id}/imports` | **【已棄用 deprecated】**同步匯入固定版本快照（body 同上）；請求會占用到匯入結束，長時間匯入請改用 `import-jobs`；與 worker 共用快照鎖 | 201 新建；200 相同快照已完成；409 `snapshot_import_in_progress`；422 `invalid_revision`、`invalid_repository_path`、`import_limit_exceeded`；504 `git_timeout` |
 | GET | `/api/v1/repositories/{id}/snapshots` | 快照列表（新的在前；含 `importing`／`failed`；`?status=`、`limit`、`offset`）；每筆另有 `is_referenced`、`is_stale_profile`（匯入設定與目前不同） | 200 `{items, total, limit, offset}` |
 | GET | `/api/v1/repositories/{id}/refs` | 分支與標籤（唯讀 Git；本機來源列 `refs/heads/*`，GitHub 來源列 `origin/*`） | 200 `{default_ref, head_sha, branches, tags, truncated}`；404；422；504 `git_timeout` |
@@ -193,6 +194,11 @@ React + TypeScript + Vite 的最小操作主控台（`frontend/`），用來以�
 | DELETE | `/api/v1/snapshots/{id}?force=false` | **移除快照**：只刪資料庫紀錄，**不動 Git repo**；匯入中、進行中的 job、快照鎖被持有 → `snapshot_busy`（`force` 無法繞過）；是參考版本且未帶 `force=true` → `snapshot_referenced`；移除後同一 commit 可重新匯入 | 200 `{snapshot_id, repository_id, deleted_files, was_referenced}`；404 `snapshot_not_found`；409 `snapshot_busy`、`snapshot_referenced`；422（[D41](docs/architecture.md)） |
 | GET | `/api/v1/snapshots/{id}/files` | 檔案列表（不含 `content`；`status`、`path_prefix`、`limit`、`offset`） | 200 `{items, total, limit, offset}`；409 `snapshot_not_completed` |
 | GET | `/api/v1/snapshots/{id}/files/{file_id}` | 單檔含 `content`（`skipped` 為 `null`，帶 `skip_reason`） | 200；404 `snapshot_file_not_found`；409 `snapshot_not_completed`（[D30](docs/architecture.md)） |
+| POST | `/api/v1/snapshots/{id}/index-jobs` | **背景建立結構索引**（切片 6）：只讀資料庫裡的快照內容（不碰 Git）；同快照、同索引設定進行中只有一個 job；失敗或取消後再提交會重新排入同一個 job | 202＋`Location`；200 `reused=true`（目前設定的索引已完成）；404 `snapshot_not_found`；409 `snapshot_not_completed`（[D45](docs/architecture.md)） |
+| GET | `/api/v1/snapshots/{id}/index` | 快照在**目前設定**下的索引狀態：`none`（沒有索引，200 不是錯誤）、`building`、`completed`（另有 `counts`：依語言、解析狀態、符號種類）、`failed`；`analyzers` 是抽取器與版本 | 200；404；409 `snapshot_not_completed` |
+| GET | `/api/v1/snapshots/{id}/index/files` | 被索引的檔案與解析狀態（`has_problems`、`language`、`limit`、`offset`；依 path 排序）；只有第一個語法錯誤的位置，**沒有程式碼片段** | 200；409 `snapshot_not_completed`、`snapshot_index_not_ready`（`details.index_status`） |
+| GET | `/api/v1/snapshots/{id}/symbols` | 符號列表（`kind`、`parent_id`、`top_level`、`file_id`、`path_prefix`、`limit`、`offset`；依 path、起始行排序；`has_children` 供符號樹逐層載入）；只採用 `completed` 的索引 | 200；409 `snapshot_not_completed`、`snapshot_index_not_ready` |
+| GET | `/api/v1/snapshots/{id}/symbols/{symbol_id}` | 單一符號：位置（欄位是 0-based UTF-8 位元組位移）、修飾詞、裝飾器起始行、同檔 import 與關係（`resolved_same_file`／`ambiguous`／`unresolved`，未解析者保留原始名稱） | 200；404 `symbol_not_found`（含別的快照的符號）；409（同上） |
 | PUT | `/api/v1/github/token` | 驗證（呼叫 GitHub `GET /user`）後加密保存 token（body `{"token": "..."}`） | 200 `{authenticated, login, token_type, warning}`；422 `validation_error`、`github_token_invalid`；503 `token_encryption_not_configured`；502／504 |
 | GET | `/api/v1/github/auth` | 只回狀態，**永不回傳 token**；不呼叫 GitHub | 200 |
 | DELETE | `/api/v1/github/auth` | 刪除本機保存的 token（不在 GitHub 端撤銷） | 204（冪等） |
@@ -344,7 +350,7 @@ uv run alembic check               # model 與 migration 無差異（以 DATABAS
 - 整合測試使用真實 PostgreSQL（`db-test`，埠 5433，資料不保存）；**`db-test` 沒啟動時整合測試會明確失敗，不會被跳過**。`pytest` 會重建測試資料庫的 `public` schema，且只允許資料庫名稱含 `test`，不會碰 dev 資料庫。
 - **`stack` 測試**（`tests/integration/stack/`）需要真實的 Redis、dispatcher 與 worker 容器，預設**會執行**；前置是 `docker compose up -d --wait db-test` 與 `docker compose --profile jobs build`。測試自己啟動與停止 `redis-test`、`dispatcher-test`、`worker-test`；Docker 不可用或映像沒建置時**明確失敗，不跳過**。只想跑不需要容器的測試用 `-m "not stack"`。
 - `tests/integration/test_restart_persistence.py` 會在 `db-test` 容器內建立臨時資料庫並啟動真實 uvicorn 子程序（空閒埠，不碰 8000；結束即 DROP 與停止），以 `slow` marker 標記，預設仍會執行。
-- **最近一次完整結果**（2026-11-12，第二階段切片 5）：`uv run pytest` **2147 passed**（1661 秒，含 30 項 `stack` 測試）、`uv run ruff check .`、`uv run ruff format --check .`（164 files already formatted）、`uv run mypy src tests`（155 個檔案無問題）通過；`alembic current` ＝ `0007 (head)`、`alembic check`（對 test 資料庫）無差異。切片 5 之前的結果：切片 4 為 1945 passed（1329 秒）、切片 3b 為 1812 passed（1177 秒）。完整套件在 Windows 開發機上約 20～28 分鐘。細節與變異檢查見 [roadmap](docs/roadmap.md)。
+- **最近一次完整結果**（2026-11-13，第二階段切片 7）：`uv run pytest -m "not stack"` **2237 passed、17 deselected**（1645 秒）、`uv run pytest tests/integration/stack` **32 passed**（441 秒；兩次分開執行，**沒有合併成一次 `uv run pytest`**）、`uv run ruff check .`、`uv run ruff format --check .`、`uv run mypy src tests` 通過；前端 `typecheck`、`lint`、`build` 通過；切片 7 沒有 migration（仍是 `0008`）；開發資料庫仍是 `0007 (head)`（**升級到 `0008` 由你自行執行 `uv run alembic upgrade head`**；開發 `worker` 容器需重建才會有索引階段與 tree-sitter）。前一次（切片 6）：2202 passed＋`stack` 32 passed。切片 6 之前的結果：切片 5 為 2147 passed（1661 秒，含 30 項 `stack` 測試）、切片 4 為 1945 passed（1329 秒）、切片 3b 為 1812 passed（1177 秒）。完整套件在 Windows 開發機上約 20～28 分鐘。細節與變異檢查見 [roadmap](docs/roadmap.md)。
 - 前端沒有自動化測試（見「主控台操作流程」的驗證狀態）。
 
 ## 安全注意事項

@@ -24,6 +24,8 @@
   `POST /imports` 與 worker 的匯入 job 都先取它，所以同一快照不會被兩邊同時匯入；持有它的人
   可以**立即接手**殘留的 `importing` 快照（`takeover`，規格 5.4）——因為活著的匯入者一定
   持有這把鎖。
+- `index:{snapshot_id}:{index_profile_hash}`：索引級，獨占（切片 6）。建構同一份結構索引的
+  job 互斥；持有者可以立即接手殘留的 `building` 索引。
 
 .NET 對照：像 SQL Server 的 `sp_getapplock`（Session 範圍），但這裡用 `try` 語意、不阻塞。
 """
@@ -64,6 +66,15 @@ def repo_lock_key(repo_key: str) -> int:
 
 def snapshot_lock_key(repository_id: int, commit_sha: str, import_profile_hash: str) -> int:
     return lock_key("snapshot", f"{repository_id}:{commit_sha}:{import_profile_hash}")
+
+
+def index_lock_key(snapshot_id: int, index_profile_hash: str) -> int:
+    """索引級鎖（切片 6）：同一快照在同一索引設定下只會有一個建構者。
+
+    匯入 job（`import:…`）與 `index-jobs`（`index:…`）的 `dedupe_key` 不同，兩個 job 可能同時
+    想建立同一份索引；持有這把鎖的人才可以接手殘留的 `building` 索引。
+    """
+    return lock_key("index", f"{snapshot_id}:{index_profile_hash}")
 
 
 class AdvisoryLock:

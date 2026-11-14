@@ -40,9 +40,11 @@ from repopilot.errors import (
     SnapshotBusyError,
     SnapshotFileNotFoundError,
     SnapshotImportInProgressError,
+    SnapshotIndexNotReadyError,
     SnapshotNotCompletedError,
     SnapshotNotFoundError,
     SnapshotReferencedError,
+    SymbolNotFoundError,
     TokenEncryptionNotConfiguredError,
     WorkerPathNotMappedError,
 )
@@ -99,6 +101,9 @@ ERROR_STATUS: dict[type[RepoPilotError], int] = {
     WorkerPathNotMappedError: 503,
     PathNotMappedError: 503,
     ImportCancelledError: 409,
+    # 結構索引（第二階段切片 6）：索引尚未就緒是「稍後再查」的衝突；符號不在該索引內是 404
+    SnapshotIndexNotReadyError: 409,
+    SymbolNotFoundError: 404,
 }
 
 _HTTP_ERROR_CODES = {
@@ -112,7 +117,7 @@ def error_response(
     code: str,
     message: str,
     *,
-    details: list[dict[str, Any]] | None = None,
+    details: list[dict[str, Any]] | dict[str, Any] | None = None,
     headers: Mapping[str, str] | None = None,
 ) -> JSONResponse:
     error: dict[str, Any] = {
@@ -137,7 +142,13 @@ def _handle_domain_error(_: Request, raw_exc: Exception) -> JSONResponse:
     status_code = _status_for(exc)
     if status_code >= 500:
         logger.error("domain_error", extra={"error_code": exc.code})
-    return error_response(status_code, exc.code, exc.message)
+    return error_response(status_code, exc.code, exc.message, details=_details_of(exc))
+
+
+def _details_of(exc: RepoPilotError) -> dict[str, Any] | None:
+    if isinstance(exc, SnapshotIndexNotReadyError):
+        return {"index_status": exc.index_status}
+    return None
 
 
 def _handle_validation_error(_: Request, raw_exc: Exception) -> JSONResponse:

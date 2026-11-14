@@ -17,13 +17,13 @@ API 在排入前**同步**完成這些事（所以不能宣稱 API 完全不執�
 | 目前狀態 | 結果 |
 | --- | --- |
 | 有 `queued`／`running` 的同鍵 job | 回既有 job（202）；唯一性由部分唯一索引保證 |
-| 快照已 `completed` | 不建立 job，200＋`reused=true` |
+| 快照已 `completed` **且目前設定的索引已 `completed`** | 不建立 job，200＋`reused=true` |
 | 最近的 job 是 `failed`／`cancelled` | 重新排入**同一個 job**（202；延續第一階段的接手） |
 | 快照 `importing` 且新鮮、這個鍵從來沒有 job | 409 `snapshot_import_in_progress`（同步匯入中） |
-| 其他 | 建立新 job（202） |
+| 其他（含「快照已 completed、索引缺少或失敗」） | 建立新 job（202）；匯入階段重用快照，只做索引 |
 
-本切片沒有索引（切片 6），所以規格 4.4 的「快照 completed、索引缺少或失敗 → 建立只含
-indexing 階段的 job」那一列尚不存在：completed 快照一律回 200；切片 6 加入索引後再調整。
+索引（切片 6）：job 的階段是 `importing` → `indexing` → `completed`；快照發布後 job 仍是
+`running`，索引完成才 `succeeded`。快照已發布的事實不會因為索引失敗而改變。
 
 .NET 對照：像一個冪等的 `POST` 命令處理器——先查「已經有人在做／已經做完」，最後才真的寫入。
 """
@@ -36,7 +36,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from repopilot.config import Settings
-from repopilot.db.models import Job
+from repopilot.db.models import Job, SnapshotIndex
 from repopilot.errors import (
     GitCommandError,
     InvalidRepositoryPathError,
@@ -46,6 +46,7 @@ from repopilot.errors import (
 )
 from repopilot.git.objects import resolve_commit
 from repopilot.git.repository import ensure_repository_root
+from repopilot.indexing.profile import IndexProfile
 from repopilot.logging_config import APP_LOGGER_NAME
 from repopilot.path_mapping import to_container_path
 from repopilot.services import job_rules
@@ -106,25 +107,41 @@ def submit_import_job(
         ) from None
 
     profile_hash = ImportProfile.from_settings(settings).hash()
+    index_hash = IndexProfile.from_settings(settings).hash()
     dedupe_key = import_dedupe_key(repository_id, commit_sha, profile_hash)
     params = {"requested_revision": revision, "commit_sha": commit_sha}
 
     for _ in range(_MAX_SUBMIT_ATTEMPTS):
-        active = _find_active_job(session, dedupe_key)
+        active = find_active_job(session, dedupe_key)
         if active is not None:
             return ImportJobSubmission(active, active.snapshot_id, repository_id, reused=False)
 
         snapshot = find_snapshot(session, repository_id, commit_sha, profile_hash)
         session.rollback()
-        if snapshot is not None and snapshot.status == "completed":
+        completed_snapshot_id = (
+            snapshot.id if snapshot is not None and snapshot.status == "completed" else None
+        )
+        # 快照與「目前設定的索引」都 completed 才算做完（規格 4.4）；快照 completed 但索引缺少或
+        # 失敗時繼續往下：重新排入或建立 job，匯入階段會直接重用快照，只做索引
+        if completed_snapshot_id is not None and index_is_completed(
+            session, completed_snapshot_id, index_hash
+        ):
             return ImportJobSubmission(
-                _latest_succeeded_job(session, snapshot.id), snapshot.id, repository_id, True
+                latest_succeeded_job(session, completed_snapshot_id),
+                completed_snapshot_id,
+                repository_id,
+                True,
             )
 
-        latest = _latest_job(session, dedupe_key)
+        latest = latest_job(session, dedupe_key)
         if latest is not None and latest.status in ("failed", "cancelled"):
             resubmitted = job_service.resubmit_job(
-                session, latest.id, settings, request_id=request_id, params=params
+                session,
+                latest.id,
+                settings,
+                request_id=request_id,
+                params=params,
+                index_profile_hash=index_hash,
             )
             if resubmitted is not None:
                 return ImportJobSubmission(
@@ -143,16 +160,29 @@ def submit_import_job(
             dedupe_key=dedupe_key,
             settings=settings,
             repository_id=repository_id,
+            snapshot_id=completed_snapshot_id,
             repo_key=key_for_repo,
             params=params,
             import_profile_hash=profile_hash,
+            index_profile_hash=index_hash,
             request_id=request_id,
         )
         return ImportJobSubmission(created.job, created.job.snapshot_id, repository_id, False)
     raise RuntimeError("Could not submit the import job.")
 
 
-def _find_active_job(session: Session, dedupe_key: str) -> Job | None:
+def index_is_completed(session: Session, snapshot_id: int, index_profile_hash: str) -> bool:
+    status = session.scalar(
+        select(SnapshotIndex.status).where(
+            SnapshotIndex.snapshot_id == snapshot_id,
+            SnapshotIndex.index_profile_hash == index_profile_hash,
+        )
+    )
+    session.rollback()
+    return status == "completed"
+
+
+def find_active_job(session: Session, dedupe_key: str) -> Job | None:
     job = session.scalars(
         select(Job)
         .where(Job.dedupe_key == dedupe_key, Job.status.in_(job_rules.ACTIVE_STATUSES))
@@ -162,7 +192,7 @@ def _find_active_job(session: Session, dedupe_key: str) -> Job | None:
     return job
 
 
-def _latest_job(session: Session, dedupe_key: str) -> Job | None:
+def latest_job(session: Session, dedupe_key: str) -> Job | None:
     job = session.scalars(
         select(Job)
         .where(Job.dedupe_key == dedupe_key)
@@ -174,7 +204,7 @@ def _latest_job(session: Session, dedupe_key: str) -> Job | None:
     return job
 
 
-def _latest_succeeded_job(session: Session, snapshot_id: int) -> Job | None:
+def latest_succeeded_job(session: Session, snapshot_id: int) -> Job | None:
     job = session.scalars(
         select(Job)
         .where(Job.snapshot_id == snapshot_id, Job.status == "succeeded")

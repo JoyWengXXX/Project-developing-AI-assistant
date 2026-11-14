@@ -34,8 +34,9 @@ from repopilot.errors import (
     RepositoryNotFoundError,
 )
 from repopilot.logging_config import APP_LOGGER_NAME
-from repopilot.services import job_rules, managed_repos
+from repopilot.services import job_rules, managed_repos, snapshot_indexing
 from repopilot.services.repositories import get_repository, repository_key
+from repopilot.services.snapshot_indexing import PURGE_THRESHOLD_SYMBOLS
 
 logger = logging.getLogger(f"{APP_LOGGER_NAME}.services.repository_removal")
 
@@ -90,15 +91,23 @@ def remove_repository(session: Session, repository_id: int, settings: Settings) 
 
 def _remove_locked(session: Session, repository_id: int, settings: Settings) -> RemovalResult:
     try:
+        # 大型結構索引先分批清掉（每批各自一個短交易，不持有 repo 列鎖）；小型索引沒有動作
+        _lock_and_check(session, repository_id, settings)
+        snapshot_ids = list(
+            session.scalars(select(Snapshot.id).where(Snapshot.repository_id == repository_id))
+        )
+        if snapshot_indexing.count_symbols(session, snapshot_ids) >= PURGE_THRESHOLD_SYMBOLS:
+            snapshot_indexing.purge_index_data(session, snapshot_ids)  # 結束時沒有未完成的交易
+        else:
+            session.rollback()
         return _remove_in_transaction(session, repository_id, settings)
     except BaseException:
         session.rollback()  # 任何失敗都放掉列鎖；資料列與快照原封不動
         raise
 
 
-def _remove_in_transaction(
-    session: Session, repository_id: int, settings: Settings
-) -> RemovalResult:
+def _lock_and_check(session: Session, repository_id: int, settings: Settings) -> Any:
+    """鎖住 repo 資料列並做「可以移除嗎」的檢查；回傳該列（不 commit，呼叫者決定交易邊界）。"""
     # 鎖住資料列並重新讀取：等鎖期間可能已被另一個刪除請求移除（→ 404）
     row = session.execute(
         select(
@@ -139,6 +148,13 @@ def _remove_in_transaction(
             "A background job is queued or running for this repository; "
             "cancel it or wait for it to finish, then retry."
         )
+    return row
+
+
+def _remove_in_transaction(
+    session: Session, repository_id: int, settings: Settings
+) -> RemovalResult:
+    row = _lock_and_check(session, repository_id, settings)
 
     removed_clone = False
     if row.source_type == "github":
@@ -151,15 +167,13 @@ def _remove_in_transaction(
             recorded_path=row.canonical_local_path,
         )
 
-    # SQL 層級刪除（不載入 ORM 物件，20,000 檔也只是三個語句）。snapshot_files 的外鍵本來就是
+    # SQL 層級刪除（不載入 ORM 物件）。大型結構索引已由 purge_index_data 分批清掉（見
+    # _remove_locked）；這裡剩下的（小型索引）靠外鍵級聯。snapshot_files 的外鍵本來就是
     # ON DELETE CASCADE，但 snapshots → repositories 沒有，所以依序明確刪除，不需要新的 migration
+    repository_snapshots = select(Snapshot.id).where(Snapshot.repository_id == repository_id)
     deleted_files = _rowcount(
         session.execute(
-            delete(SnapshotFile).where(
-                SnapshotFile.snapshot_id.in_(
-                    select(Snapshot.id).where(Snapshot.repository_id == repository_id)
-                )
-            )
+            delete(SnapshotFile).where(SnapshotFile.snapshot_id.in_(repository_snapshots))
         )
     )
     deleted_snapshots = _rowcount(

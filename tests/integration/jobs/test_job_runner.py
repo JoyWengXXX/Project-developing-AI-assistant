@@ -124,10 +124,20 @@ def test_a_job_imports_the_pinned_commit_and_the_snapshot_and_job_complete_toget
         ).one()
     assert row == (git(repo, "rev-parse", "HEAD"), repository_id)
     assert tuple(env_row) == ("skipped", "excluded", None)  # 秘密檔不讀內容
-    assert state["result"] == {"snapshot_id": snapshot_id, "commit_sha": row[0]}
+    result = state["result"]
+    assert (result["snapshot_id"], result["commit_sha"]) == (snapshot_id, row[0])
+    # 快照發布後接著建立索引（切片 6）：src/app.py 是唯一的 Python 檔案，只有一個 module 符號
+    assert (result["indexed_files"], result["symbols"], result["parse_error_files"]) == (1, 1, 0)
+    assert result["index_reused"] is False and "reused" not in result
     assert state["lease_token"] is None
-    # 進度：總數已知且全部處理完成
-    assert (state["processed_files"], state["total_files"]) == (4, 4)
+    # 進度：匯入處理了 4 個檔案；進入索引階段後 total_files 改成「可索引的檔案數」（1 個 .py），
+    # 已建立索引的檔案數 indexed_files 也是 1
+    assert (state["processed_files"], state["total_files"]) == (4, 1)
+    with db_engine.connect() as connection:
+        indexed = connection.execute(
+            text("SELECT indexed_files FROM jobs WHERE id = :i"), {"i": job_id}
+        ).scalar_one()
+    assert indexed == 1
     # 沒有殘留：待派送事件、advisory lock 都已清除
     assert _count(db_engine, "job_dispatches") == 0
     assert _advisory_locks(db_engine) == 0
@@ -348,10 +358,10 @@ def test_a_job_without_a_valid_commit_sha_fails_permanently(
     assert job_state(db_engine, job_id)["error_code"] == "invalid_revision"
 
 
-def test_only_supported_kinds_run_and_index_jobs_are_not_implemented_yet(
+def test_an_index_job_without_a_snapshot_fails_permanently(
     db_engine: Engine, worker_settings: Settings, clean_jobs: None
 ) -> None:
-    # 切片 5 起 worker 也執行 github_register／github_fetch；索引（snapshot_index）屬切片 6
+    # 四種 job 種類 worker 都支援了（索引在切片 6）；沒有快照的索引 job 是永久性失敗，不重試
     with Session(db_engine) as session:
         created = job_service.create_job(
             session, kind="snapshot_index", dedupe_key="index:x", settings=worker_settings
@@ -359,7 +369,8 @@ def test_only_supported_kinds_run_and_index_jobs_are_not_implemented_yet(
 
     assert _run(created.job.id, db_engine, worker_settings) == "failed"
 
-    assert job_state(db_engine, created.job.id)["error_code"] == "unsupported_job_kind"
+    state = job_state(db_engine, created.job.id)
+    assert (state["error_code"], state["attempt"]) == ("snapshot_not_found", 1)
 
 
 # --- 鎖忙碌：延後，不消耗額度 ---
@@ -600,14 +611,14 @@ def test_the_snapshot_is_never_completed_without_its_job_being_published(
     worker_settings: Settings,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """發布邊界的取消：complete_job 先看到旗標，快照不得被完成，也不會發布成功。"""
-    real = job_service.complete_job
+    """發布邊界的取消：發布快照的交易先看到旗標，快照不得被完成，也不會發布成功。"""
+    real = job_service.publish_step
 
     def cancel_just_before_publish(session: Session, jid: int, token: Any, **kwargs: Any) -> Any:
         mapped_client.post(f"/api/v1/jobs/{jid}/cancel")  # 取消請求在完成交易開始前到達
         return real(session, jid, token, **kwargs)
 
-    monkeypatch.setattr(job_service, "complete_job", cancel_just_before_publish)
+    monkeypatch.setattr(job_service, "publish_step", cancel_just_before_publish)
 
     assert _run(job_id, db_engine, worker_settings) == "cancelled"
 

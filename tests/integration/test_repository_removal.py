@@ -779,9 +779,10 @@ def test_remove_repository_with_max_size_snapshot_uses_a_few_sql_statements(
     assert response.status_code == 200
     assert response.json()["deleted_files"] == 20_000
     assert _totals(db_engine) == (0, 0, 0)
-    # 與檔案數無關：查詢 repo、鎖列、importing 檢查、進行中 job 檢查（切片 5 新增的一個 SELECT）、
-    # 三個 DELETE 與少量讀取
-    assert len(statements) <= 9
+    # 與檔案數無關：查詢 repo、鎖列、importing 檢查、進行中 job 檢查、三個 DELETE 與少量讀取；
+    # 另有切片 6 的索引大小檢查（先檢查再分批清除，所以「鎖列與檢查」多做一次，再加快照 id 與符號數
+    # 兩個 SELECT：9 → 14）
+    assert len(statements) <= 14
     # SQL 層級刪除：不載入 snapshot_files 的任何資料列
     assert not any(
         statement.lstrip().upper().startswith("SELECT") and "snapshot_files" in statement

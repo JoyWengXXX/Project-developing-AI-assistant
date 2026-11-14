@@ -391,6 +391,92 @@ export interface ErrorBody {
     code: string
     message: string
     request_id: string | null
-    details?: ValidationDetail[]
+    // 422 validation_error 是陣列；snapshot_index_not_ready 是 { index_status }
+    details?: ValidationDetail[] | { index_status: string }
   }
+}
+
+// ---------- 程式結構索引（第二階段切片 6，對應 schemas.py 的索引模型） ----------
+
+export type IndexStatus = 'none' | 'building' | 'completed' | 'failed'
+export type ParseStatus = 'parsed' | 'parsed_with_errors' | 'failed'
+
+export interface IndexCounts {
+  files_by_language: Record<string, number>
+  files_by_parse_status: Record<string, number>
+  symbols: number
+  symbols_by_kind: Record<string, number>
+  truncated_files: number // 符號數超過單檔上限而被截斷的檔案數
+}
+
+// GET /snapshots/{id}/index：沒有索引時 200＋status="none"（不是錯誤）；只有 completed 才有 counts
+export interface SnapshotIndex {
+  snapshot_id: number
+  status: IndexStatus
+  index_id: number | null
+  started_at: string | null
+  completed_at: string | null
+  analyzers: Record<string, unknown> // 抽取器與版本；不可信內容，只當文字顯示
+  counts: IndexCounts | null
+  error_summary: string | null
+}
+
+export interface IndexedFile {
+  indexed_file_id: number
+  file_id: number
+  path: string
+  language: 'python' | 'csharp'
+  parse_status: ParseStatus
+  error_count: number
+  first_error: { line: number; column: number } | null // column 是 0-based UTF-8 位元組位移
+  symbol_count: number
+  symbols_truncated: boolean
+}
+
+export type IndexedFileList = Page<IndexedFile>
+
+export interface SymbolSummary {
+  symbol_id: number
+  kind: string
+  language: 'python' | 'csharp'
+  name: string
+  qualified_name: string
+  file_id: number
+  path: string
+  start_line: number
+  end_line: number
+  parent_id: number | null
+  modifiers: string | null
+  is_async: boolean
+  has_errors: boolean
+  conditional: boolean
+  has_children: boolean
+}
+
+export type SymbolList = Page<SymbolSummary>
+
+export interface ImportReference {
+  kind: string
+  target: string
+  imported_name: string | null
+  alias: string | null
+  relative_level: number | null
+  line: number
+}
+
+export interface SymbolRelation {
+  relation_type: string
+  target_name: string
+  target_symbol_id: number | null // 只有 resolved_same_file 才有值
+  resolution: 'resolved_same_file' | 'ambiguous' | 'unresolved'
+  line: number
+}
+
+export interface SymbolDetail extends SymbolSummary {
+  start_column: number
+  end_column: number
+  leading_start_line: number | null
+  type_parameter_count: number
+  imports: ImportReference[]
+  relations: SymbolRelation[]
 }

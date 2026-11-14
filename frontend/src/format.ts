@@ -152,7 +152,10 @@ export const ERROR_HINT: Record<string, string> = {
   job_not_retryable: '只有失敗的工作可以重試，或同一個目標已有進行中的工作。',
   job_lease_lost: '執行這個工作的 worker 已失去它的租約（工作已被其他程序接手或已結束），請重新整理列表。',
   worker_lost: '執行背景工作的程序中途中斷，系統已自動重試；重試額度用完後才會失敗。',
-  profile_mismatch: 'API 與 worker 的設定雜湊不一致（兩邊的匯入或索引設定不同），請對齊設定後再重試。',
+  profile_mismatch: 'API 與 worker 的設定雜湊不一致（兩邊的匯入或索引設定、或 Python 版本不同），請對齊設定後再重試。',
+  // 程式結構索引（第二階段切片 6）
+  snapshot_index_not_ready: '這個版本還沒有建立完成的程式結構索引（尚未建立、建立中或失敗）；按「建立索引」後等它完成。',
+  symbol_not_found: '這個符號不存在，或不屬於這個版本目前的索引（索引可能已重建）。',
   path_not_mapped: 'repo 路徑無法映射到 worker 容器內的路徑，這是部署設定問題，請檢查 WORKER_PATH_MAPPINGS（見 README）。',
   worker_path_not_mapped:
     'repo 的主機路徑沒有對應到 worker 容器內的路徑，這是部署設定問題，請檢查 WORKER_PATH_MAPPINGS（見 README）；工作沒有被排入。',

@@ -6,9 +6,9 @@ import {
   isCancelling,
   JOB_ACTION_LABEL,
   jobOutcome,
+  jobPercent,
   jobTitle,
   failureReason,
-  progressPercent,
   retriedText,
   type JobAction,
 } from '../jobFormat'
@@ -77,7 +77,7 @@ export function JobRow({ job, repoShort, repoFull, workerOffline, acting, onActi
   const title = jobTitle(job, repoShort)
   const retried = retriedText(job)
   const outcome = jobOutcome(job, { workerOffline })
-  const showBar = job.status === 'running' && progressPercent(job.progress) !== null // 有總數才畫進度條
+  const showBar = job.status === 'running' && jobPercent(job) !== null // 有總數才畫進度條
   const timeIso = job.finished_at ?? job.created_at
   const timeLabel = job.finished_at !== null ? '結束於' : '建立於'
 

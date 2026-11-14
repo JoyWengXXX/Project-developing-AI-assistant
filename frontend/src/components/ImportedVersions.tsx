@@ -23,6 +23,7 @@ import { BatchResult } from './BatchResult'
 import { ConfirmBox } from './ConfirmBox'
 import { ImportedVersionRow } from './ImportedVersionRow'
 import { SnapshotDetailView } from './SnapshotDetailView'
+import { StructurePanel } from './StructurePanel'
 
 interface Props {
   /** 這個 repo 的所有快照（含失敗、過期設定；由版本區讀取，與「已匯入」的判斷共用同一份資料）。 */
@@ -70,6 +71,7 @@ export function ImportedVersions({
   const [confirm, setConfirm] = useState<Confirm | null>(null)
   const [labels, setLabels] = useState<ReadonlyMap<number, string>>(new Map()) // 批次結果用：編號 → 短 SHA
   const [detailOpen, setDetailOpen] = useState(false)
+  const [structureOpen, setStructureOpen] = useState(false)
   const singleAction = useAction()
   const { clear: clearSingleNotice } = singleAction
   const headingRef = useRef<HTMLHeadingElement>(null)
@@ -247,6 +249,12 @@ export function ImportedVersions({
             <details className="snapshot-detail-toggle" open={detailOpen} onToggle={(e) => setDetailOpen(e.currentTarget.open)}>
               <summary>選取版本的快照詳情（進階）</summary>
               {detailOpen && <SnapshotDetailView key={currentRowSnapshot.id} snapshotId={currentRowSnapshot.id} refreshKey={refreshKey} />}
+            </details>
+          )}
+          {currentRowSnapshot !== null && currentRowSnapshot.status === 'completed' && (
+            <details className="snapshot-detail-toggle" open={structureOpen} onToggle={(e) => setStructureOpen(e.currentTarget.open)}>
+              <summary>程式結構（Python 符號、部分解析的檔案）</summary>
+              {structureOpen && <StructurePanel key={currentRowSnapshot.id} snapshotId={currentRowSnapshot.id} />}
             </details>
           )}
         </>

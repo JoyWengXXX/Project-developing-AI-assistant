@@ -1,4 +1,4 @@
-import { batchText, bytesReceivedText, progressPercent, progressText } from '../jobFormat'
+import { batchText, bytesReceivedText, isIndexing, jobPercent, progressNumbers, progressText } from '../jobFormat'
 import type { Job } from '../types'
 import { Elapsed } from './JobTimes'
 
@@ -7,8 +7,8 @@ import { Elapsed } from './JobTimes'
  * 沒有東西可畫時回傳 null。工作列表與 JobProgress 共用。
  */
 export function JobProgressBar({ job }: { job: Job }) {
-  const { processed_files: done, total_files: total } = job.progress
-  const pct = progressPercent(job.progress)
+  const { done, total } = progressNumbers(job)
+  const pct = jobPercent(job)
   if (pct !== null && total !== null) {
     return (
       <div
@@ -18,7 +18,7 @@ export function JobProgressBar({ job }: { job: Job }) {
         aria-valuemin={0}
         aria-valuemax={total}
         aria-valuenow={Math.min(done, total)}
-        aria-valuetext={`已處理 ${done} / ${total} 個檔案（${pct}%）`}
+        aria-valuetext={`${isIndexing(job) ? '已建立索引' : '已處理'} ${done} / ${total} 個檔案（${pct}%）`}
       >
         <div className="progress-fill" style={{ width: `${pct}%` }} />
       </div>

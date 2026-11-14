@@ -136,6 +136,26 @@ export function progressPercent(progress: Pick<JobProgress, 'processed_files' | 
   return Math.max(0, Math.min(100, Math.floor((done / total) * 100)))
 }
 
+/** 工作正在（或最後停在）建立索引：匯入工作的 indexing 階段，或整個 snapshot_index 工作。 */
+export function isIndexing(job: Job): boolean {
+  return job.phase === 'indexing' || (job.kind === 'snapshot_index' && job.status === 'running')
+}
+
+/**
+ * 目前階段的進度數字：索引階段是「已建立索引的檔案／可索引的檔案總數」（後端在進入索引階段時把
+ * total_files 改成可索引的檔案數）；其他階段是「已處理／總檔案數」。
+ */
+export function progressNumbers(job: Job): { done: number; total: number | null } {
+  const p = job.progress
+  return isIndexing(job) ? { done: p.indexed_files, total: p.total_files } : { done: p.processed_files, total: p.total_files }
+}
+
+/** 同 progressPercent，但依工作所在的階段選用數字。 */
+export function jobPercent(job: Job): number | null {
+  const { done, total } = progressNumbers(job)
+  return progressPercent({ processed_files: done, total_files: total })
+}
+
 /**
  * clone 期間的「已接收」說明；bytes_received 為 null（不在 clone 期間，或 worker 還沒量到）時回傳 null，不顯示 0。
  * 數字是暫存目錄的大小，不是百分比（git clone 不提供百分比）。
@@ -234,12 +254,13 @@ export function batchText(job: Job): string | null {
 
 /** 進度文字（進度條旁）：百分比與「已處理 N / M 個檔案」；總數未知時不偽造百分比。 */
 export function progressText(job: Job): string {
-  const { processed_files: done, total_files: total } = job.progress
-  const pct = progressPercent(job.progress)
-  if (pct !== null && total !== null) return `${pct}%，已處理 ${done.toLocaleString('zh-TW')} / ${total.toLocaleString('zh-TW')} 個檔案`
-  if (total === 0) return `沒有檔案需要處理（${done} / 0）`
+  const { done, total } = progressNumbers(job)
+  const pct = jobPercent(job)
+  const verb = isIndexing(job) ? '已建立索引' : '已處理'
+  if (pct !== null && total !== null) return `${pct}%，${verb} ${done.toLocaleString('zh-TW')} / ${total.toLocaleString('zh-TW')} 個檔案`
+  if (total === 0) return isIndexing(job) ? '沒有可建立索引的檔案（目前只支援 Python）' : `沒有檔案需要處理（${done} / 0）`
   if (isEnumerating(job)) return '正在列舉檔案…'
-  if (done > 0) return `已處理 ${done.toLocaleString('zh-TW')} 個檔案（總數未知）`
+  if (done > 0) return `${verb} ${done.toLocaleString('zh-TW')} 個檔案（總數未知）`
   if (job.status === 'running') return '進行中（總數未知，無法估計進度）'
   if (job.status === 'queued') return '尚未開始'
   return '沒有進度資料'
@@ -316,6 +337,7 @@ export function jobOutcome(job: Job, options: { workerOffline: boolean }): strin
       return job.error !== null ? '排隊中（上次嘗試失敗，等待自動重試）' : '排隊中（等待背景執行器）'
     case 'running': {
       if (job.cancel_requested) return `取消中…（${cancellingWait(job.kind)}）`
+      if (isIndexing(job)) return `進行中：建立程式結構索引（${progressText(job)}）`
       if (job.kind !== 'snapshot_import') {
         // 註冊 clone 期間才有 bytes_received（其他階段與其他種類為 null，不顯示）
         const received = bytesReceivedText(job.progress.bytes_received)
@@ -326,7 +348,7 @@ export function jobOutcome(job: Job, options: { workerOffline: boolean }): strin
     }
     case 'succeeded': {
       const parts = [githubSucceededText(job) ?? '已完成']
-      const total = job.progress.total_files ?? files
+      const total = files > 0 ? files : (job.progress.total_files ?? 0) // 索引階段會把 total_files 改成可索引的檔案數，匯入的檔案數看 processed_files
       if (job.kind === 'snapshot_import' && total > 0) parts.push(`共 ${total.toLocaleString('zh-TW')} 個檔案`)
       const ms = durationBetween(job.started_at, job.finished_at)
       if (ms !== null) parts.push(ms < 1000 ? '耗時不到 1 秒' : `耗時 ${formatDuration(ms)}`)
@@ -343,8 +365,8 @@ export function jobOutcome(job: Job, options: { workerOffline: boolean }): strin
 export function progressSummary(job: Job, options: { workerOffline: boolean }): string {
   if (job.status === 'queued') return options.workerOffline ? '排隊中，背景執行器離線' : '排隊中'
   if (isCancelling(job)) return '取消中…'
-  const { processed_files: done } = job.progress
-  if (progressPercent(job.progress) !== null || isEnumerating(job) || done > 0) return progressText(job)
+  const { done } = progressNumbers(job)
+  if (jobPercent(job) !== null || isEnumerating(job) || done > 0) return progressText(job)
   return '進行中'
 }
 

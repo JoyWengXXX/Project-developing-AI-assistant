@@ -8,10 +8,13 @@
 import os
 import time
 
+import pytest
 from fastapi.testclient import TestClient
 
 from tests.integration.stack.conftest import Stack
 from tests.integration.stack.test_stack_github import DONE, _register_job
+
+pytestmark = pytest.mark.stack
 
 
 def test_bytes_received_grows_while_the_container_clones_over_the_mount(

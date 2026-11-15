@@ -1,0 +1,25 @@
+{
+  "version": "synthetic-v1",
+  "documents": [
+    {"path": "sorting.py", "content": "def ascending(values):\n    return sorted(values)\n"},
+    {"path": "lookup.py", "content": "def find_user(users, identifier):\n    return next((u for u in users if u.id == identifier), None)\n"},
+    {"path": "validation.py", "content": "def valid_email(value):\n    return '@' in value and '.' in value\n"},
+    {"path": "discount.py", "content": "def final_price(price, rate):\n    return price * (1 - rate)\n"},
+    {"path": "retry.py", "content": "def retry(action, attempts):\n    for _ in range(attempts):\n        if action():\n            return True\n    return False\n"},
+    {"path": "reverse.py", "content": "def backwards(text):\n    return text[::-1]\n"},
+    {"path": "duplicates.py", "content": "def unique(values):\n    return list(dict.fromkeys(values))\n"},
+    {"path": "average.py", "content": "def mean(values):\n    return sum(values) / len(values)\n"},
+    {"path": "count.py", "content": "def occurrences(values, target):\n    return values.count(target)\n"},
+    {"path": "clamp.py", "content": "def clamp(value, lower, upper):\n    return min(max(value, lower), upper)\n"}
+  ],
+  "queries": [
+    {"split": "development", "query": "sort numbers in ascending order", "relevant": ["sorting.py"]},
+    {"split": "development", "query": "find a user by identifier", "relevant": ["lookup.py"]},
+    {"split": "development", "query": "check if email is valid", "relevant": ["validation.py"]},
+    {"split": "development", "query": "calculate discounted price", "relevant": ["discount.py"]},
+    {"split": "holdout", "query": "try the action again after failure", "relevant": ["retry.py"]},
+    {"split": "holdout", "query": "reverse characters in a string", "relevant": ["reverse.py"]},
+    {"split": "holdout", "query": "remove repeated items from a list", "relevant": ["duplicates.py"]},
+    {"split": "holdout", "query": "calculate arithmetic average", "relevant": ["average.py"]}
+  ]
+}

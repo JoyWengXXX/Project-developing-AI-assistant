@@ -38,6 +38,9 @@ from repopilot.errors import (
     RepositoryBusyError,
     RepositoryNotFoundError,
     RepositoryNotGitHubError,
+    RetrievalIndexNotReadyError,
+    RetrievalSnapshotNotCompletedError,
+    RetrievalSnapshotNotFoundError,
     SearchTimeoutError,
     SnapshotBusyError,
     SnapshotFileNotFoundError,
@@ -106,6 +109,7 @@ ERROR_STATUS: dict[type[RepoPilotError], int] = {
     ImportCancelledError: 409,
     # 結構索引（第二階段切片 6）：索引尚未就緒是「稍後再查」的衝突；符號不在該索引內是 404
     SnapshotIndexNotReadyError: 409,
+    RetrievalIndexNotReadyError: 409,
     SymbolNotFoundError: 404,
     # 搜尋（第二階段切片 8）：逾時是 504（同 Git 逾時），不是資料庫不可用的 503
     SearchTimeoutError: 504,
@@ -151,6 +155,10 @@ def _handle_domain_error(_: Request, raw_exc: Exception) -> JSONResponse:
 
 
 def _details_of(exc: RepoPilotError) -> dict[str, Any] | None:
+    if isinstance(exc, RetrievalIndexNotReadyError):
+        return {"snapshot_id": exc.snapshot_id, "index_status": exc.index_status}
+    if isinstance(exc, RetrievalSnapshotNotFoundError | RetrievalSnapshotNotCompletedError):
+        return {"snapshot_id": exc.snapshot_id}
     if isinstance(exc, SnapshotIndexNotReadyError):
         return {"index_status": exc.index_status}
     return None

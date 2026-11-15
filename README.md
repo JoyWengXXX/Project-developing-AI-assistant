@@ -45,6 +45,7 @@ IBM embedding 執行器已完成內部假資料試跑，尚未整合產品。
 - **參考版本**：每個 repo 可把一個已匯入的版本設為參考（固定的快照，不跟著分支前進）；**只是標記，尚未連到 Agent**。可移除已匯入的版本（含批次，只刪資料庫紀錄）。
 - 查詢 repo、快照、檔案、分支與標籤、commit 歷史、repo 概況、符號與背景工作狀態；GitHub 來源可 fetch；可移除已註冊的 repo。
 - **搜尋**（第二階段切片 8）：對已匯入的快照做三種字面（區分大小寫）子字串搜尋——檔名（`search/files`）、符號（`search/symbols`，需要已完成的結構索引）、內容（`search/text`，一個命中行一筆並帶片段；不依賴索引）。沒有正規表示式、模糊比對或相關性排序；沒有加 `pg_trgm`（20,000 檔合成快照的最壞情況單次約 3.6 秒，低於預設逾時 10 秒；真實 repo 與 Linux 容器內未驗證）。超過 `SEARCH_STATEMENT_TIMEOUT_SECONDS` 回 504 `search_timeout`。主控台在版本管理的「搜尋」面板使用。
+- **跨快照片段關鍵字搜尋**：對明確指定且索引完成的快照，以查詢中的 Unicode 字詞做不區分大小寫的字面子字串比對；每個不同字詞是否命中計一分。依分數降序，再依 repo ID、快照 ID、路徑位元組、片段起點與 ID 升序決定同分順序。最多 20 個快照、16 個不同字詞與 50 筆結果；任一快照或索引不可用時明確報錯，不回部分結果。語意／混合搜尋與介面尚未完成。
 - 操作主控台（`frontend/`）：repo 卡片總覽、版本管理（已匯入的版本＋分支下拉＋ commit 圖）、程式結構、搜尋、檔案樹、背景工作摘要、GitHub 連線。
 
 **尚未有（未完成）**：LLM、向量搜尋、改碼、GitLab 與其他遠端來源、多使用者登入、完整前端自動化測試。
@@ -243,6 +244,7 @@ React + TypeScript + Vite 的最小操作主控台（`frontend/`），用來以�
 | POST | `/api/v1/snapshots/{id}/index-jobs` | **背景建立結構索引**（切片 6）：只讀資料庫裡的快照內容（不碰 Git）；同快照、同索引設定進行中只有一個 job；失敗或取消後再提交會重新排入同一個 job | 202＋`Location`；200 `reused=true`（目前設定的索引已完成）；404 `snapshot_not_found`；409 `snapshot_not_completed`（[D45](docs/architecture.md)） |
 | POST | `/api/v1/snapshots/{id}/retrieval-jobs` | 背景建立檢索索引；需要 API 與 worker 的模型／執行器 SHA-256 一致，worker 另需私有 socket | 202＋`Location`；200 `reused=true`；404 `snapshot_not_found`；409 `snapshot_not_completed`；503 `embedding_not_configured` |
 | GET | `/api/v1/snapshots/{id}/retrieval-index` | 查詢目前設定的索引狀態、完成後的片段與向量數，以及最近的對應工作；尚無索引時為 `none` | 200；404 `snapshot_not_found`；409 `snapshot_not_completed`；503 `embedding_not_configured` |
+| POST | `/api/v1/retrieval/search` | 目前只支援 `keyword`；傳入 `snapshot_ids`、`query`、`mode` 與選填 `limit`，結果含來源、行號、片段與排序分數 | 200；404 `snapshot_not_found`；409 `snapshot_not_completed`／`retrieval_index_not_ready`；422；503；504 |
 | GET | `/api/v1/snapshots/{id}/index` | 快照在**目前設定**下的索引狀態：`none`（沒有索引，200 不是錯誤）、`building`、`completed`（另有 `counts`：依語言、解析狀態、符號種類）、`failed`；`analyzers` 是抽取器與版本 | 200；404；409 `snapshot_not_completed` |
 | GET | `/api/v1/snapshots/{id}/index/files` | 被索引的檔案、解析狀態與 `error_kind`（`has_problems`、`language`、`limit`、`offset`；依 path 排序）；只有第一個語法錯誤的位置，**沒有程式碼片段** | 200；409 `snapshot_not_completed`、`snapshot_index_not_ready`（`details.index_status`） |
 | GET | `/api/v1/snapshots/{id}/symbols` | 符號列表（`kind`、`parent_id`、`top_level`、`file_id`、`path_prefix`、`limit`、`offset`；依 path、起始行排序；`has_children` 供符號樹逐層載入）；只採用 `completed` 的索引 | 200；409 `snapshot_not_completed`、`snapshot_index_not_ready` |

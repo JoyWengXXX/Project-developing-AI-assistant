@@ -364,6 +364,25 @@ export interface RetrievalIndex {
   job: Job | null
 }
 
+export interface RetrievalSearchItem {
+  chunk_id: number
+  repository_id: number
+  snapshot_id: number
+  commit_sha: string
+  path: string
+  start_line: number
+  end_line: number
+  content: string
+  split_kind: 'structure' | 'paragraph' | 'text'
+  support_level: 'structure' | 'text'
+  keyword_score: number
+}
+
+export interface RetrievalSearchResponse {
+  mode: 'keyword'
+  items: RetrievalSearchItem[]
+}
+
 // online：至少一個實例的心跳未過期；stale：有紀錄但都過期；absent：從來沒有紀錄
 export type ServiceStatus = 'online' | 'stale' | 'absent'
 

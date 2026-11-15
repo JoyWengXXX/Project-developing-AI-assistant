@@ -15,6 +15,7 @@ from repopilot.api.routes import (
     ready,
     references,
     repositories,
+    retrieval,
     search,
     snapshots,
 )
@@ -48,6 +49,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(github_repositories.router)
     app.include_router(snapshots.router)
     app.include_router(search.router)
+    app.include_router(retrieval.router)
     app.include_router(github.router)
     app.include_router(github_jobs.router)
     app.include_router(jobs.router)

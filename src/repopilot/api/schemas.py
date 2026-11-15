@@ -2,7 +2,16 @@ from datetime import datetime
 from typing import Annotated, Any, Literal
 
 from fastapi import Path, Query
-from pydantic import AfterValidator, BaseModel, ConfigDict, Field, StringConstraints
+from pydantic import (
+    AfterValidator,
+    BaseModel,
+    ConfigDict,
+    Field,
+    StringConstraints,
+    field_validator,
+)
+
+from repopilot.search_query import keyword_terms
 
 RepositoryName = Annotated[
     str, StringConstraints(strip_whitespace=True, min_length=1, max_length=200)
@@ -517,6 +526,49 @@ class RetrievalIndexResponse(BaseModel):
     chunk_count: int | None
     segment_count: int | None
     job: JobResponse | None
+
+
+class RetrievalSearchRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    snapshot_ids: list[Annotated[int, Field(strict=True, ge=1, le=_INT32_MAX)]] = Field(
+        min_length=1, max_length=20
+    )
+    query: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=512)]
+    mode: Literal["keyword"]
+    limit: int = Field(default=10, ge=1, le=50)
+
+    @field_validator("snapshot_ids")
+    @classmethod
+    def _unique_snapshots(cls, value: list[int]) -> list[int]:
+        if len(set(value)) != len(value):
+            raise ValueError("Snapshot IDs must be unique.")
+        return value
+
+    @field_validator("query")
+    @classmethod
+    def _valid_query(cls, value: str) -> str:
+        keyword_terms(value)
+        return value
+
+
+class RetrievalSearchItem(BaseModel):
+    chunk_id: int
+    repository_id: int
+    snapshot_id: int
+    commit_sha: str
+    path: str
+    start_line: int
+    end_line: int
+    content: str
+    split_kind: Literal["structure", "paragraph", "text"]
+    support_level: Literal["structure", "text"]
+    keyword_score: int
+
+
+class RetrievalSearchResponse(BaseModel):
+    mode: Literal["keyword"]
+    items: list[RetrievalSearchItem]
 
 
 class ServiceStateResponse(BaseModel):

@@ -56,6 +56,27 @@ class SnapshotNotCompletedError(RepoPilotError):
     code = "snapshot_not_completed"
 
 
+class RetrievalSnapshotNotFoundError(SnapshotNotFoundError):
+    def __init__(self, snapshot_id: int) -> None:
+        super().__init__("A requested snapshot was not found.")
+        self.snapshot_id = snapshot_id
+
+
+class RetrievalSnapshotNotCompletedError(SnapshotNotCompletedError):
+    def __init__(self, snapshot_id: int) -> None:
+        super().__init__("A requested snapshot has not been imported completely.")
+        self.snapshot_id = snapshot_id
+
+
+class RetrievalIndexNotReadyError(RepoPilotError):
+    code = "retrieval_index_not_ready"
+
+    def __init__(self, snapshot_id: int, index_status: str) -> None:
+        super().__init__("A requested snapshot has no compatible completed retrieval index.")
+        self.snapshot_id = snapshot_id
+        self.index_status = index_status
+
+
 class SnapshotIndexNotReadyError(RepoPilotError):
     """快照已完成，但沒有（目前設定下）`completed` 的結構索引（第二階段切片 6）。
 

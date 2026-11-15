@@ -353,6 +353,17 @@ export interface JobSubmitResponse {
   reused: boolean
 }
 
+export interface RetrievalIndex {
+  snapshot_id: number
+  repository_id: number
+  status: IndexStatus
+  index_id: number | null
+  profile_hash: string
+  chunk_count: number | null
+  segment_count: number | null
+  job: Job | null
+}
+
 // online：至少一個實例的心跳未過期；stale：有紀錄但都過期；absent：從來沒有紀錄
 export type ServiceStatus = 'online' | 'stale' | 'absent'
 

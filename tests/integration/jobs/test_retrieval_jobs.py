@@ -47,12 +47,17 @@ def test_submit_deduplicates_an_active_job(
     configured_client: TestClient, repository_id: int, db_engine: Engine
 ) -> None:
     snapshot_id = add_snapshot(db_engine, repository_id, files=1)
+    initial = configured_client.get(f"/api/v1/snapshots/{snapshot_id}/retrieval-index")
+    assert initial.status_code == 200 and initial.json()["status"] == "none"
     first = configured_client.post(f"/api/v1/snapshots/{snapshot_id}/retrieval-jobs")
     again = configured_client.post(f"/api/v1/snapshots/{snapshot_id}/retrieval-jobs")
     assert first.status_code == again.status_code == 202
     assert first.json()["job"]["kind"] == "snapshot_retrieval"
     assert first.json()["job"]["id"] == again.json()["job"]["id"]
     assert first.headers["location"] == f"/api/v1/jobs/{first.json()['job']['id']}"
+    pending = configured_client.get(f"/api/v1/snapshots/{snapshot_id}/retrieval-index")
+    assert pending.json()["status"] == "none"
+    assert pending.json()["job"]["id"] == first.json()["job"]["id"]
 
 
 def test_submit_rejects_missing_or_incomplete_snapshot(
@@ -114,9 +119,22 @@ def test_worker_publishes_only_on_success(
         job_status = connection.scalar(text("SELECT status FROM jobs WHERE id=:id"), {"id": job_id})
     assert status == ("completed" if outcome == "succeeded" else "failed")
     assert job_status == outcome
+    details = configured_client.get(f"/api/v1/snapshots/{snapshot_id}/retrieval-index")
+    assert details.status_code == 200
+    assert details.json()["status"] == status
+    assert details.json()["job"]["status"] == outcome
     if outcome == "succeeded":
+        assert details.json()["segment_count"] == 1
+        assert details.json()["chunk_count"] == 1
         again = configured_client.post(f"/api/v1/snapshots/{snapshot_id}/retrieval-jobs")
         assert again.status_code == 200 and again.json()["reused"] is True
+        different_settings = worker_env.settings.model_copy(
+            update={"embedding_model_sha256": "c" * 64, "embedding_runtime_sha256": "b" * 64}
+        )
+        with TestClient(create_app(different_settings)) as other:
+            changed = other.get(f"/api/v1/snapshots/{snapshot_id}/retrieval-index")
+            assert changed.status_code == 200 and changed.json()["status"] == "none"
+            assert changed.json()["job"] is None
     elif outcome == "failed":
         retry = configured_client.post(f"/api/v1/snapshots/{snapshot_id}/retrieval-jobs")
         assert retry.status_code == 202

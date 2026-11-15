@@ -23,6 +23,7 @@ from repopilot.api.schemas import (
     LimitQuery,
     OffsetQuery,
     ParentIdQuery,
+    RetrievalIndexResponse,
     SnapshotDetailResponse,
     SnapshotFileDetail,
     SnapshotFileListResponse,
@@ -42,6 +43,7 @@ from repopilot.services import index_jobs as index_job_service
 from repopilot.services import index_queries as index_query_service
 from repopilot.services import retrieval_jobs, snapshot_queries
 from repopilot.services import snapshot_removal as removal_service
+from repopilot.services.import_jobs import latest_job
 from repopilot.services.import_profile import ImportProfile
 
 router = APIRouter(prefix="/api/v1/snapshots", tags=["snapshots"])
@@ -175,6 +177,40 @@ def create_retrieval_job(
         snapshot_id=submission.snapshot_id,
         repository_id=submission.repository_id,
         reused=submission.reused,
+    )
+
+
+@router.get(
+    "/{snapshot_id}/retrieval-index",
+    response_model=RetrievalIndexResponse,
+    responses={
+        404: {"description": "快照不存在"},
+        409: {"description": "快照尚未完成"},
+        503: {"description": "embedding 模型或執行器的識別尚未設定"},
+    },
+)
+def get_retrieval_index(
+    snapshot_id: SnapshotIdPath, session: SessionDep, settings: SettingsDep
+) -> RetrievalIndexResponse:
+    identity = retrieval_jobs.current_identity(session, snapshot_id, settings)
+    current = retrieval_jobs.current_index(session, identity)
+    latest = latest_job(session, identity.dedupe_key)
+    index, chunks = current if current is not None else (None, None)
+    return RetrievalIndexResponse(
+        snapshot_id=snapshot_id,
+        repository_id=identity.repository_id,
+        status=index.status if index is not None else "none",
+        index_id=index.id if index is not None else None,
+        profile_hash=identity.profile_hash,
+        chunk_count=(
+            chunks.chunk_count
+            if chunks is not None and index is not None and index.status == "completed"
+            else None
+        ),
+        segment_count=index.segment_count
+        if index is not None and index.status == "completed"
+        else None,
+        job=to_job_response(latest) if latest is not None else None,
     )
 
 

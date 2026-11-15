@@ -508,6 +508,17 @@ class JobSubmitResponse(BaseModel):
     reused: bool
 
 
+class RetrievalIndexResponse(BaseModel):
+    snapshot_id: int
+    repository_id: int
+    status: Literal["none", "building", "failed", "completed"]
+    index_id: int | None
+    profile_hash: str
+    chunk_count: int | None
+    segment_count: int | None
+    job: JobResponse | None
+
+
 class ServiceStateResponse(BaseModel):
     # online：至少一個實例的心跳未過期；stale：有紀錄但都過期；absent：從來沒有紀錄
     status: Literal["online", "stale", "absent"]

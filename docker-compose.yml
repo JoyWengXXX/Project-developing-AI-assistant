@@ -25,9 +25,15 @@ x-job-env: &job-env
   REPOSITORY_ROOTS: /mnt/repos
   MANAGED_REPOS_DIR: /mnt/managed
 
+x-postgres: &postgres
+  build:
+    context: ./docker
+    dockerfile: postgres.Dockerfile
+  image: repopilot-postgres:17-pgvector0.8.1
+
 services:
   db:
-    image: postgres:17
+    <<: *postgres
     environment:
       POSTGRES_USER: repopilot
       POSTGRES_PASSWORD: repopilot_dev
@@ -43,7 +49,7 @@ services:
       retries: 10
 
   db-test:
-    image: postgres:17
+    <<: *postgres
     environment:
       POSTGRES_USER: repopilot
       POSTGRES_PASSWORD: repopilot_test

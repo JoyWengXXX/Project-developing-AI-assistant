@@ -7,6 +7,7 @@ from threading import Barrier
 
 import pytest
 from alembic import command
+from alembic.script import ScriptDirectory
 from fastapi.testclient import TestClient
 from sqlalchemy import Engine, text
 from sqlalchemy.exc import DBAPIError, IntegrityError
@@ -260,7 +261,8 @@ def test_migration_refuses_to_delete_existing_chunk_sets(
     with pytest.raises(DBAPIError, match="Cannot downgrade"):
         command.downgrade(alembic_config(test_database_url), "0013")
     with db_engine.connect() as connection:
-        assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "0014"
+        head = ScriptDirectory.from_config(alembic_config(test_database_url)).get_current_head()
+        assert connection.scalar(text("SELECT version_num FROM alembic_version")) == head
         assert (
             connection.scalar(
                 text("SELECT count(*) FROM retrieval_chunks WHERE chunk_set_id = :id"),

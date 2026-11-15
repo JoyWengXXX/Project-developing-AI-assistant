@@ -62,6 +62,7 @@ from repopilot.indexing.profile import IndexProfile
 from repopilot.indexing.python_extractor import extract_python
 from repopilot.indexing.rust_extractor import extract_rust
 from repopilot.indexing.script_extractor import extract_script
+from repopilot.indexing.sql_extractor import extract_sql
 from repopilot.indexing.types import FileExtraction, Language
 from repopilot.logging_config import APP_LOGGER_NAME
 from repopilot.services import job_poison
@@ -111,6 +112,7 @@ _EXTENSIONS: dict[Language, tuple[str, ...]] = {
     "java": (".java",),
     "go": (".go",),
     "rust": (".rs",),
+    "sql": (".sql",),
 }
 
 
@@ -396,6 +398,20 @@ def _extract(file_id: int, path: str, content: str, settings: Settings) -> FileE
             return extract_go(path, content, max_symbols=settings.index_max_symbols_per_file)
         if language == "rust":
             return extract_rust(path, content, max_symbols=settings.index_max_symbols_per_file)
+        if language == "sql":
+            dialect = next(
+                (
+                    candidate
+                    for candidate in ("postgres", "tsql", "mysql", "sqlite")
+                    if path.lower().endswith(f".{candidate}.sql")
+                ),
+                settings.index_sql_dialect,
+            )
+            if len(content.encode("utf-8")) > settings.index_sql_max_file_bytes:
+                return FileExtraction("sql", "failed", "sql_too_large", 1)
+            return extract_sql(
+                path, content, dialect=dialect, max_symbols=settings.index_max_symbols_per_file
+            )
         return extract_python(path, content, max_symbols=settings.index_max_symbols_per_file)
     except MemoryError:
         raise  # 記憶體耗盡是工作失敗，不偽裝成單檔錯誤（規格 7.1）

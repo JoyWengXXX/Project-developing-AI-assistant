@@ -28,6 +28,7 @@ SCRIPT_ALGORITHM = 1
 JAVA_ALGORITHM = 1
 GO_ALGORITHM = 1
 RUST_ALGORITHM = 1
+SQL_ALGORITHM = 1
 
 
 @dataclass(frozen=True)
@@ -42,6 +43,9 @@ class IndexProfile:
     java_grammar: str
     go_grammar: str
     rust_grammar: str
+    sql_parser: str
+    sql_dialect: str | None
+    sql_max_file_bytes: int
 
     @classmethod
     def from_settings(cls, settings: Settings) -> "IndexProfile":
@@ -57,6 +61,9 @@ class IndexProfile:
             java_grammar=version("tree-sitter-java"),
             go_grammar=version("tree-sitter-go"),
             rust_grammar=version("tree-sitter-rust"),
+            sql_parser=version("sqlfluff"),
+            sql_dialect=settings.index_sql_dialect,
+            sql_max_file_bytes=settings.index_sql_max_file_bytes,
         )
 
     def analyzers(self) -> dict[str, Any]:
@@ -103,6 +110,13 @@ class IndexProfile:
                 "tree_sitter": self.tree_sitter,
                 "grammar": self.rust_grammar,
                 "algorithm": RUST_ALGORITHM,
+            },
+            "sql": {
+                "enabled": True,
+                "parser": self.sql_parser,
+                "algorithm": SQL_ALGORITHM,
+                "default_dialect": self.sql_dialect,
+                "max_file_bytes": self.sql_max_file_bytes,
             },
         }
 

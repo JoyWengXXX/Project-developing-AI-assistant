@@ -47,3 +47,6 @@ def configure_logging(level: LogLevel) -> None:
     # 避免日後升級或除錯設定意外把含 Authorization 的請求細節寫進日誌
     for noisy in ("httpx", "httpcore"):
         logging.getLogger(noisy).setLevel(logging.WARNING)
+    # SQLFluff 的 debug 日誌可能包含來源文字；解析錯誤由索引狀態回報。
+    for sql_logger in ("sqlfluff.lexer", "sqlfluff.parser", "sqlfluff.linter"):
+        logging.getLogger(sql_logger).setLevel(logging.CRITICAL + 1)

@@ -187,3 +187,38 @@ def test_worker_indexes_rust_from_git_and_api_searches_it(stack: Stack, client: 
     assert [(ref["kind"], ref["target"]) for ref in detail["imports"]] == [
         ("rust_use", "std::io::Read")
     ]
+
+
+def test_worker_indexes_sql_dialects_without_guessing(stack: Stack, client: TestClient) -> None:
+    repository_id = register(
+        client,
+        stack.new_repo(
+            "sql",
+            {
+                "schema.postgres.sql": "CREATE TABLE public.pg_items (id INTEGER);\n",
+                "schema.tsql.sql": (
+                    "CREATE PROCEDURE [dbo].[ts_proc] AS SELECT TOP (1) id FROM items;\nGO\n"
+                ),
+                "schema.mysql.sql": (
+                    "CREATE TABLE `mysql_items` (`id` INT AUTO_INCREMENT PRIMARY KEY);\n"
+                ),
+                "schema.sqlite.sql": "CREATE VIEW sqlite_view AS SELECT id FROM items;\n",
+                "unknown.sql": "CREATE TABLE unknown_items (id INTEGER);\n",
+            },
+        ),
+    )
+    accepted = submit(client, repository_id, revision="HEAD")
+    job = wait_for_status(client, accepted["job"]["id"], {"succeeded", "failed"}, timeout=120)
+    assert job["status"] == "succeeded", job
+    snapshot_id = job["snapshot_id"]
+    problems = client.get(
+        f"/api/v1/snapshots/{snapshot_id}/index/files", params={"has_problems": True}
+    ).json()
+    assert [(item["path"], item["error_kind"]) for item in problems["items"]] == [
+        ("unknown.sql", "dialect_unspecified")
+    ]
+    results = client.get(
+        f"/api/v1/snapshots/{snapshot_id}/search/symbols",
+        params={"q": "ts_proc", "language": "sql", "kind": "procedure"},
+    ).json()
+    assert [item["qualified_name"] for item in results["items"]] == ["dbo.ts_proc"]

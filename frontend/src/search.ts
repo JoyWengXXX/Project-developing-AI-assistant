@@ -40,9 +40,12 @@ export const SEARCH_SYMBOL_KINDS = [
   'constructor',
   'property',
   'field',
+  'table',
+  'view',
+  'procedure',
 ] as const
 
-export const SEARCH_LANGUAGES = ['python', 'csharp', 'typescript', 'javascript', 'java', 'go', 'rust'] as const
+export const SEARCH_LANGUAGES = ['python', 'csharp', 'typescript', 'javascript', 'java', 'go', 'rust', 'sql'] as const
 
 // ---------- q 的檢查 ----------
 

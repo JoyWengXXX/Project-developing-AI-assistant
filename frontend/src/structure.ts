@@ -18,7 +18,7 @@ export const PARSE_STATUS_LABEL: Record<ParseStatus, string> = {
 }
 
 export const LANGUAGE_LABEL: Record<string, string> = {
-  python: 'Python', csharp: 'C#', typescript: 'TypeScript', javascript: 'JavaScript', java: 'Java', go: 'Go', rust: 'Rust',
+  python: 'Python', csharp: 'C#', typescript: 'TypeScript', javascript: 'JavaScript', java: 'Java', go: 'Go', rust: 'Rust', sql: 'SQL',
 }
 
 export const SYMBOL_KIND_LABEL: Record<string, string> = {
@@ -37,6 +37,9 @@ export const SYMBOL_KIND_LABEL: Record<string, string> = {
   constructor: '建構函式',
   property: '屬性',
   field: '欄位',
+  table: '資料表',
+  view: '檢視表',
+  procedure: '預存程序',
 }
 
 export const RELATION_TYPE_LABEL: Record<string, string> = {
@@ -137,6 +140,11 @@ export function analyzersText(analyzers: Record<string, unknown>): string {
       const info = analyzer as Record<string, unknown>
       parts.push(`${label} 抽取器（tree-sitter ${text(info.tree_sitter)}，文法 ${text(info.grammar)}，規則版本 ${text(info.algorithm)}）`)
     }
+  }
+  const sql = analyzers.sql
+  if (typeof sql === 'object' && sql !== null) {
+    const info = sql as Record<string, unknown>
+    parts.push(`SQL 抽取器（SQLFluff ${text(info.parser)}，預設方言 ${info.default_dialect === null ? '未指定' : text(info.default_dialect)}，檔案上限 ${text(info.max_file_bytes)} 位元組）`)
   }
   return parts.length === 0 ? '沒有抽取器資訊' : parts.join('；')
 }

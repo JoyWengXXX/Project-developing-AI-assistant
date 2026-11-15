@@ -133,9 +133,9 @@ export function StructurePanel({ snapshotId }: { snapshotId: number }) {
       <h4>程式結構（快照 #{snapshotId}）</h4>
       <ApiHint apis={[`GET ${path}`, `POST /api/v1/snapshots/${snapshotId}/index-jobs`]} />
       <p className="note">
-        Python 檔案以 ast、C#／TypeScript／JavaScript／Java／Go／Rust 檔案以 tree-sitter 做語法層級解析（不執行、不編譯、不載入受分析的程式），不含語意分析；
+        Python 檔案以 ast、C#／TypeScript／JavaScript／Java／Go／Rust 檔案以 tree-sitter、SQL 檔案以 SQLFluff 做語法層級解析（不執行、不編譯、不載入受分析的程式），不含語意分析；
         解析結果一律稱「部分解析」，不宣稱完整。C# 的 partial 類別每個檔案各一筆（不合併）、#if 的各分支都會列出並標示「條件式定義」。
-        其他語言的檔案只保存文字，不產生符號。
+        SQL 必須指定方言，未知方言的檔案會列為無法解析。其他語言的檔案只保存文字，不產生符號。
       </p>
       {index.loading && <p role="status">載入中…</p>}
       <PollErrorBox state={index} />

@@ -186,12 +186,14 @@ def test_indexed_files_list_is_sorted_by_path_and_filters_problem_files(
         1,
     )
     assert broken["first_error"] == {"line": 1, "column": broken["first_error"]["column"]}
+    assert broken["error_kind"] == "syntax_error"
     assert set(broken) == {
         "indexed_file_id",
         "file_id",
         "path",
         "language",
         "parse_status",
+        "error_kind",
         "error_count",
         "first_error",
         "symbol_count",

@@ -27,6 +27,7 @@ def to_indexed_file_item(
             "path": path,
             "language": file.language,
             "parse_status": file.parse_status,
+            "error_kind": file.error_kind,
             "error_count": file.error_count,
             "first_error": first_error,
             "symbol_count": file.symbol_count,

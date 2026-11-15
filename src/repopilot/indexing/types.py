@@ -8,9 +8,17 @@
 from dataclasses import dataclass, field
 from typing import Literal
 
-Language = Literal["python", "csharp", "typescript", "javascript", "java", "go", "rust"]
+Language = Literal["python", "csharp", "typescript", "javascript", "java", "go", "rust", "sql"]
 ParseStatus = Literal["parsed", "parsed_with_errors", "failed"]
-ErrorKind = Literal["syntax_error", "tree_error", "too_deep", "parser_crash"]
+ErrorKind = Literal[
+    "syntax_error",
+    "tree_error",
+    "too_deep",
+    "parser_crash",
+    "dialect_unspecified",
+    "sql_too_large",
+    "sql_name_too_long",
+]
 SymbolKind = Literal[
     "module",
     "namespace",
@@ -27,6 +35,9 @@ SymbolKind = Literal[
     "constructor",
     "property",
     "field",
+    "table",
+    "view",
+    "procedure",
 ]
 ImportKind = Literal[
     "import",

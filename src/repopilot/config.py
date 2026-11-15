@@ -11,6 +11,7 @@ from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 from repopilot.path_mapping import PathMapping
 
 LogLevel = Literal["DEBUG", "INFO", "WARNING", "ERROR"]
+SqlDialect = Literal["postgres", "tsql", "mysql", "sqlite"]
 
 DEFAULT_EXCLUDED_PATTERNS: tuple[str, ...] = (
     ".env",
@@ -148,6 +149,8 @@ class Settings(BaseSettings):
     # C# 的欄位（field_declaration，每個 variable_declarator 一個符號）預設不抽取：數量大、
     # 對「看結構」的價值低。納入 index_profile_hash，切換會得到另一份索引（切片 7）
     index_csharp_include_fields: bool = False
+    index_sql_dialect: SqlDialect | None = None
+    index_sql_max_file_bytes: int = Field(default=20_000, ge=1, le=1_048_576)
     # 索引階段以 snapshot_files.id 的 keyset 分頁讀取：每批最多這麼多檔、且（依 byte_size）合計最多
     # 這麼多位元組。只影響「怎麼切」，不影響索引結果，所以不納入 index_profile_hash
     index_batch_max_files: int = Field(default=200, ge=1, le=100_000)

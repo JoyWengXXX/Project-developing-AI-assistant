@@ -525,7 +525,7 @@ class JobsStatusResponse(BaseModel):
 
 # --- 結構索引（第二階段切片 6，規格 4.7）---
 IndexStatus = Literal["none", "building", "completed", "failed"]
-IndexLanguage = Literal["python", "csharp", "typescript", "javascript", "java", "go", "rust"]
+IndexLanguage = Literal["python", "csharp", "typescript", "javascript", "java", "go", "rust", "sql"]
 ParseStatusValue = Literal["parsed", "parsed_with_errors", "failed"]
 SymbolIdPath = Annotated[int, Path(ge=1, le=_INT64_MAX)]
 IndexedFileIdQuery = Annotated[int, Query(ge=1, le=_INT64_MAX, description="只看此快照檔案的符號")]
@@ -546,6 +546,9 @@ SymbolKindFilter = Literal[
     "constructor",
     "property",
     "field",
+    "table",
+    "view",
+    "procedure",
 ]
 
 
@@ -589,6 +592,7 @@ class IndexedFileResponse(BaseModel):
     path: str
     language: IndexLanguage
     parse_status: ParseStatusValue
+    error_kind: str | None
     error_count: int
     first_error: FirstErrorResponse | None
     symbol_count: int

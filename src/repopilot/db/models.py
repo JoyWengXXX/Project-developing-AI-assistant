@@ -394,7 +394,8 @@ class IndexedFile(Base):
         # 冗餘的唯一約束：讓 symbols 等表以複合外鍵保證「同一個索引」
         UniqueConstraint("id", "snapshot_index_id"),
         CheckConstraint(
-            "language IN ('python', 'csharp', 'typescript', 'javascript', 'java', 'go', 'rust')",
+            "language IN ('python', 'csharp', 'typescript', 'javascript', 'java', 'go', "
+            "'rust', 'sql')",
             name="language_valid",
         ),
         CheckConstraint(
@@ -402,7 +403,8 @@ class IndexedFile(Base):
         ),
         CheckConstraint(
             "error_kind IS NULL OR error_kind IN "
-            "('syntax_error', 'tree_error', 'too_deep', 'parser_crash')",
+            "('syntax_error', 'tree_error', 'too_deep', 'parser_crash', 'dialect_unspecified', "
+            "'sql_too_large', 'sql_name_too_long')",
             name="error_kind_valid",
         ),
         CheckConstraint(
@@ -459,13 +461,14 @@ class Symbol(Base):
             ondelete="CASCADE",
         ),
         CheckConstraint(
-            "language IN ('python', 'csharp', 'typescript', 'javascript', 'java', 'go', 'rust')",
+            "language IN ('python', 'csharp', 'typescript', 'javascript', 'java', 'go', "
+            "'rust', 'sql')",
             name="language_valid",
         ),
         CheckConstraint(
             "kind IN ('module', 'namespace', 'class', 'struct', 'record', 'interface', "
             "'type_alias', 'enum', 'enum_member', 'delegate', 'function', 'method', "
-            "'constructor', 'property', 'field')",
+            "'constructor', 'property', 'field', 'table', 'view', 'procedure')",
             name="kind_valid",
         ),
         CheckConstraint("start_line >= 1 AND end_line >= start_line", name="lines_valid"),
@@ -525,7 +528,8 @@ class ImportReference(Base):
             ondelete="CASCADE",
         ),
         CheckConstraint(
-            "language IN ('python', 'csharp', 'typescript', 'javascript', 'java', 'go', 'rust')",
+            "language IN ('python', 'csharp', 'typescript', 'javascript', 'java', 'go', "
+            "'rust', 'sql')",
             name="language_valid",
         ),
         CheckConstraint(

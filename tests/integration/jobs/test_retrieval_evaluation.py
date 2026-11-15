@@ -136,9 +136,7 @@ def test_fixed_dataset_real_model_evaluation(
     report = {
         "dataset_version": dataset["version"],
         "dataset_sha256": hashlib.sha256(raw).hexdigest(),
-        "label_method": (
-            "synthetic examples and relevance labels authored by AI; not human-reviewed"
-        ),
+        "label_method": "synthetic examples and AI-proposed labels reviewed by the user",
         "model_sha256": settings.embedding_model_sha256,
         "runtime_sha256": settings.embedding_runtime_sha256,
         "platform": platform.platform(),

@@ -4,7 +4,9 @@ import { jobFailure, toApiError } from './format'
 import { currentLoadMode } from './jobActions'
 import { setReference } from './useReferences'
 import type { Job, JobSubmitResponse, Snapshot } from './types'
+import { POLL_REQUEST_TIMEOUT_MS } from './usePolling'
 import { isFinished, newerJob, type LoadMethod } from './versionJobs'
+import { waitForVisiblePoll } from './visiblePolling'
 
 /**
  * 總覽卡片（與註冊後的一次性匯入）的「匯入一個版本」。
@@ -62,22 +64,6 @@ const NOT_REFLECTED_ERROR = new ApiError(
   null,
 )
 
-/** 可被中止的 setTimeout：中止時以 AbortError 結束。 */
-function sleep(ms: number, signal: AbortSignal): Promise<void> {
-  return new Promise((resolve, reject) => {
-    if (signal.aborted) return reject(new DOMException('Aborted', 'AbortError'))
-    const timer = window.setTimeout(() => {
-      signal.removeEventListener('abort', onAbort)
-      resolve()
-    }, ms)
-    function onAbort() {
-      window.clearTimeout(timer)
-      reject(new DOMException('Aborted', 'AbortError'))
-    }
-    signal.addEventListener('abort', onAbort, { once: true })
-  })
-}
-
 function withoutKey<T>(record: Record<number, T>, key: number): Record<number, T> {
   const copy = { ...record }
   delete copy[key]
@@ -131,22 +117,63 @@ export function useRepoImports(): RepoImports {
       let job = submitted
       patch(repoId, { job })
       let failures = 0
+      let resumeImmediately = false
       while (!isFinished(job)) {
-        const wait = failures === 0 ? POLL_MS : Math.min(BACKOFF_MAX_MS, BACKOFF_BASE_MS * 2 ** (failures - 1))
+        const wait = resumeImmediately ? 0 : failures === 0 ? POLL_MS : Math.min(BACKOFF_MAX_MS, BACKOFF_BASE_MS * 2 ** (failures - 1))
+        resumeImmediately = false
         // 等到下一次輪詢；取消成功時（wakeUp）提早結束等待，立刻讀取最新狀態
-        await Promise.race([sleep(wait, signal), new Promise<void>((resolve) => wakeUp.current.set(repoId, resolve))])
-        wakeUp.current.delete(repoId)
         try {
-          const polled = await api<Job>('GET', `/api/v1/jobs/${job.id}`, { signal })
+          await waitForVisiblePoll(wait, signal, (wake) => wakeUp.current.set(repoId, wake))
+        } finally {
+          wakeUp.current.delete(repoId)
+        }
+        if (signal.aborted) throw new DOMException('Aborted', 'AbortError')
+        const controller = new AbortController()
+        let hidden = false
+        let timedOut = false
+        const onAbort = () => controller.abort()
+        const onVisibilityChange = () => {
+          if (document.hidden) {
+            hidden = true
+            controller.abort()
+          }
+        }
+        signal.addEventListener('abort', onAbort, { once: true })
+        document.addEventListener('visibilitychange', onVisibilityChange)
+        const timeout = setTimeout(() => {
+          timedOut = true
+          controller.abort()
+        }, POLL_REQUEST_TIMEOUT_MS)
+        try {
+          const polled = await api<Job>('GET', `/api/v1/jobs/${job.id}`, { signal: controller.signal })
+          if (signal.aborted) throw new DOMException('Aborted', 'AbortError')
+          if (hidden) {
+            resumeImmediately = true
+            continue
+          }
           failures = 0
           job = newerJob(job, polled.data)
           patch(repoId, { job, pollError: null })
         } catch (e) {
+          if (signal.aborted) throw e
+          if (hidden) {
+            resumeImmediately = true
+            continue
+          }
+          if (timedOut) {
+            failures++
+            patch(repoId, { pollError: new ApiError(null, 'request_timeout', `請求超過 ${POLL_REQUEST_TIMEOUT_MS / 1000} 秒沒有回應。`, null) })
+            continue
+          }
           if (isAbortError(e)) throw e
           const error = toApiError(e)
           if (error.code === 'job_not_found') throw error // 工作已不存在（例如 repo 被移除）：不再輪詢
           failures++
           patch(repoId, { pollError: error }) // 暫時性失敗：保留最後的進度，退避後再試
+        } finally {
+          clearTimeout(timeout)
+          signal.removeEventListener('abort', onAbort)
+          document.removeEventListener('visibilitychange', onVisibilityChange)
         }
       }
       if (job.status === 'cancelled') return null

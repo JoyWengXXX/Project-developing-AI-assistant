@@ -29,7 +29,7 @@ AI 輔助專案客製化平台：管理參考 repos 與目標 repo，依自然�
 - **搜尋**（第二階段切片 8）：對已匯入的快照做三種字面（區分大小寫）子字串搜尋——檔名（`search/files`）、符號（`search/symbols`，需要已完成的結構索引）、內容（`search/text`，一個命中行一筆並帶片段；不依賴索引）。沒有正規表示式、模糊比對或相關性排序；沒有加 `pg_trgm`（20,000 檔合成快照的最壞情況單次約 3.6 秒，低於預設逾時 10 秒；真實 repo 與 Linux 容器內未驗證）。超過 `SEARCH_STATEMENT_TIMEOUT_SECONDS` 回 504 `search_timeout`。主控台在版本管理的「搜尋」面板使用。
 - 操作主控台（`frontend/`）：repo 卡片總覽、版本管理（已匯入的版本＋分支下拉＋ commit 圖）、程式結構、搜尋、檔案樹、背景工作摘要、GitHub 連線。
 
-**尚未有（未完成）**：搜尋、LLM、向量搜尋、改碼、GitLab 與其他遠端來源、多使用者登入、前端自動化測試。
+**尚未有（未完成）**：LLM、向量搜尋、改碼、GitLab 與其他遠端來源、多使用者登入、完整前端自動化測試。
 
 ## 環境需求
 
@@ -164,8 +164,9 @@ React + TypeScript + Vite 的最小操作主控台（`frontend/`），用來以�
 | `npm run typecheck` | `tsc --noEmit`（app 與 vite 設定兩份 tsconfig） |
 | `npm run lint` | oxlint（`create-vite` 範本預設，不是 ESLint） |
 | `npm run build` | `tsc -b` 型別檢查後建置到 `frontend/dist/`（不會被提交）；建置結果沒有 proxy，需另行提供同源的 `/api`，**未驗證** |
+| `node --test tests\visiblePolling.test.mjs` | 輪詢可見性與中止的純邏輯測試（需支援原生 TypeScript 型別移除的 Node.js） |
 
-**驗證狀態**：`typecheck`、`lint` 於 2026-11-12 實跑通過（exit 0）。各切片的瀏覽器操作驗證與其範圍記在 [roadmap](docs/roadmap.md)；**前端沒有自動化測試**。其他瀏覽器、窄螢幕與觸控、鍵盤與螢幕閱讀器完整操作、大量 repo 與超大歷史的效能、GitHub 註冊 201 的實際 clone＋自動匯入**未驗證**。
+**驗證狀態**：2026-11-15 的 `typecheck`、`lint`、`build` 與上述輪詢純邏輯測試通過；另用隔離的 PostgreSQL、Redis、dispatcher 與 worker，操作 Chromium 驗證本機註冊、背景匯入、同步回退及輪詢故障注入。前端尚無完整元件或端到端自動化測試；細節見 [roadmap](docs/roadmap.md)。其他瀏覽器、窄螢幕與觸控、鍵盤與螢幕閱讀器完整操作、大量 repo 與超大歷史的效能、GitHub 註冊 201 的實際 clone＋自動匯入**未驗證**。
 
 ## API 一覽
 
@@ -356,7 +357,7 @@ uv run alembic check               # model 與 migration 無差異（以 DATABAS
 - **`stack` 測試**（`tests/integration/stack/`）需要真實的 Redis、dispatcher 與 worker 容器，預設**會執行**；前置是 `docker compose up -d --wait db-test` 與 `docker compose --profile jobs build`。測試自己啟動與停止 `redis-test`、`dispatcher-test`、`worker-test`；Docker 不可用或映像沒建置時**明確失敗，不跳過**。只想跑不需要容器的測試用 `-m "not stack"`。
 - `tests/integration/test_restart_persistence.py` 會在 `db-test` 容器內建立臨時資料庫並啟動真實 uvicorn 子程序（空閒埠，不碰 8000；結束即 DROP 與停止），以 `slow` marker 標記，預設仍會執行。
 - **最近一次完整結果**（2026-11-15，第二階段切片 8）：`uv run pytest -m "not stack"` **2308 passed、17 deselected**（1563 秒）、`uv run ruff check .`、`uv run ruff format --check .`、`uv run mypy src tests` 通過；前端 `typecheck`、`lint`、`build` 通過；切片 8 沒有 migration（仍是 `0008`），**`stack` 測試未重跑**（沒有動 worker／映像）。搜尋量測與未驗證項目見 [architecture D47](docs/architecture.md)。前一次（2026-11-13，切片 7）：`uv run pytest -m "not stack"` **2237 passed、17 deselected**（1645 秒）、`uv run pytest tests/integration/stack` **32 passed**（441 秒；兩次分開執行，**沒有合併成一次 `uv run pytest`**）、`uv run ruff check .`、`uv run ruff format --check .`、`uv run mypy src tests` 通過；前端 `typecheck`、`lint`、`build` 通過；切片 7 沒有 migration（仍是 `0008`）；開發資料庫仍是 `0007 (head)`（**升級到 `0008` 由你自行執行 `uv run alembic upgrade head`**；開發 `worker` 容器需重建才會有索引階段與 tree-sitter）。前一次（切片 6）：2202 passed＋`stack` 32 passed。切片 6 之前的結果：切片 5 為 2147 passed（1661 秒，含 30 項 `stack` 測試）、切片 4 為 1945 passed（1329 秒）、切片 3b 為 1812 passed（1177 秒）。完整套件在 Windows 開發機上約 20～28 分鐘。細節與變異檢查見 [roadmap](docs/roadmap.md)。
-- 前端沒有自動化測試（見「主控台操作流程」的驗證狀態）。
+- 前端僅有輪詢純邏輯自動化測試，尚無完整元件或端到端自動化測試（見「主控台操作流程」的驗證狀態）。
 
 ## 安全注意事項
 

@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 from repopilot.db.locks import try_advisory_lock
 from repopilot.embedding.profile import EmbeddingProfile
 from repopilot.errors import DatabaseUnavailableError, JobLeaseLostError
+from repopilot.services.retrieval_build import load_source_chunks, vectorize_chunk
 from repopilot.services.retrieval_chunks import build_chunk_set
 from repopilot.services.retrieval_vectors import (
     VectorSegment,
@@ -419,3 +420,109 @@ def test_publication_requires_live_exclusive_lock(
             )
     with Session(db_engine) as session, pytest.raises(DatabaseUnavailableError):
         complete_index(session, index_id=index.index_id, owner_token=owner, lock=lock)
+
+
+def test_source_chunks_are_reassembled_from_the_completed_snapshot(
+    db_engine: Engine, chunk_set: tuple[int, int, int]
+) -> None:
+    _, set_id, chunk_id = chunk_set
+    profile = EmbeddingProfile(model_sha256="a" * 64, runtime_bundle_sha256="b" * 64)
+    owner = uuid4()
+    with try_advisory_lock(db_engine, retrieval_lock_key(set_id, profile)) as lock:
+        assert lock is not None
+        with Session(db_engine) as session, session.begin():
+            index = claim_index(
+                session, chunk_set_id=set_id, profile=profile, owner_token=owner, lock=lock
+            )
+        with Session(db_engine) as session:
+            chunks = load_source_chunks(session, index_id=index.index_id, owner_token=owner)
+            assert (
+                load_source_chunks(
+                    session, index_id=index.index_id, owner_token=owner, after_chunk_id=chunk_id
+                )
+                == []
+            )
+        with Session(db_engine) as session, pytest.raises(JobLeaseLostError):
+            load_source_chunks(session, index_id=index.index_id, owner_token=uuid4())
+        assert len(chunks) == 1
+        assert chunks[0].chunk_id == chunk_id
+        assert chunks[0].content == "example source text"
+        checks: list[int] = []
+        segments = list(
+            vectorize_chunk(
+                chunks[0],
+                count_tokens=lambda value: len(value) * 60,
+                embed=lambda value: [1.0] + [0.0] * 767,
+                checkpoint=lambda: checks.append(1),
+            )
+        )
+        assert len(segments) > 1
+        assert (
+            "".join(
+                chunks[0].content[segment.start_offset : segment.end_offset] for segment in segments
+            )
+            == chunks[0].content
+        )
+        assert all(segment.token_count <= 512 for segment in segments)
+        assert len(checks) >= len(segments)
+        with Session(db_engine) as session, session.begin():
+            write_segments(session, index_id=index.index_id, owner_token=owner, segments=segments)
+            assert complete_index(
+                session, index_id=index.index_id, owner_token=owner, lock=lock
+            ) == len(segments)
+
+
+def test_changed_source_is_rejected_before_embedding(
+    db_engine: Engine, chunk_set: tuple[int, int, int]
+) -> None:
+    snapshot_id, set_id, _ = chunk_set
+    profile = EmbeddingProfile(model_sha256="a" * 64, runtime_bundle_sha256="b" * 64)
+    owner = uuid4()
+    with try_advisory_lock(db_engine, retrieval_lock_key(set_id, profile)) as lock:
+        assert lock is not None
+        with Session(db_engine) as session, session.begin():
+            index = claim_index(
+                session, chunk_set_id=set_id, profile=profile, owner_token=owner, lock=lock
+            )
+        with db_engine.begin() as connection:
+            connection.execute(
+                text("UPDATE snapshot_files SET content = :content WHERE snapshot_id = :id"),
+                {"content": "changed source text", "id": snapshot_id},
+            )
+        with Session(db_engine) as session, pytest.raises(ValueError):
+            load_source_chunks(session, index_id=index.index_id, owner_token=owner)
+
+
+def test_source_pagination_preserves_unicode_offsets(
+    db_engine: Engine, chunk_set: tuple[int, int, int]
+) -> None:
+    snapshot_id, _, _ = chunk_set
+    content = "A測é😀Z"
+    with db_engine.begin() as connection:
+        connection.execute(
+            text("UPDATE snapshot_files SET content = :content WHERE snapshot_id = :id"),
+            {"content": content, "id": snapshot_id},
+        )
+    with Session(db_engine) as session, session.begin():
+        set_id = build_chunk_set(session, snapshot_id, max_bytes=4).chunk_set_id
+    profile = EmbeddingProfile(model_sha256="a" * 64, runtime_bundle_sha256="b" * 64)
+    owner = uuid4()
+    with try_advisory_lock(db_engine, retrieval_lock_key(set_id, profile)) as lock:
+        assert lock is not None
+        with Session(db_engine) as session, session.begin():
+            index = claim_index(
+                session, chunk_set_id=set_id, profile=profile, owner_token=owner, lock=lock
+            )
+        collected = []
+        cursor = 0
+        while True:
+            with Session(db_engine) as session:
+                page = load_source_chunks(
+                    session, index_id=index.index_id, owner_token=owner, after_chunk_id=cursor
+                )
+            if not page:
+                break
+            collected.extend(page)
+            cursor = page[-1].chunk_id
+        assert len(collected) > 1
+        assert "".join(item.content for item in collected) == content

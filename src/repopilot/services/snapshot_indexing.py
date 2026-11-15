@@ -56,6 +56,7 @@ from repopilot.errors import (
     SnapshotNotFoundError,
 )
 from repopilot.indexing.csharp_extractor import extract_csharp
+from repopilot.indexing.java_extractor import extract_java
 from repopilot.indexing.profile import IndexProfile
 from repopilot.indexing.python_extractor import extract_python
 from repopilot.indexing.script_extractor import extract_script
@@ -105,6 +106,7 @@ _EXTENSIONS: dict[Language, tuple[str, ...]] = {
     "csharp": (".cs",),
     "typescript": (".ts", ".tsx", ".mts", ".cts"),
     "javascript": (".js", ".jsx", ".mjs", ".cjs"),
+    "java": (".java",),
 }
 
 
@@ -384,6 +386,8 @@ def _extract(file_id: int, path: str, content: str, settings: Settings) -> FileE
             )
         if language in {"typescript", "javascript"}:
             return extract_script(path, content, max_symbols=settings.index_max_symbols_per_file)
+        if language == "java":
+            return extract_java(path, content, max_symbols=settings.index_max_symbols_per_file)
         return extract_python(path, content, max_symbols=settings.index_max_symbols_per_file)
     except MemoryError:
         raise  # 記憶體耗盡是工作失敗，不偽裝成單檔錯誤（規格 7.1）

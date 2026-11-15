@@ -7,12 +7,12 @@ AI 輔助專案客製化平台：管理參考 repos 與目標 repo，依自然�
 ## 開發原則：多語言 repo
 
 RepoPilot 的產品目標是適用不同程式語言的 repo，不以 Python／C# 為永久限制。目前結構索引另有
-TypeScript／JavaScript 語法層級解析；其他符合匯入規則的文字檔可用檔名及文字搜尋，**不能**宣稱已解析其程式結構。
+TypeScript／JavaScript／Java 語法層級解析；其他符合匯入規則的文字檔可用檔名及文字搜尋，**不能**宣稱已解析其程式結構。
 每個階段的規格與驗收都應區分各語言的實際能力、明示未支援範圍，並評估混合語言 repo；
 新增解析器的語言與時程需另行確認，不假設所有語言已受支援。
 
 第三階段（語意與混合搜尋）**進行中**：TypeScript／JavaScript 結構索引已實作，
-並以隔離 worker 堆疊及瀏覽器操作驗證代表情境。Java、Go、Rust、SQL 解析及跨 repo／快照搜尋尚未實作；
+並以隔離 worker 堆疊及瀏覽器操作驗證代表情境；Java 結構索引亦已實作並通過代表情境驗證。Go、Rust、SQL 解析及跨 repo／快照搜尋尚未實作；
 IBM embedding 僅做本機試跑，尚未整合產品。
 
 ## 文件
@@ -35,7 +35,7 @@ IBM embedding 僅做本機試跑，尚未整合產品。
 - 把 revision 解析為完整 commit SHA，**只讀 Git 物件**（不讀工作目錄）匯入成**快照**：保存路徑、UTF-8 文字內容、blob ID、SHA-256、位元組大小與跳過原因；同 repo、同 commit、同匯入設定不重複匯入；`.env`、私鑰與憑證檔不讀內容。
 - **背景匯入**（第二階段）：`import-jobs` 立即回 202，由 dispatcher 與 Celery worker（Docker Linux 容器）在背景匯入；同步的 `imports` 保留但**已棄用**。
 - **背景 GitHub 註冊與 fetch**（第二階段切片 5）：`registration-jobs`、`fetch-jobs` 立即回 202，由 worker 在背景 clone／fetch（可取消、有階段與暫存目錄大小進度、worker 被殺後會清理暫存目錄）；同步的 `POST /repositories/github`、`POST /repositories/{id}/fetch` 保留但**已棄用**。
-- **程式結構索引**：Python（`ast`）、C#、TypeScript 與 JavaScript（tree-sitter）做語法層級解析，**不執行、不編譯、不 import** 受分析的程式，也不做跨檔語意分析。TypeScript／JavaScript 包括 `.ts`、`.tsx`、`.mts`、`.cts`、`.js`、`.jsx`、`.mjs`、`.cjs`，支援具名函式與箭頭函式、類別及方法、TS 介面／型別別名／列舉及靜態 import；語法錯誤標示部分解析。C# 的 partial 類別不合併，`#if` 分支標示條件式定義，欄位預設不抽取（`INDEX_CSHARP_INCLUDE_FIELDS=true` 可啟用）。其他語言只保存文字，不產生符號。主控台顯示索引狀態與符號樹；可透過 `POST /snapshots/{id}/index-jobs` 建立索引。新解析器改變索引設定雜湊，舊資料保留但須依需求重建；worker 映像需重新建置並重建容器才能載入新依賴。
+- **程式結構索引**：Python（`ast`）、C#、TypeScript、JavaScript 與 Java（tree-sitter）做語法層級解析，**不執行、不編譯、不 import** 受分析的程式，也不做跨檔語意分析。TypeScript／JavaScript 包括 `.ts`、`.tsx`、`.mts`、`.cts`、`.js`、`.jsx`、`.mjs`、`.cjs`，支援具名函式與箭頭函式、類別及方法、TS 介面／型別別名／列舉及靜態 import；Java 的 `.java` 抽取 class、interface、enum、record、constructor、method 及一般／靜態 import；語法錯誤標示部分解析。C# 的 partial 類別不合併，`#if` 分支標示條件式定義，欄位預設不抽取（`INDEX_CSHARP_INCLUDE_FIELDS=true` 可啟用）。其他語言只保存文字，不產生符號。主控台顯示索引狀態與符號樹；可透過 `POST /snapshots/{id}/index-jobs` 建立索引。新解析器改變索引設定雜湊，舊資料保留但須依需求重建；worker 映像需重新建置並重建容器才能載入新依賴。
 - **參考版本**：每個 repo 可把一個已匯入的版本設為參考（固定的快照，不跟著分支前進）；**只是標記，尚未連到 Agent**。可移除已匯入的版本（含批次，只刪資料庫紀錄）。
 - 查詢 repo、快照、檔案、分支與標籤、commit 歷史、repo 概況、符號與背景工作狀態；GitHub 來源可 fetch；可移除已註冊的 repo。
 - **搜尋**（第二階段切片 8）：對已匯入的快照做三種字面（區分大小寫）子字串搜尋——檔名（`search/files`）、符號（`search/symbols`，需要已完成的結構索引）、內容（`search/text`，一個命中行一筆並帶片段；不依賴索引）。沒有正規表示式、模糊比對或相關性排序；沒有加 `pg_trgm`（20,000 檔合成快照的最壞情況單次約 3.6 秒，低於預設逾時 10 秒；真實 repo 與 Linux 容器內未驗證）。超過 `SEARCH_STATEMENT_TIMEOUT_SECONDS` 回 504 `search_timeout`。主控台在版本管理的「搜尋」面板使用。
@@ -63,15 +63,15 @@ docker compose up -d --wait db db-test
 #    已經有 .env 時不要再執行這行（Copy-Item 會直接覆蓋）
 Copy-Item .env.example .env
 
-# 3. 建立資料表（目前最新 migration 為 0009；升級既有資料庫也是這行）
+# 3. 建立資料表（目前最新 migration 為 0010；升級既有資料庫也是這行）
 uv run alembic upgrade head
-uv run alembic current        # 預期 0009 (head)
+uv run alembic current        # 預期 0010 (head)
 
 # 4. 啟動後端（終端機 1）
 uv run uvicorn repopilot.main:create_app --factory --reload
 ```
 
-**降版風險**：從 `0009` 降至 `0008` 不刪資料，但若存在新語言或新種類的索引資料會拒絕降版；從 `0008` 降到 `0007` 會刪除結構索引及符號等衍生資料，升版不會自動還原。需先評估備份與重建，勿在共用資料庫試跑。
+**降版風險**：從 `0010` 降至 `0009` 或從 `0009` 降至 `0008` 不刪資料，但若存在該版本新增的語言或種類的索引資料會拒絕降版；從 `0008` 降到 `0007` 會刪除結構索引及符號等衍生資料，升版不會自動還原。需先評估備份與重建，勿在共用資料庫試跑。
 
 ```powershell
 # 5. 啟動主控台（終端機 2）；後端必須先啟動
@@ -376,6 +376,7 @@ uv run alembic check               # model 與 migration 無差異（以 DATABAS
 - `tests/integration/test_restart_persistence.py` 會在 `db-test` 容器內建立臨時資料庫並啟動真實 uvicorn 子程序（空閒埠，不碰 8000；結束即 DROP 與停止），以 `slow` marker 標記，預設仍會執行。
 - **最近一次完整結果**（2026-11-15，第二階段切片 10）：在獨立程式碼副本、專用 PostgreSQL 與 Compose 專案，以既有虛擬環境執行 `python -m pytest`：**2325 passed、1 warning**（1787.16 秒，含 stack）；警告為 Starlette `TestClient` 使用 `httpx` 的棄用警告。Ruff check／format、mypy、前端 3 項輪詢測試與 `typecheck`／`lint`／`build` 通過。空資料庫、`0005` 升級至 `0008`、`0008` 降版再升版均在隔離資料庫驗證；已完成 job 與索引在 API、worker、dispatcher、Redis 重啟後仍可查詢。**未驗證**：PostgreSQL 重啟、上述服務同時重啟時進行中工作的復原、真實 GitHub、取消／重試工作的完整畫面；其他限制見本機 [roadmap](docs/roadmap.md)。開發資料庫與開發 worker 未由本次測試升級。
 - **第三階段 TS／JS 切片**（2026-11-15）：獨立副本與隔離 PostgreSQL 的 `python -m pytest -m "not stack" -q` 重跑 **2324 passed、18 deselected、1 warning**；首次執行的 6 項失敗為舊 fixture 仍將 `.js` 視為未支援，修正後重跑通過。真實 worker 的索引 stack 測試 3 passed；完整 stack 未執行。另以隔離 API、資料庫與瀏覽器驗證符號及搜尋代表情境。
+- **第三階段 Java 切片**（2026-11-15）：獨立副本與隔離 PostgreSQL 的 `python -m pytest tests\unit tests\integration\test_java_index.py tests\integration\test_script_index.py tests\integration\test_snapshot_indexing.py tests\integration\test_database.py -q`：1074 passed、1 warning；真實 worker 的 `python -m pytest tests\integration\stack\test_stack_index.py -q`：4 passed、1 warning。瀏覽器以隔離快照驗證語言統計、符號樹、靜態 import 與 Java 篩選；完整非 stack／stack 測試與真實大型 Java repo 未驗證。
 - 前端僅有輪詢純邏輯自動化測試，尚無完整元件或端到端自動化測試（見「主控台操作流程」的驗證狀態）。
 
 ## 安全注意事項

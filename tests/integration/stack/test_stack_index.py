@@ -107,3 +107,35 @@ def test_worker_indexes_script_files_from_git_and_api_searches_them(
         params={"q": "UserId", "language": "typescript", "kind": "type_alias"},
     ).json()
     assert [(item["name"], item["start_line"]) for item in results["items"]] == [("UserId", 2)]
+
+
+def test_worker_indexes_java_from_git_and_api_searches_it(stack: Stack, client: TestClient) -> None:
+    repository_id = register(
+        client,
+        stack.new_repo(
+            "java",
+            {
+                "src/Service.java": "package demo;\n"
+                "import static java.util.Collections.emptyList;\n"
+                "class Service { void run() {} }\n",
+                "src/other.py": "def helper(): pass\n",
+            },
+        ),
+    )
+    accepted = submit(client, repository_id, revision="HEAD")
+    job = wait_for_status(client, accepted["job"]["id"], {"succeeded", "failed"}, timeout=120)
+    assert job["status"] == "succeeded", job
+    snapshot_id = job["snapshot_id"]
+
+    index = client.get(f"/api/v1/snapshots/{snapshot_id}/index").json()
+    assert index["counts"]["files_by_language"] == {"java": 1, "python": 1}
+    results = client.get(
+        f"/api/v1/snapshots/{snapshot_id}/search/symbols",
+        params={"q": "Service", "language": "java", "kind": "class"},
+    ).json()
+    item = results["items"][0]
+    assert (item["name"], item["start_line"]) == ("Service", 3)
+    detail = client.get(f"/api/v1/snapshots/{snapshot_id}/symbols/{item['symbol_id']}").json()
+    assert [(ref["kind"], ref["target"]) for ref in detail["imports"]] == [
+        ("java_static_import", "java.util.Collections.emptyList")
+    ]

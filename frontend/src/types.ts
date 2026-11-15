@@ -425,7 +425,7 @@ export interface IndexedFile {
   indexed_file_id: number
   file_id: number
   path: string
-  language: 'python' | 'csharp' | 'typescript' | 'javascript'
+  language: 'python' | 'csharp' | 'typescript' | 'javascript' | 'java'
   parse_status: ParseStatus
   error_count: number
   first_error: { line: number; column: number } | null // column 是 0-based UTF-8 位元組位移
@@ -438,7 +438,7 @@ export type IndexedFileList = Page<IndexedFile>
 export interface SymbolSummary {
   symbol_id: number
   kind: string
-  language: 'python' | 'csharp' | 'typescript' | 'javascript'
+  language: 'python' | 'csharp' | 'typescript' | 'javascript' | 'java'
   name: string
   qualified_name: string
   file_id: number
@@ -504,7 +504,7 @@ export interface FileMatch {
 export interface SymbolMatch {
   symbol_id: number
   kind: string
-  language: 'python' | 'csharp' | 'typescript' | 'javascript'
+  language: 'python' | 'csharp' | 'typescript' | 'javascript' | 'java'
   name: string
   qualified_name: string
   file_id: number

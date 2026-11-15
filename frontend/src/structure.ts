@@ -18,7 +18,7 @@ export const PARSE_STATUS_LABEL: Record<ParseStatus, string> = {
 }
 
 export const LANGUAGE_LABEL: Record<string, string> = {
-  python: 'Python', csharp: 'C#', typescript: 'TypeScript', javascript: 'JavaScript',
+  python: 'Python', csharp: 'C#', typescript: 'TypeScript', javascript: 'JavaScript', java: 'Java',
 }
 
 export const SYMBOL_KIND_LABEL: Record<string, string> = {
@@ -82,6 +82,8 @@ export function errorPositionText(error: { line: number; column: number } | null
 
 /** import／using 一行的白話：`import os`、`from ..pkg import name as alias`、`using static System.Math`。 */
 export function importText(ref: ImportReference): string {
+  if (ref.kind === 'java_import') return `import ${ref.target}`
+  if (ref.kind === 'java_static_import') return `import static ${ref.target}`
   if (ref.kind === 'script_import') {
     if (ref.imported_name === null) return `import '${ref.target}'`
     const alias = ref.alias === null ? '' : ` as ${ref.alias}`
@@ -127,7 +129,7 @@ export function analyzersText(analyzers: Record<string, unknown>): string {
       )
     }
   }
-  for (const [language, label] of [['typescript', 'TypeScript'], ['javascript', 'JavaScript']] as const) {
+  for (const [language, label] of [['typescript', 'TypeScript'], ['javascript', 'JavaScript'], ['java', 'Java']] as const) {
     const analyzer = analyzers[language]
     if (typeof analyzer === 'object' && analyzer !== null) {
       const info = analyzer as Record<string, unknown>

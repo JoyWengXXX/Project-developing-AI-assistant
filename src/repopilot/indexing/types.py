@@ -8,7 +8,7 @@
 from dataclasses import dataclass, field
 from typing import Literal
 
-Language = Literal["python", "csharp", "typescript", "javascript"]
+Language = Literal["python", "csharp", "typescript", "javascript", "java"]
 ParseStatus = Literal["parsed", "parsed_with_errors", "failed"]
 ErrorKind = Literal["syntax_error", "tree_error", "too_deep", "parser_crash"]
 SymbolKind = Literal[
@@ -29,7 +29,15 @@ SymbolKind = Literal[
     "field",
 ]
 ImportKind = Literal[
-    "import", "from_import", "using", "using_static", "using_alias", "global_using", "script_import"
+    "import",
+    "from_import",
+    "using",
+    "using_static",
+    "using_alias",
+    "global_using",
+    "script_import",
+    "java_import",
+    "java_static_import",
 ]
 RelationType = Literal["base_class", "base_type", "decorator", "attribute"]
 Resolution = Literal["resolved_same_file", "ambiguous", "unresolved"]

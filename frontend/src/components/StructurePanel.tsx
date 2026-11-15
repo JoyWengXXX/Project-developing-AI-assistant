@@ -91,7 +91,7 @@ function IndexJobStatus({ job: initial, onFinished }: { job: Job; onFinished: ()
 
 /**
  * 「程式結構」：快照在目前設定下的結構索引（唯讀＋「建立索引」）。
- * 一律稱「部分解析」，不宣稱完整解析；Python 以 ast、C#／TypeScript／JavaScript 以 tree-sitter
+ * 一律稱「部分解析」，不宣稱完整解析；Python 以 ast、C#／TypeScript／JavaScript／Java 以 tree-sitter
  * 做語法層級解析，不執行受分析的程式，也不含語意分析；其他語言不產生符號。
  * 只在使用者展開時才掛載、才發請求。
  */
@@ -133,7 +133,7 @@ export function StructurePanel({ snapshotId }: { snapshotId: number }) {
       <h4>程式結構（快照 #{snapshotId}）</h4>
       <ApiHint apis={[`GET ${path}`, `POST /api/v1/snapshots/${snapshotId}/index-jobs`]} />
       <p className="note">
-        Python 檔案以 ast、C#／TypeScript／JavaScript 檔案以 tree-sitter 做語法層級解析（不執行、不編譯、不載入受分析的程式），不含語意分析；
+        Python 檔案以 ast、C#／TypeScript／JavaScript／Java 檔案以 tree-sitter 做語法層級解析（不執行、不編譯、不載入受分析的程式），不含語意分析；
         解析結果一律稱「部分解析」，不宣稱完整。C# 的 partial 類別每個檔案各一筆（不合併）、#if 的各分支都會列出並標示「條件式定義」。
         其他語言的檔案只保存文字，不產生符號。
       </p>

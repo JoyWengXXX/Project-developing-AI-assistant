@@ -2,6 +2,7 @@
 
 import pytest
 from alembic import command
+from alembic.script import ScriptDirectory
 from fastapi.testclient import TestClient
 from sqlalchemy import Engine, text
 from sqlalchemy.exc import IntegrityError
@@ -100,10 +101,11 @@ def test_downgrade_refuses_to_delete_new_index_data(
     db_engine: Engine, mixed_snapshot: int, test_database_url: str
 ) -> None:
     config = alembic_config(test_database_url)
+    head = ScriptDirectory.from_config(config).get_current_head()
     with pytest.raises(IntegrityError):
         command.downgrade(config, "0008")
     with db_engine.connect() as connection:
-        assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "0009"
+        assert connection.scalar(text("SELECT version_num FROM alembic_version")) == head
         assert (
             connection.scalar(
                 text("SELECT count(*) FROM indexed_files WHERE language = 'typescript'")

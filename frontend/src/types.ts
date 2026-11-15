@@ -412,20 +412,21 @@ export interface ReadyResponse {
 }
 
 // 統一錯誤格式：{ "error": { code, message, request_id, details? } }
-// details 只有 422 validation_error 才有
+// 422 回傳欄位錯誤；索引或快照錯誤可附狀態及快照 ID。
 export interface ValidationDetail {
   loc: (string | number)[]
   msg: string
   type: string
 }
 
+export type ErrorDetails = ValidationDetail[] | { index_status?: string; snapshot_id?: number }
+
 export interface ErrorBody {
   error: {
     code: string
     message: string
     request_id: string | null
-    // 422 validation_error 是陣列；snapshot_index_not_ready 是 { index_status }
-    details?: ValidationDetail[] | { index_status: string }
+    details?: ErrorDetails
   }
 }
 

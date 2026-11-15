@@ -40,7 +40,7 @@ from repopilot.db.session import get_session
 from repopilot.request_context import request_id_var
 from repopilot.services import index_jobs as index_job_service
 from repopilot.services import index_queries as index_query_service
-from repopilot.services import snapshot_queries
+from repopilot.services import retrieval_jobs, snapshot_queries
 from repopilot.services import snapshot_removal as removal_service
 from repopilot.services.import_profile import ImportProfile
 
@@ -132,6 +132,38 @@ def create_index_job(
     200 與 `reused=true`；最近的 job 失敗或取消則重新排入同一個 job。
     """
     submission = index_job_service.submit_index_job(
+        session, snapshot_id, settings, request_id=request_id_var.get()
+    )
+    if submission.reused:
+        response.status_code = status.HTTP_200_OK
+    elif submission.job is not None:
+        response.headers["Location"] = f"/api/v1/jobs/{submission.job.id}"
+    return JobSubmitResponse(
+        job=to_job_response(submission.job) if submission.job is not None else None,
+        snapshot_id=submission.snapshot_id,
+        repository_id=submission.repository_id,
+        reused=submission.reused,
+    )
+
+
+@router.post(
+    "/{snapshot_id}/retrieval-jobs",
+    response_model=JobSubmitResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+    responses={
+        200: {"model": JobSubmitResponse, "description": "目前設定的檢索索引已完成"},
+        404: {"description": "快照不存在"},
+        409: {"description": "快照尚未完成"},
+        503: {"description": "embedding 模型或執行器的識別尚未設定"},
+    },
+)
+def create_retrieval_job(
+    snapshot_id: SnapshotIdPath,
+    response: Response,
+    session: SessionDep,
+    settings: SettingsDep,
+) -> JobSubmitResponse:
+    submission = retrieval_jobs.submit_retrieval_job(
         session, snapshot_id, settings, request_id=request_id_var.get()
     )
     if submission.reused:

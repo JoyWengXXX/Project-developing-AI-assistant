@@ -1,5 +1,6 @@
 """快照片段集合；只有呼叫端交易提交後才可見。"""
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from hashlib import sha256
 from typing import Any
@@ -30,6 +31,10 @@ _FILE_BATCH_MAX_BYTES = 8 * 1024 * 1024
 _INSERT_BATCH_SIZE = 500
 
 
+def chunk_profile_hash(max_bytes: int, structure_index_id: int | None) -> str:
+    return sha256(f"{_ALGORITHM}:{max_bytes}:{structure_index_id}".encode("ascii")).hexdigest()
+
+
 @dataclass(frozen=True)
 class ChunkSetSummary:
     chunk_set_id: int
@@ -38,17 +43,31 @@ class ChunkSetSummary:
 
 
 def build_chunk_set(
-    session: Session, snapshot_id: int, *, max_bytes: int, structure_index_id: int | None = None
+    session: Session,
+    snapshot_id: int,
+    *,
+    max_bytes: int,
+    structure_index_id: int | None = None,
+    checkpoint: Callable[[], None] | None = None,
 ) -> ChunkSetSummary:
     """建立完整片段集合；失敗回滾至 savepoint，由呼叫者決定是否提交外層交易。"""
     with session.begin_nested():
         return _build_chunk_set(
-            session, snapshot_id, max_bytes=max_bytes, structure_index_id=structure_index_id
+            session,
+            snapshot_id,
+            max_bytes=max_bytes,
+            structure_index_id=structure_index_id,
+            checkpoint=checkpoint,
         )
 
 
 def _build_chunk_set(
-    session: Session, snapshot_id: int, *, max_bytes: int, structure_index_id: int | None
+    session: Session,
+    snapshot_id: int,
+    *,
+    max_bytes: int,
+    structure_index_id: int | None,
+    checkpoint: Callable[[], None] | None,
 ) -> ChunkSetSummary:
     if not 4 <= max_bytes <= 2_147_483_647:
         raise ValueError("max_bytes is outside the supported range.")
@@ -74,9 +93,7 @@ def _build_chunk_set(
             )
         structure_profile_hash = structure_index.index_profile_hash
 
-    profile_hash = sha256(
-        f"{_ALGORITHM}:{max_bytes}:{structure_index_id}".encode("ascii")
-    ).hexdigest()
+    profile_hash = chunk_profile_hash(max_bytes, structure_index_id)
     chunk_set_id = session.scalar(
         pg_insert(RetrievalChunkSet)
         .values(
@@ -103,6 +120,8 @@ def _build_chunk_set(
     count = 0
     last_file_id = 0
     while True:
+        if checkpoint is not None:
+            checkpoint()
         candidates = session.execute(
             select(SnapshotFile.id, SnapshotFile.byte_size)
             .where(
@@ -150,6 +169,8 @@ def _build_chunk_set(
             for file_id, start_line in symbol_rows:
                 boundaries.setdefault(file_id, []).append(start_line)
         for file in files:
+            if checkpoint is not None:
+                checkpoint()
             if file.content is None:
                 raise RuntimeError("An imported snapshot file has no content.")
             for ordinal, chunk in enumerate(

@@ -2,7 +2,9 @@
 
 import pytest
 
+from repopilot.config import Settings
 from repopilot.embedding.profile import EmbeddingProfile
+from repopilot.errors import EmbeddingNotConfiguredError
 
 
 def test_model_and_runtime_identity_each_change_the_profile_hash() -> None:
@@ -18,3 +20,13 @@ def test_model_and_runtime_identity_each_change_the_profile_hash() -> None:
 def test_invalid_artifact_digests_are_rejected(digest: str) -> None:
     with pytest.raises(ValueError):
         EmbeddingProfile(model_sha256=digest, runtime_bundle_sha256="b" * 64)
+
+
+def test_profile_requires_explicit_model_and_runtime_digests() -> None:
+    settings = Settings(_env_file=None)
+    with pytest.raises(EmbeddingNotConfiguredError):
+        EmbeddingProfile.from_settings(settings)
+    configured = Settings(
+        _env_file=None, embedding_model_sha256="a" * 64, embedding_runtime_sha256="b" * 64
+    )
+    assert EmbeddingProfile.from_settings(configured) == EmbeddingProfile("a" * 64, "b" * 64)

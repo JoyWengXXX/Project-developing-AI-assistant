@@ -160,6 +160,18 @@ class Settings(BaseSettings):
     # 每個搜尋請求的時間上限（PostgreSQL statement_timeout，內容搜尋另以整體期限限制多批次的總和）
     search_statement_timeout_seconds: float = Field(default=10.0, gt=0, le=600)
 
+    # 設定必須由部署者核對；空值代表尚未啟用檢索。
+    embedding_model_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    embedding_runtime_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    embedding_socket_path: Path | None = None
+
+    @field_validator(
+        "embedding_model_sha256", "embedding_runtime_sha256", "embedding_socket_path", mode="before"
+    )
+    @classmethod
+    def _empty_embedding_setting(cls, value: Any) -> Any:
+        return None if value == "" else value
+
     @model_validator(mode="after")
     def _job_settings_are_consistent(self) -> Self:
         if self.job_heartbeat_seconds >= self.job_lease_seconds:

@@ -15,7 +15,7 @@ from repopilot.db.locks import try_advisory_lock
 from repopilot.db.models import Snapshot, SnapshotFile
 from repopilot.embedding.profile import EmbeddingProfile
 from repopilot.embedding.socket_client import SocketEmbeddingClient
-from repopilot.services import jobs
+from repopilot.services import job_runner, jobs, retrieval_jobs
 from repopilot.services.retrieval_build import RetrievalSummary, build_retrieval_index
 from repopilot.services.retrieval_chunks import build_chunk_set
 from repopilot.services.retrieval_vectors import retrieval_lock_key
@@ -26,6 +26,76 @@ from repopilot.services.retrieval_vectors import retrieval_lock_key
     "requires an explicitly configured isolated model and test database",
 )
 class TestRealEmbeddingStack(unittest.TestCase):
+    def test_formal_retrieval_job_with_fake_snapshot(self) -> None:
+        url = os.environ["TEST_DATABASE_URL"]
+        if not url.rsplit("/", 1)[-1].split("?", 1)[0].endswith("_test"):
+            self.fail("A dedicated test database is required.")
+        settings = Settings(
+            _env_file=None,
+            database_url=SecretStr(url),
+            embedding_model_sha256=os.environ["TEST_MODEL_SHA256"],
+            embedding_runtime_sha256=os.environ["TEST_RUNTIME_SHA256"],
+            embedding_socket_path=Path(os.environ["TEST_EMBEDDING_SOCKET"]),
+        )
+        engine = create_engine(url)
+        repository_id = None
+        try:
+            with engine.begin() as connection:
+                repository_id = connection.scalar(
+                    text(
+                        "INSERT INTO repositories (name, canonical_local_path) "
+                        "VALUES (:name, :path) RETURNING id"
+                    ),
+                    {"name": "fake-retrieval-job", "path": f"/fake-test-{uuid4().hex}"},
+                )
+            assert isinstance(repository_id, int)
+            with Session(engine, expire_on_commit=False) as session:
+                snapshot = Snapshot(
+                    repository_id=repository_id,
+                    commit_sha="b" * 40,
+                    import_profile_hash="fake-profile",
+                    status="completed",
+                    file_count=1,
+                )
+                session.add(snapshot)
+                session.flush()
+                content = "def sort_files(files):\n    return sorted(files)\n"
+                session.add(
+                    SnapshotFile(
+                        snapshot_id=snapshot.id,
+                        path="fake.py",
+                        content=content,
+                        byte_size=len(content.encode("utf-8")),
+                        status="imported",
+                    )
+                )
+                session.commit()
+                submission = retrieval_jobs.submit_retrieval_job(session, snapshot.id, settings)
+                assert submission.job is not None
+                job_id = submission.job.id
+                snapshot_id = snapshot.id
+            self.assertEqual(job_runner.run_job(job_id, engine, settings), "succeeded")
+            with engine.connect() as connection:
+                row = connection.execute(
+                    text(
+                        "SELECT i.status, j.status, vector_dims(v.embedding) "
+                        "FROM retrieval_indexes i JOIN retrieval_vectors v ON v.index_id=i.id "
+                        "JOIN jobs j ON j.id=:job_id WHERE i.snapshot_id=:snapshot_id"
+                    ),
+                    {"job_id": job_id, "snapshot_id": snapshot_id},
+                ).one()
+                self.assertEqual(row, ("completed", "succeeded", 768))
+        finally:
+            if isinstance(repository_id, int):
+                with engine.begin() as connection:
+                    connection.execute(
+                        text("DELETE FROM snapshots WHERE repository_id=:id"), {"id": repository_id}
+                    )
+                    connection.execute(
+                        text("DELETE FROM repositories WHERE id=:id"), {"id": repository_id}
+                    )
+            engine.dispose()
+
     def test_fake_snapshot_is_indexed_and_published_with_its_job(self) -> None:
         url = os.environ["TEST_DATABASE_URL"]
         if not url.rsplit("/", 1)[-1].split("?", 1)[0].endswith("_test"):

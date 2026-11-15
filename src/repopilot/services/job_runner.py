@@ -73,7 +73,13 @@ from repopilot.github.client import GitHubClient
 from repopilot.indexing.profile import IndexProfile
 from repopilot.logging_config import APP_LOGGER_NAME
 from repopilot.request_context import request_id_var
-from repopilot.services import github_job_runner, job_poison, snapshot_indexing, snapshots
+from repopilot.services import (
+    github_job_runner,
+    job_poison,
+    retrieval_job_runner,
+    snapshot_indexing,
+    snapshots,
+)
 from repopilot.services import jobs as job_service
 from repopilot.services.import_profile import ImportProfile
 from repopilot.services.repositories import get_repository, repository_key, resolve_worker_path
@@ -247,6 +253,10 @@ def _run_leased(
             _run_import(session, job, token, heartbeat, engine, settings, finished)
         elif job.kind == "snapshot_index":
             _run_index(session, job, token, heartbeat, engine, settings, finished)
+        elif job.kind == "snapshot_retrieval":
+            retrieval_job_runner.run_retrieval(
+                session, job, token, engine, settings, heartbeat.checkpoint, finished
+            )
         elif job.kind == "github_register":
             client = github_client or GitHubClient(
                 base_url=settings.github_api_base_url,

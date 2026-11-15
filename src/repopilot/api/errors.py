@@ -10,6 +10,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from repopilot.errors import (
     DatabaseUnavailableError,
+    EmbeddingNotConfiguredError,
     GitCommandError,
     GitHubApiError,
     GitHubCloneError,
@@ -72,6 +73,7 @@ ERROR_STATUS: dict[type[RepoPilotError], int] = {
     GitTimeoutError: 504,
     # 設定問題（服務端缺金鑰）不是使用者輸入錯誤，故 503 而非 422
     TokenEncryptionNotConfiguredError: 503,
+    EmbeddingNotConfiguredError: 503,
     GitHubTokenInvalidError: 422,
     # 上游（GitHub）問題：連不上／非預期回應為 502，逾時為 504；GitHubTimeoutError 依 MRO 先於父類別
     GitHubUnreachableError: 502,

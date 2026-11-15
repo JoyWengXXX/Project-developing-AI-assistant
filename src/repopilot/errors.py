@@ -105,6 +105,12 @@ class TokenEncryptionNotConfiguredError(RepoPilotError):
     code = "token_encryption_not_configured"
 
 
+class EmbeddingNotConfiguredError(RepoPilotError):
+    """模型或執行器的可信識別尚未設定。"""
+
+    code = "embedding_not_configured"
+
+
 class GitHubTokenInvalidError(RepoPilotError):
     """GitHub 拒絕該 token（401）：無效、過期或已撤銷。"""
 

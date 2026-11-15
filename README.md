@@ -411,6 +411,14 @@ uv run alembic check               # model 與 migration 無差異（以 DATABAS
 
 - 整合測試使用真實 PostgreSQL（預設 `db-test`，埠 5433）；**資料庫沒啟動時整合測試會明確失敗，不會被跳過**。`pytest` 會重建所選測試資料庫的 `public` schema，且只檢查資料庫名稱含 `test`；此檢查不能保護共用資料。
 - **`stack` 測試**（`tests/integration/stack/`）需要真實的 Redis、dispatcher 與 worker 容器，預設**會執行**；前置是 `docker compose up -d --wait db-test` 與 `docker compose --profile jobs build`。測試自己啟動與停止 `redis-test`、`dispatcher-test`、`worker-test`；Docker 不可用或映像沒建置時**明確失敗，不跳過**。只想跑不需要容器的測試用 `-m "not stack"`。
+- **固定假資料初評**：先隔離測試資料庫與 Compose 專案，並啟動本機模型與查詢橋接。在執行測試的程序環境中設定 `TEST_DATABASE_URL`、`COMPOSE_PROJECT_NAME`、`EMBEDDING_MODEL_SHA256`、`EMBEDDING_RUNTIME_SHA256`、`EMBEDDING_GATEWAY_PORT`、`EMBEDDING_GATEWAY_TOKEN`；token 不要寫進指令歷史或提交。設定下列變數後執行評估，結果以 JSON 寫到指定位置；索引測試使用保守位元組數估計 token，不代表真實 tokenizer 驗證。
+
+  ```powershell
+  $env:REPOPILOT_RUN_RETRIEVAL_EVALUATION = "1"
+  $env:REPOPILOT_EVALUATION_OUTPUT = "D:\eval\retrieval-v1.json" # 目錄須已存在
+  uv run pytest tests\integration\jobs\test_retrieval_evaluation.py -q
+  ```
+
 - `tests/integration/test_restart_persistence.py` 會在 `db-test` 容器內建立臨時資料庫並啟動真實 uvicorn 子程序（空閒埠，不碰 8000；結束即 DROP 與停止），以 `slow` marker 標記，預設仍會執行。
 - **最近一次完整結果**（2026-11-15，第二階段切片 10）：在獨立程式碼副本、專用 PostgreSQL 與 Compose 專案，以既有虛擬環境執行 `python -m pytest`：**2325 passed、1 warning**（1787.16 秒，含 stack）；警告為 Starlette `TestClient` 使用 `httpx` 的棄用警告。Ruff check／format、mypy、前端 3 項輪詢測試與 `typecheck`／`lint`／`build` 通過。空資料庫、`0005` 升級至 `0008`、`0008` 降版再升版均在隔離資料庫驗證；已完成 job 與索引在 API、worker、dispatcher、Redis 重啟後仍可查詢。**未驗證**：PostgreSQL 重啟、上述服務同時重啟時進行中工作的復原、真實 GitHub、取消／重試工作的完整畫面；其他限制見本機 [roadmap](docs/roadmap.md)。開發資料庫與開發 worker 未由本次測試升級。
 - **第三階段 TS／JS 切片**（2026-11-15）：獨立副本與隔離 PostgreSQL 的 `python -m pytest -m "not stack" -q` 重跑 **2324 passed、18 deselected、1 warning**；首次執行的 6 項失敗為舊 fixture 仍將 `.js` 視為未支援，修正後重跑通過。真實 worker 的索引 stack 測試 3 passed；完整 stack 未執行。另以隔離 API、資料庫與瀏覽器驗證符號及搜尋代表情境。

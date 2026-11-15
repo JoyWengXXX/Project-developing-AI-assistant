@@ -1814,3 +1814,37 @@ button.imported-main {
   font-size: 12.5px;
   white-space: nowrap;
 }
+
+/* 搜尋面板（第二階段切片 8） */
+.search-panel {
+  min-width: 0;
+}
+.search-results {
+  list-style: none;
+  margin: 4px 0;
+  padding: 0;
+}
+.search-hit {
+  padding: 4px 6px;
+  border-bottom: 1px solid var(--row-border);
+  overflow-wrap: anywhere;
+}
+.search-meta {
+  margin-left: 8px;
+  font-size: 12.5px;
+}
+.search-location {
+  font-weight: 600;
+}
+.search-snippet {
+  display: block;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  tab-size: 4;
+}
+.search-snippet mark {
+  background: var(--warn-bg);
+  color: var(--warn-fg);
+  outline: 1px solid var(--warn-fg);
+  border-radius: 2px;
+}

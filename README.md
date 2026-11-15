@@ -2,7 +2,7 @@
 
 AI 輔助專案客製化平台：管理參考 repos 與目標 repo，依自然語言需求產出附程式碼來源引用的修改方案；後續在獨立工作目錄改碼、執行測試並產出可審查的 diff 與驗證報告。
 
-> 狀態（2026-11-13）：**第一階段**（專案骨架、Repo 管理與固定版本匯入）**實作與驗證已完成（附未驗證清單），使用者已於 2026-11-11 確認驗收**。**第二階段**（背景工作、結構索引與搜尋）**進行中**：切片 1～5 已完成——Docker 背景工作堆疊（Redis、dispatcher、Celery worker）、背景匯入 `import-jobs`、參考版本與移除快照、可靠性收尾、GitHub 註冊與 fetch 背景化，以及對應的主控台流程；**切片 6（Python 結構索引：`ast` 符號、import 與關係、部分解析的檔案清單、符號樹）與切片 7（C# 結構索引：tree-sitter）後端與前端已完成**；**切片 8～10 未完成**（搜尋、整體驗收等）。**參考版本只是標記，尚未連到 Agent**；LLM、向量搜尋、改碼都還不存在。不宣稱整套平台完成。未驗證項目見 [roadmap](docs/roadmap.md#第一階段整體驗收結論) 與本文各節。
+> 狀態（2026-11-15）：**第一階段**（專案骨架、Repo 管理與固定版本匯入）**實作與驗證已完成（附未驗證清單），使用者已於 2026-11-11 確認驗收**。**第二階段**（背景工作、結構索引與搜尋）**進行中**：切片 1～5 已完成——Docker 背景工作堆疊（Redis、dispatcher、Celery worker）、背景匯入 `import-jobs`、參考版本與移除快照、可靠性收尾、GitHub 註冊與 fetch 背景化，以及對應的主控台流程；**切片 6（Python 結構索引：`ast` 符號、import 與關係、部分解析的檔案清單、符號樹）與切片 7（C# 結構索引：tree-sitter）後端與前端已完成**；**切片 8（`files`／`symbols`／`text` 三種搜尋）後端與前端已完成**；**切片 9～10 未完成**（前端遷移收尾、整體驗收等）。**參考版本只是標記，尚未連到 Agent**；LLM、向量搜尋、改碼都還不存在。不宣稱整套平台完成。未驗證項目見 [roadmap](docs/roadmap.md#第一階段整體驗收結論) 與本文各節。
 
 ## 文件
 
@@ -26,7 +26,8 @@ AI 輔助專案客製化平台：管理參考 repos 與目標 repo，依自然�
 - **程式結構索引**（第二階段切片 6、7）：匯入 job 在快照發布後接著建立結構索引（**Python** 用標準庫 `ast`、**C#** 用 tree-sitter 做語法層級解析，**不執行、不編譯、不 import** 受分析的程式，不含語意分析；符號、import／using、基底型別與裝飾器／attribute 關係；語法錯誤只影響單檔，一律稱「部分解析」，不宣稱完整；C# 的 partial 類別每檔各一筆、不合併，`#if` 各分支都列出並標示條件式定義；欄位預設不抽取，可設 `INDEX_CSHARP_INCLUDE_FIELDS=true`）；也可對已匯入的快照單獨 `POST /snapshots/{id}/index-jobs`。其他語言的檔案只保存文字，不產生符號。主控台在版本管理的「程式結構」顯示索引狀態、部分解析的檔案與符號樹。**升級到切片 7 後，worker 映像需重建（`docker compose --profile jobs build`）才有 tree-sitter；既有的 Python 索引會因設定雜湊改變而在下次匯入／建立索引時重建。**
 - **參考版本**：每個 repo 可把一個已匯入的版本設為參考（固定的快照，不跟著分支前進）；**只是標記，尚未連到 Agent**。可移除已匯入的版本（含批次，只刪資料庫紀錄）。
 - 查詢 repo、快照、檔案、分支與標籤、commit 歷史、repo 概況、符號與背景工作狀態；GitHub 來源可 fetch；可移除已註冊的 repo。
-- 操作主控台（`frontend/`）：repo 卡片總覽、版本管理（已匯入的版本＋分支下拉＋ commit 圖）、程式結構、檔案樹、背景工作摘要、GitHub 連線。
+- **搜尋**（第二階段切片 8）：對已匯入的快照做三種字面（區分大小寫）子字串搜尋——檔名（`search/files`）、符號（`search/symbols`，需要已完成的結構索引）、內容（`search/text`，一個命中行一筆並帶片段；不依賴索引）。沒有正規表示式、模糊比對或相關性排序；沒有加 `pg_trgm`（20,000 檔合成快照的最壞情況單次約 3.6 秒，低於預設逾時 10 秒；真實 repo 與 Linux 容器內未驗證）。超過 `SEARCH_STATEMENT_TIMEOUT_SECONDS` 回 504 `search_timeout`。主控台在版本管理的「搜尋」面板使用。
+- 操作主控台（`frontend/`）：repo 卡片總覽、版本管理（已匯入的版本＋分支下拉＋ commit 圖）、程式結構、搜尋、檔案樹、背景工作摘要、GitHub 連線。
 
 **尚未有（未完成）**：搜尋、LLM、向量搜尋、改碼、GitLab 與其他遠端來源、多使用者登入、前端自動化測試。
 
@@ -105,6 +106,7 @@ uv run python -c "from cryptography.fernet import Fernet; print(Fernet.generate_
 | `MANAGED_REPOS_DIR` | 空 | GitHub clone 的**受管目錄**（絕對路徑）；**空白＝停用 GitHub 註冊**；與 `REPOSITORY_ROOTS` 分開。背景註冊要求它能映射到 worker 的**可寫**掛載（`WORKER_PATH_MAPPINGS` 的 `mode` 為 `rw`），否則 503 `worker_path_not_mapped` |
 | `GITHUB_*` | 見 `.env.example` | GitHub API／clone 的基底位址（僅供測試指向本機假 GitHub）與逾時（未實測，大型 repo 可能需調高） |
 | `GIT_POLL_SECONDS`、`CLONE_PROGRESS_SECONDS`、`MANAGED_TEMP_ORPHAN_SECONDS` | 1、2、7200 | 切片 5（只影響 worker，未實測）：clone／fetch 期間檢查取消旗標與租約的間隔、量測暫存目錄大小（`progress.bytes_received`）的間隔、孤兒暫存目錄的年齡門檻（須大於 `GITHUB_CLONE_TIMEOUT_SECONDS`） |
+| `SEARCH_STATEMENT_TIMEOUT_SECONDS` | 10 | 切片 8：每個搜尋請求的時間上限（PostgreSQL `statement_timeout`；內容搜尋另有整體期限）；超過回 504 `search_timeout`，不回空列表。預設值只在 20,000 檔合成快照上量測過一次 |
 | `WORKER_PATH_MAPPINGS` | 空 | 主機路徑 ↔ 容器路徑（JSON 陣列 `[{host, container, mode}]`）；**API 建立 import-job 時用它檢查路徑可映射**，未涵蓋回 503 `worker_path_not_mapped`；容器內的設定由 docker-compose 提供，所以 **API 的 `.env` 也要設** |
 | `WORKER_REPOSITORIES_HOST_DIR`、`WORKER_MANAGED_HOST_DIR` | 專案內 `.test-repos`、`.test-managed` | 只給 docker compose 插值（後端不讀）：worker 容器掛載的主機目錄 |
 | `WORKER_GIT_TIMEOUT_SECONDS`、`WORKER_IMPORT_GIT_TIMEOUT_SECONDS`、`WORKER_TASK_TIME_LIMIT_SECONDS` | 120、900、3600 | worker 的 Git 與任務逾時；未實測，只影響 worker |
@@ -167,7 +169,7 @@ React + TypeScript + Vite 的最小操作主控台（`frontend/`），用來以�
 
 ## API 一覽
 
-共 36 個端點（可用 `http://127.0.0.1:8000/openapi.json` 對照；2026-11-13 以 `create_app().openapi()` 核對為 36 個 method＋path，切片 6 新增 5 個）。契約與取捨見 [architecture.md](docs/architecture.md#設計決策) 的 D 編號。
+共 39 個端點（可用 `http://127.0.0.1:8000/openapi.json` 對照；以 `create_app().openapi()` 核對為 39 個 method＋path，切片 6 新增 5 個、切片 8 新增 3 個）。契約與取捨見 [architecture.md](docs/architecture.md#設計決策) 的 D 編號。
 
 | 方法 | 路徑 | 說明 | 主要狀態碼與錯誤碼 |
 | --- | --- | --- | --- |
@@ -199,6 +201,9 @@ React + TypeScript + Vite 的最小操作主控台（`frontend/`），用來以�
 | GET | `/api/v1/snapshots/{id}/index/files` | 被索引的檔案與解析狀態（`has_problems`、`language`、`limit`、`offset`；依 path 排序）；只有第一個語法錯誤的位置，**沒有程式碼片段** | 200；409 `snapshot_not_completed`、`snapshot_index_not_ready`（`details.index_status`） |
 | GET | `/api/v1/snapshots/{id}/symbols` | 符號列表（`kind`、`parent_id`、`top_level`、`file_id`、`path_prefix`、`limit`、`offset`；依 path、起始行排序；`has_children` 供符號樹逐層載入）；只採用 `completed` 的索引 | 200；409 `snapshot_not_completed`、`snapshot_index_not_ready` |
 | GET | `/api/v1/snapshots/{id}/symbols/{symbol_id}` | 單一符號：位置（欄位是 0-based UTF-8 位元組位移）、修飾詞、裝飾器起始行、同檔 import 與關係（`resolved_same_file`／`ambiguous`／`unresolved`，未解析者保留原始名稱） | 200；404 `symbol_not_found`（含別的快照的符號）；409（同上） |
+| GET | `/api/v1/snapshots/{id}/search/files` | **搜尋檔名**（切片 8）：路徑含 `q`（字面子字串、區分大小寫，`%`／`_`／`\` 按字面；`q` 1～200 字元、不 strip）；`path_prefix`、`limit`（預設 20、最大 100）、`offset`（0～10,000）；依 path 排序；`total` 為整數；不依賴結構索引 | 200 `{snapshot_id, repository_id, commit_sha, items, total, limit, offset, has_more}`；422 `validation_error`；404；409 `snapshot_not_completed`；504 `search_timeout`（[D47](docs/architecture.md)） |
+| GET | `/api/v1/snapshots/{id}/search/symbols` | **搜尋符號**（切片 8）：`name` 或 `qualified_name` 含 `q`；`kind`、`language` 篩選；依 path、起始行排序；`total` 為整數；只採用 `completed` 的索引 | 200；409 `snapshot_not_completed`、`snapshot_index_not_ready`；422；504 |
+| GET | `/api/v1/snapshots/{id}/search/text` | **搜尋內容**（切片 8）：一個命中行一筆（`path`、`line`、`snippet` 最多 300 字元、`snippet_truncated`、`snippet_offset`、`match_offset`，位移以 Unicode 碼點計）；`path_prefix` 可縮小範圍；**`total` 為 `null`**，以 `has_more` 分頁；不依賴結構索引；片段是 repo 內容，須當純文字顯示 | 200；422；404；409 `snapshot_not_completed`；504 `search_timeout`（最壞情況掃完整個快照；20,000 檔／132 MiB 的合成快照單次約 3.6 秒） |
 | PUT | `/api/v1/github/token` | 驗證（呼叫 GitHub `GET /user`）後加密保存 token（body `{"token": "..."}`） | 200 `{authenticated, login, token_type, warning}`；422 `validation_error`、`github_token_invalid`；503 `token_encryption_not_configured`；502／504 |
 | GET | `/api/v1/github/auth` | 只回狀態，**永不回傳 token**；不呼叫 GitHub | 200 |
 | DELETE | `/api/v1/github/auth` | 刪除本機保存的 token（不在 GitHub 端撤銷） | 204（冪等） |
@@ -350,7 +355,7 @@ uv run alembic check               # model 與 migration 無差異（以 DATABAS
 - 整合測試使用真實 PostgreSQL（`db-test`，埠 5433，資料不保存）；**`db-test` 沒啟動時整合測試會明確失敗，不會被跳過**。`pytest` 會重建測試資料庫的 `public` schema，且只允許資料庫名稱含 `test`，不會碰 dev 資料庫。
 - **`stack` 測試**（`tests/integration/stack/`）需要真實的 Redis、dispatcher 與 worker 容器，預設**會執行**；前置是 `docker compose up -d --wait db-test` 與 `docker compose --profile jobs build`。測試自己啟動與停止 `redis-test`、`dispatcher-test`、`worker-test`；Docker 不可用或映像沒建置時**明確失敗，不跳過**。只想跑不需要容器的測試用 `-m "not stack"`。
 - `tests/integration/test_restart_persistence.py` 會在 `db-test` 容器內建立臨時資料庫並啟動真實 uvicorn 子程序（空閒埠，不碰 8000；結束即 DROP 與停止），以 `slow` marker 標記，預設仍會執行。
-- **最近一次完整結果**（2026-11-13，第二階段切片 7）：`uv run pytest -m "not stack"` **2237 passed、17 deselected**（1645 秒）、`uv run pytest tests/integration/stack` **32 passed**（441 秒；兩次分開執行，**沒有合併成一次 `uv run pytest`**）、`uv run ruff check .`、`uv run ruff format --check .`、`uv run mypy src tests` 通過；前端 `typecheck`、`lint`、`build` 通過；切片 7 沒有 migration（仍是 `0008`）；開發資料庫仍是 `0007 (head)`（**升級到 `0008` 由你自行執行 `uv run alembic upgrade head`**；開發 `worker` 容器需重建才會有索引階段與 tree-sitter）。前一次（切片 6）：2202 passed＋`stack` 32 passed。切片 6 之前的結果：切片 5 為 2147 passed（1661 秒，含 30 項 `stack` 測試）、切片 4 為 1945 passed（1329 秒）、切片 3b 為 1812 passed（1177 秒）。完整套件在 Windows 開發機上約 20～28 分鐘。細節與變異檢查見 [roadmap](docs/roadmap.md)。
+- **最近一次完整結果**（2026-11-15，第二階段切片 8）：`uv run pytest -m "not stack"` **2308 passed、17 deselected**（1563 秒）、`uv run ruff check .`、`uv run ruff format --check .`、`uv run mypy src tests` 通過；前端 `typecheck`、`lint`、`build` 通過；切片 8 沒有 migration（仍是 `0008`），**`stack` 測試未重跑**（沒有動 worker／映像）。搜尋量測與未驗證項目見 [architecture D47](docs/architecture.md)。前一次（2026-11-13，切片 7）：`uv run pytest -m "not stack"` **2237 passed、17 deselected**（1645 秒）、`uv run pytest tests/integration/stack` **32 passed**（441 秒；兩次分開執行，**沒有合併成一次 `uv run pytest`**）、`uv run ruff check .`、`uv run ruff format --check .`、`uv run mypy src tests` 通過；前端 `typecheck`、`lint`、`build` 通過；切片 7 沒有 migration（仍是 `0008`）；開發資料庫仍是 `0007 (head)`（**升級到 `0008` 由你自行執行 `uv run alembic upgrade head`**；開發 `worker` 容器需重建才會有索引階段與 tree-sitter）。前一次（切片 6）：2202 passed＋`stack` 32 passed。切片 6 之前的結果：切片 5 為 2147 passed（1661 秒，含 30 項 `stack` 測試）、切片 4 為 1945 passed（1329 秒）、切片 3b 為 1812 passed（1177 秒）。完整套件在 Windows 開發機上約 20～28 分鐘。細節與變異檢查見 [roadmap](docs/roadmap.md)。
 - 前端沒有自動化測試（見「主控台操作流程」的驗證狀態）。
 
 ## 安全注意事項

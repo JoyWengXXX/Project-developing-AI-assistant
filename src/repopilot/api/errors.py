@@ -37,6 +37,7 @@ from repopilot.errors import (
     RepositoryBusyError,
     RepositoryNotFoundError,
     RepositoryNotGitHubError,
+    SearchTimeoutError,
     SnapshotBusyError,
     SnapshotFileNotFoundError,
     SnapshotImportInProgressError,
@@ -104,6 +105,8 @@ ERROR_STATUS: dict[type[RepoPilotError], int] = {
     # 結構索引（第二階段切片 6）：索引尚未就緒是「稍後再查」的衝突；符號不在該索引內是 404
     SnapshotIndexNotReadyError: 409,
     SymbolNotFoundError: 404,
+    # 搜尋（第二階段切片 8）：逾時是 504（同 Git 逾時），不是資料庫不可用的 503
+    SearchTimeoutError: 504,
 }
 
 _HTTP_ERROR_CODES = {

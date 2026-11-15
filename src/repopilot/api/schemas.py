@@ -2,7 +2,7 @@ from datetime import datetime
 from typing import Annotated, Any, Literal
 
 from fastapi import Path, Query
-from pydantic import BaseModel, ConfigDict, Field, StringConstraints
+from pydantic import AfterValidator, BaseModel, ConfigDict, Field, StringConstraints
 
 RepositoryName = Annotated[
     str, StringConstraints(strip_whitespace=True, min_length=1, max_length=200)
@@ -649,3 +649,96 @@ class SymbolDetailResponse(SymbolSummaryResponse):
     # 同一檔案的 import（最多 200 筆，依行號排序）
     imports: list[ImportReferenceResponse]
     relations: list[SymbolRelationResponse]
+
+
+# --- 搜尋（第二階段切片 8，規格 8）---
+SEARCH_DEFAULT_LIMIT = 20
+SEARCH_MAX_LIMIT = 100
+SEARCH_MAX_OFFSET = 10_000
+
+
+def _validate_search_text(value: str) -> str:
+    # 不 strip：字面比對時前後空白有意義；但全空白、換行與 NUL 沒有搜尋意義（或無法比對）
+    if not value.strip():
+        raise ValueError("q must not be blank.")
+    if any(char in value for char in ("\n", "\r", "\x00")):
+        raise ValueError("q must not contain line breaks or NUL.")
+    return value
+
+
+SearchTextQuery = Annotated[
+    str,
+    Query(min_length=1, max_length=200, description="字面子字串（區分大小寫），1～200 字元"),
+    AfterValidator(_validate_search_text),
+]
+SearchLimitQuery = Annotated[
+    int, Query(ge=1, le=SEARCH_MAX_LIMIT, description="每頁筆數，最多 100")
+]
+SearchOffsetQuery = Annotated[int, Query(ge=0, le=SEARCH_MAX_OFFSET, description="略過筆數")]
+SearchPathPrefixQuery = Annotated[
+    str | None, Query(max_length=1024, description="路徑前綴（區分大小寫，不是萬用字元）")
+]
+
+
+class SearchResponse(BaseModel):
+    """搜尋回應外框：URL 已釘住同一個快照，所以 repo 與完整 commit SHA 放在外框而不是每筆命中。
+
+    `total` 在內容搜尋為 null（精確總數需要掃完所有命中）；任何端點都可用 `has_more` 分頁。
+    """
+
+    snapshot_id: int
+    repository_id: int
+    commit_sha: str
+    total: int | None
+    limit: int
+    offset: int
+    has_more: bool
+
+
+class FileMatchResponse(BaseModel):
+    file_id: int
+    path: str
+    byte_size: int | None
+
+
+class FileSearchResponse(SearchResponse):
+    items: list[FileMatchResponse]
+
+
+class SymbolMatchResponse(BaseModel):
+    symbol_id: int
+    kind: str
+    language: IndexLanguage
+    name: str
+    qualified_name: str
+    file_id: int
+    path: str
+    start_line: int
+    end_line: int
+    has_errors: bool
+
+
+class SymbolSearchResponse(SearchResponse):
+    items: list[SymbolMatchResponse]
+
+
+class TextMatchResponse(BaseModel):
+    """一個命中行；`snippet` 是 repo 內容（不可信資料），消費端須當純文字處理。
+
+    `snippet_offset`、`match_offset` 以 Unicode 碼點計（不是 UTF-16 或位元組）。
+    """
+
+    file_id: int
+    path: str
+    # 1-based
+    line: int
+    snippet: str
+    snippet_truncated: bool
+    # 片段在該行中的字元位移
+    snippet_offset: int
+    # 第一個命中在片段中的字元位移
+    match_offset: int
+
+
+class TextSearchResponse(SearchResponse):
+    items: list[TextMatchResponse]

@@ -22,6 +22,7 @@ import type { SnapshotListState } from '../useSnapshotList'
 import { BatchResult } from './BatchResult'
 import { ConfirmBox } from './ConfirmBox'
 import { ImportedVersionRow } from './ImportedVersionRow'
+import { SearchPanel } from './SearchPanel'
 import { SnapshotDetailView } from './SnapshotDetailView'
 import { StructurePanel } from './StructurePanel'
 
@@ -72,6 +73,7 @@ export function ImportedVersions({
   const [labels, setLabels] = useState<ReadonlyMap<number, string>>(new Map()) // 批次結果用：編號 → 短 SHA
   const [detailOpen, setDetailOpen] = useState(false)
   const [structureOpen, setStructureOpen] = useState(false)
+  const [searchOpen, setSearchOpen] = useState(false)
   const singleAction = useAction()
   const { clear: clearSingleNotice } = singleAction
   const headingRef = useRef<HTMLHeadingElement>(null)
@@ -255,6 +257,12 @@ export function ImportedVersions({
             <details className="snapshot-detail-toggle" open={structureOpen} onToggle={(e) => setStructureOpen(e.currentTarget.open)}>
               <summary>程式結構（Python 符號、部分解析的檔案）</summary>
               {structureOpen && <StructurePanel key={currentRowSnapshot.id} snapshotId={currentRowSnapshot.id} />}
+            </details>
+          )}
+          {currentRowSnapshot !== null && currentRowSnapshot.status === 'completed' && (
+            <details className="snapshot-detail-toggle" open={searchOpen} onToggle={(e) => setSearchOpen(e.currentTarget.open)}>
+              <summary>搜尋（檔名、符號、內容）</summary>
+              {searchOpen && <SearchPanel key={currentRowSnapshot.id} snapshotId={currentRowSnapshot.id} />}
             </details>
           )}
         </>

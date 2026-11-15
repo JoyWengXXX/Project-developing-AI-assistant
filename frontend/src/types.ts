@@ -480,3 +480,51 @@ export interface SymbolDetail extends SymbolSummary {
   imports: ImportReference[]
   relations: SymbolRelation[]
 }
+
+// ---------- 搜尋（第二階段切片 8，對應 schemas.py 的 Search*Response） ----------
+
+// 三個搜尋端點共用的回應外框：total 在內容搜尋為 null（只能靠 has_more 分頁）
+export interface SearchPageBase<T> {
+  snapshot_id: number
+  repository_id: number
+  commit_sha: string
+  items: T[]
+  total: number | null
+  limit: number
+  offset: number
+  has_more: boolean
+}
+
+export interface FileMatch {
+  file_id: number
+  path: string
+  byte_size: number | null
+}
+
+export interface SymbolMatch {
+  symbol_id: number
+  kind: string
+  language: 'python' | 'csharp'
+  name: string
+  qualified_name: string
+  file_id: number
+  path: string
+  start_line: number
+  end_line: number
+  has_errors: boolean
+}
+
+// snippet_offset／match_offset 以 Unicode 碼點計（不是 UTF-16 單位，也不是 UTF-8 位元組）
+export interface TextMatch {
+  file_id: number
+  path: string
+  line: number // 1-based
+  snippet: string // 不可信內容，只能當文字顯示
+  snippet_truncated: boolean
+  snippet_offset: number // 片段在該行中的位移
+  match_offset: number // 第一個命中在片段中的位移
+}
+
+export type FileSearchPage = SearchPageBase<FileMatch>
+export type SymbolSearchPage = SearchPageBase<SymbolMatch>
+export type TextSearchPage = SearchPageBase<TextMatch>

@@ -153,6 +153,10 @@ class Settings(BaseSettings):
     index_batch_max_files: int = Field(default=200, ge=1, le=100_000)
     index_batch_max_bytes: int = Field(default=8 * 1024 * 1024, ge=1)
 
+    # --- 搜尋（第二階段切片 8；預設值未實測）---
+    # 每個搜尋請求的時間上限（PostgreSQL statement_timeout，內容搜尋另以整體期限限制多批次的總和）
+    search_statement_timeout_seconds: float = Field(default=10.0, gt=0, le=600)
+
     @model_validator(mode="after")
     def _job_settings_are_consistent(self) -> Self:
         if self.job_heartbeat_seconds >= self.job_lease_seconds:

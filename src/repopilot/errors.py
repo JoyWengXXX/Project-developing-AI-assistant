@@ -69,6 +69,12 @@ class SnapshotIndexNotReadyError(RepoPilotError):
         self.index_status = index_status
 
 
+class SearchTimeoutError(RepoPilotError):
+    """搜尋超過 `SEARCH_STATEMENT_TIMEOUT_SECONDS`（第二階段切片 8）；不回成功的空列表。"""
+
+    code = "search_timeout"
+
+
 class SymbolNotFoundError(RepoPilotError):
     """指定的符號不存在，或不屬於該快照目前的索引。"""
 

@@ -397,7 +397,9 @@ class GitHubAuthResponse(BaseModel):
 
 
 # --- 背景工作（第二階段切片 2，D39）---
-JobKind = Literal["snapshot_import", "snapshot_index", "github_register", "github_fetch"]
+JobKind = Literal[
+    "snapshot_import", "snapshot_index", "github_register", "github_fetch", "snapshot_retrieval"
+]
 JobStatus = Literal["queued", "running", "succeeded", "failed", "cancelled"]
 # `active` ＝ queued＋running（供進行中面板輪詢）
 JobStatusFilter = Literal["queued", "running", "succeeded", "failed", "cancelled", "active"]
@@ -409,6 +411,7 @@ JobPhase = Literal[
     "cloning",
     "registering",
     "fetching",
+    "embedding",
     "completed",
 ]
 

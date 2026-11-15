@@ -7,6 +7,7 @@ import type { Job, JobKind, JobPhase, JobProgress, JobsStatus, JobStatus, JobSta
 export const JOB_KIND_LABEL: Record<JobKind, string> = {
   snapshot_import: '匯入版本',
   snapshot_index: '建立索引',
+  snapshot_retrieval: '建立檢索索引',
   github_register: '註冊 GitHub repo',
   github_fetch: '更新 GitHub repo',
 }
@@ -15,6 +16,7 @@ export const JOB_KIND_LABEL: Record<JobKind, string> = {
 export const JOB_BACKGROUND_LABEL: Record<JobKind, string> = {
   snapshot_import: '背景匯入',
   snapshot_index: '背景索引',
+  snapshot_retrieval: '背景檢索索引',
   github_register: '背景註冊',
   github_fetch: '背景更新',
 }
@@ -23,18 +25,21 @@ export const JOB_BACKGROUND_LABEL: Record<JobKind, string> = {
 const CANCEL_NOUN: Record<JobKind, string> = {
   snapshot_import: '匯入',
   snapshot_index: '背景工作',
+  snapshot_retrieval: '檢索索引',
   github_register: '註冊',
   github_fetch: '更新',
 }
 const AFTER_CANCEL: Record<JobKind, string> = {
   snapshot_import: '之後可以重新匯入。',
   snapshot_index: '之後可以重新執行。',
+  snapshot_retrieval: '之後可以重新執行。',
   github_register: '之後可以重新註冊。',
   github_fetch: '之後可以再更新。',
 }
 const CANCEL_CONSEQUENCE: Record<JobKind, string> = {
   snapshot_import: '會停止這次匯入；已讀取的內容不會保留，之後可以重新匯入。',
   snapshot_index: '會停止這個工作；已完成的部分不會保留，之後可以重新執行。',
+  snapshot_retrieval: '會停止建立檢索索引；未完成的結果不會公開，之後可以重新執行。',
   github_register: '會停止這次複製，已下載的暫存內容會被清除；之後可以重新註冊。',
   github_fetch: '會停止這次更新（fetch）；本機的 clone 保持原狀，之後可以再更新。',
 }
@@ -84,6 +89,7 @@ export const JOB_PHASE_LABEL: Record<JobPhase, string> = {
   pending: '等待中',
   importing: '匯入檔案',
   indexing: '建立索引',
+  embedding: '建立檢索索引',
   resolving: '連線 GitHub 並確認 repo',
   cloning: '複製 repo 中',
   registering: '寫入資料庫',
@@ -314,6 +320,8 @@ export function jobTitle(job: Job, repoName: string | null): string {
       return sha !== null ? `匯入 ${repo} 的版本 ${sha}` : `匯入 ${repo} 的版本`
     case 'snapshot_index':
       return sha !== null ? `為 ${repo} 的版本 ${sha} 建立索引` : `為 ${repo} 建立索引`
+    case 'snapshot_retrieval':
+      return sha !== null ? `為 ${repo} 的版本 ${sha} 建立檢索索引` : `為 ${repo} 建立檢索索引`
     case 'github_register': {
       const target = githubRepoOf(job) ?? repoName
       return target !== null ? `註冊 GitHub repo ${target}` : '註冊 GitHub repo'

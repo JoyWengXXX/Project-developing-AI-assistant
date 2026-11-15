@@ -263,7 +263,7 @@ export interface RepositoryOverview {
 
 // ---------- 背景工作（第二階段切片 2：/api/v1/jobs，對應 schemas.py 的 Job* 模型） ----------
 
-export type JobKind = 'snapshot_import' | 'snapshot_index' | 'github_register' | 'github_fetch'
+export type JobKind = 'snapshot_import' | 'snapshot_index' | 'github_register' | 'github_fetch' | 'snapshot_retrieval'
 export type JobStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled'
 // 列表篩選多一個 active（＝queued＋running）
 export type JobStatusFilter = JobStatus | 'active'
@@ -271,6 +271,7 @@ export type JobPhase =
   | 'pending'
   | 'importing'
   | 'indexing'
+  | 'embedding'
   | 'resolving'
   | 'cloning'
   | 'registering'

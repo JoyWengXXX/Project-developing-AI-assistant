@@ -9,7 +9,13 @@ import re
 from collections.abc import Callable, Mapping
 from typing import Any, Literal
 
-JOB_KINDS = ("snapshot_import", "snapshot_index", "github_register", "github_fetch")
+JOB_KINDS = (
+    "snapshot_import",
+    "snapshot_index",
+    "github_register",
+    "github_fetch",
+    "snapshot_retrieval",
+)
 ACTIVE_STATUSES = ("queued", "running")
 TERMINAL_STATUSES = ("succeeded", "failed", "cancelled")
 
@@ -17,6 +23,7 @@ TERMINAL_STATUSES = ("succeeded", "failed", "cancelled")
 PHASES_BY_KIND: dict[str, tuple[str, ...]] = {
     "snapshot_import": ("pending", "importing", "indexing", "completed"),
     "snapshot_index": ("pending", "indexing", "completed"),
+    "snapshot_retrieval": ("pending", "embedding", "completed"),
     "github_register": ("pending", "resolving", "cloning", "registering", "completed"),
     "github_fetch": ("pending", "fetching", "completed"),
 }

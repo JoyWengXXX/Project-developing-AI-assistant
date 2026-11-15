@@ -322,7 +322,8 @@ class Job(Base):
     __tablename__ = "jobs"
     __table_args__ = (
         CheckConstraint(
-            "kind IN ('snapshot_import', 'snapshot_index', 'github_register', 'github_fetch')",
+            "kind IN ('snapshot_import', 'snapshot_index', 'github_register', 'github_fetch', "
+            "'snapshot_retrieval')",
             name="kind_valid",
         ),
         CheckConstraint(
@@ -331,7 +332,7 @@ class Job(Base):
         ),
         CheckConstraint(
             "phase IN ('pending', 'importing', 'indexing', 'resolving', 'cloning', "
-            "'registering', 'fetching', 'completed')",
+            "'registering', 'fetching', 'embedding', 'completed')",
             name="phase_valid",
         ),
         # running 若且唯若持有令牌與租約期限：不會有「沒有期限、永遠無法復原」的 running 工作

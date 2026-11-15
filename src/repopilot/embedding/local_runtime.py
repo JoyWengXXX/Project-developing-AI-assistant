@@ -193,7 +193,8 @@ class LocalEmbeddingRuntime:
     ) -> None:
         self._stop()
 
-    def embed(self, text: str) -> list[float]:
+    def count_tokens(self, text: str) -> int:
+        """以模型的 tokenizer 計算包含特殊 token 的數量。"""
         if len(text.encode("utf-8")) > _MAX_INPUT_BYTES:
             raise EmbeddingInputTooLongError("Embedding input exceeds the byte limit.")
         token_data = self._request("POST", "/tokenize", {"content": text, "add_special": True})
@@ -204,7 +205,11 @@ class LocalEmbeddingRuntime:
             or any(not isinstance(token, int) or isinstance(token, bool) for token in tokens)
         ):
             raise EmbeddingRuntimeError("The tokenizer returned an invalid response.")
-        if len(tokens) > _MAX_TOKENS:
+        return len(tokens)
+
+    def embed(self, text: str) -> list[float]:
+        token_count = self.count_tokens(text)
+        if token_count > _MAX_TOKENS:
             raise EmbeddingInputTooLongError("Embedding input exceeds the model token limit.")
         data = self._request("POST", "/v1/embeddings", {"model": str(self._model), "input": text})
         usage = data.get("usage")
@@ -212,7 +217,7 @@ class LocalEmbeddingRuntime:
         if (
             not isinstance(usage, dict)
             or type(usage.get("prompt_tokens")) is not int
-            or usage.get("prompt_tokens") != len(tokens)
+            or usage.get("prompt_tokens") != token_count
             or not isinstance(rows, list)
             or len(rows) != 1
             or not isinstance(rows[0], dict)

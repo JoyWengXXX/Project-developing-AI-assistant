@@ -11,6 +11,7 @@ from typing import Any
 
 import pytest
 
+from repopilot.embedding.chunking import split_for_embedding
 from repopilot.embedding.local_runtime import (
     EmbeddingInputTooLongError,
     EmbeddingRuntimeError,
@@ -46,7 +47,8 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         payload = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
         if self.path == "/tokenize":
-            print(payload["content"], flush=True)
+            escaped = payload["content"].encode("ascii", "backslashreplace").decode("ascii")
+            print(escaped, flush=True)
             self.send_json(200, {"tokens": list(range(len(payload["content"]) + 2))})
         elif self.path == "/v1/embeddings":
             text = payload["input"]
@@ -105,6 +107,22 @@ def test_rejects_long_input_before_embedding(fake_runtime: tuple[Path, Path, str
         assert len(runtime.embed("x" * 510)) == 768
         with pytest.raises(EmbeddingInputTooLongError):
             runtime.embed("x" * 511)
+
+
+def test_tokenizer_splits_long_input_without_losing_source(
+    fake_runtime: tuple[Path, Path, str],
+) -> None:
+    executable, model, digest = fake_runtime
+    content = ("abc🙂\n" * 160) + "tail"
+    with LocalEmbeddingRuntime(executable=executable, model=model, model_sha256=digest) as runtime:
+        segments = split_for_embedding(
+            content, count_tokens=runtime.count_tokens, max_tokens=512, max_bytes=32768
+        )
+        assert "".join(content[item.start : item.end] for item in segments) == content
+        assert len(segments) > 1
+        for item in segments:
+            assert item.token_count <= 512
+            assert len(runtime.embed(content[item.start : item.end])) == 768
 
 
 @pytest.mark.parametrize("text", ["bad", "nan", "overflow", "wrong-usage", "bool-index"])

@@ -8,16 +8,120 @@ from uuid import UUID
 from sqlalchemy import and_, func, select
 from sqlalchemy.orm import Session
 
+from repopilot.db.locks import AdvisoryLock
 from repopilot.db.models import RetrievalChunk, RetrievalIndex, Snapshot, SnapshotFile
 from repopilot.embedding.chunking import split_for_embedding
-from repopilot.errors import JobLeaseLostError, SnapshotNotCompletedError
-from repopilot.services.retrieval_vectors import VectorSegment
+from repopilot.embedding.profile import EmbeddingProfile
+from repopilot.errors import ImportCancelledError, JobLeaseLostError, SnapshotNotCompletedError
+from repopilot.services.retrieval_vectors import (
+    VectorSegment,
+    claim_index,
+    complete_index,
+    fail_index,
+    write_segments,
+)
 
 
 @dataclass(frozen=True)
 class SourceChunk:
     chunk_id: int
     content: str
+
+
+@dataclass(frozen=True)
+class RetrievalSummary:
+    index_id: int
+    reused: bool
+    segment_count: int
+
+
+def build_retrieval_index(
+    session: Session,
+    *,
+    chunk_set_id: int,
+    owner_token: UUID,
+    profile: EmbeddingProfile,
+    lock: AdvisoryLock,
+    count_tokens: Callable[[str], int],
+    embed: Callable[[str], list[float]],
+    checkpoint: Callable[[], None],
+    finalize: Callable[[RetrievalSummary, Callable[[Session], None]], bool],
+) -> RetrievalSummary:
+    """建構索引並委由呼叫者在同一交易發布索引與工作狀態。"""
+    checkpoint()
+    claimed = claim_index(
+        session, chunk_set_id=chunk_set_id, profile=profile, owner_token=owner_token, lock=lock
+    )
+    index = session.get(RetrievalIndex, claimed.index_id)
+    if index is None:
+        raise JobLeaseLostError("The retrieval index no longer exists.")
+    previous_count = index.segment_count
+    session.commit()
+    if claimed.reused:
+        return RetrievalSummary(claimed.index_id, True, previous_count)
+
+    pending: list[VectorSegment] = []
+    count = 0
+    cursor = 0
+    try:
+        while True:
+            checkpoint()
+            chunks = load_source_chunks(
+                session, index_id=claimed.index_id, owner_token=owner_token, after_chunk_id=cursor
+            )
+            session.rollback()
+            if not chunks:
+                break
+            for chunk in chunks:
+                for vector in vectorize_chunk(
+                    chunk, count_tokens=count_tokens, embed=embed, checkpoint=checkpoint
+                ):
+                    pending.append(vector)
+                    count += 1
+                    if len(pending) == 64:
+                        checkpoint()
+                        write_segments(
+                            session,
+                            index_id=claimed.index_id,
+                            owner_token=owner_token,
+                            segments=pending,
+                        )
+                        session.commit()
+                        pending.clear()
+                cursor = chunk.chunk_id
+        if pending:
+            checkpoint()
+            write_segments(
+                session, index_id=claimed.index_id, owner_token=owner_token, segments=pending
+            )
+            session.commit()
+        checkpoint()
+        lock.assert_alive()
+        summary = RetrievalSummary(claimed.index_id, False, count)
+        published = False
+
+        def publish(transaction: Session) -> None:
+            nonlocal published
+            actual = complete_index(
+                transaction, index_id=claimed.index_id, owner_token=owner_token, lock=lock
+            )
+            if actual != count:
+                raise ValueError("The retrieval vector count changed during publication.")
+            published = True
+
+        if not finalize(summary, publish):
+            raise ImportCancelledError("The retrieval index build was cancelled.")
+        if not published:
+            raise RuntimeError("The retrieval index finalizer did not publish the index.")
+        return summary
+    except JobLeaseLostError:
+        session.rollback()
+        raise
+    except Exception:
+        session.rollback()
+        fail_index(session, index_id=claimed.index_id, owner_token=owner_token)
+        session.commit()
+        raise
 
 
 def load_source_chunks(

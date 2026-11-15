@@ -9,7 +9,18 @@ from sqlalchemy.engine import Connection
 from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlalchemy.orm import Session
 
+from repopilot.db.locks import try_advisory_lock
+from repopilot.embedding.profile import EmbeddingProfile
+from repopilot.errors import DatabaseUnavailableError, JobLeaseLostError
 from repopilot.services.retrieval_chunks import build_chunk_set
+from repopilot.services.retrieval_vectors import (
+    VectorSegment,
+    claim_index,
+    complete_index,
+    fail_index,
+    retrieval_lock_key,
+    write_segments,
+)
 from tests.integration.conftest import alembic_config
 from tests.integration.snapshot_helpers import add_snapshot
 from tests.integration.test_snapshot_indexing import add_files
@@ -189,3 +200,222 @@ def test_migration_refuses_to_delete_existing_vector_indexes(
         command.downgrade(alembic_config(test_database_url), "0015")
     with db_engine.connect() as connection:
         assert connection.scalar(text("SELECT count(*) FROM retrieval_vectors")) == 1
+
+
+def test_complete_index_requires_full_coverage_and_reuses_published_index(
+    db_engine: Engine, chunk_set: tuple[int, int, int]
+) -> None:
+    _, set_id, chunk_id = chunk_set
+    profile = EmbeddingProfile(model_sha256="a" * 64, runtime_bundle_sha256="b" * 64)
+    owner = uuid4()
+    vector = [1.0] + [0.0] * 767
+    with try_advisory_lock(db_engine, retrieval_lock_key(set_id, profile)) as lock:
+        assert lock is not None
+        with Session(db_engine) as session, session.begin():
+            index = claim_index(
+                session, chunk_set_id=set_id, profile=profile, owner_token=owner, lock=lock
+            )
+            assert not index.reused
+            write_segments(
+                session,
+                index_id=index.index_id,
+                owner_token=owner,
+                segments=[VectorSegment(chunk_id, 0, 0, 4, 3, vector)],
+            )
+        with Session(db_engine) as session, session.begin(), pytest.raises(ValueError):
+            complete_index(session, index_id=index.index_id, owner_token=owner, lock=lock)
+        with Session(db_engine) as session, session.begin():
+            write_segments(
+                session,
+                index_id=index.index_id,
+                owner_token=owner,
+                segments=[VectorSegment(chunk_id, 1, 4, len("example source text"), 3, vector)],
+            )
+            count = complete_index(session, index_id=index.index_id, owner_token=owner, lock=lock)
+            assert count == 2
+        with Session(db_engine) as session, session.begin():
+            reused = claim_index(
+                session, chunk_set_id=set_id, profile=profile, owner_token=uuid4(), lock=lock
+            )
+            assert reused.index_id == index.index_id and reused.reused
+
+
+def test_stale_owner_cannot_write_or_complete(
+    db_engine: Engine, chunk_set: tuple[int, int, int]
+) -> None:
+    _, set_id, chunk_id = chunk_set
+    profile = EmbeddingProfile(model_sha256="a" * 64, runtime_bundle_sha256="b" * 64)
+    old_owner, new_owner = uuid4(), uuid4()
+    with try_advisory_lock(db_engine, retrieval_lock_key(set_id, profile)) as lock:
+        assert lock is not None
+        with Session(db_engine) as session, session.begin():
+            first = claim_index(
+                session, chunk_set_id=set_id, profile=profile, owner_token=old_owner, lock=lock
+            )
+        with Session(db_engine) as session, session.begin():
+            second = claim_index(
+                session, chunk_set_id=set_id, profile=profile, owner_token=new_owner, lock=lock
+            )
+            assert second.index_id == first.index_id
+        with Session(db_engine) as session, pytest.raises(JobLeaseLostError):
+            write_segments(
+                session,
+                index_id=first.index_id,
+                owner_token=old_owner,
+                segments=[VectorSegment(chunk_id, 0, 0, 1, 1, [1.0] + [0.0] * 767)],
+            )
+        with Session(db_engine) as session, pytest.raises(JobLeaseLostError):
+            complete_index(session, index_id=first.index_id, owner_token=old_owner, lock=lock)
+
+
+@pytest.mark.parametrize(
+    "vector", [[0.0] * 768, [float("nan")] * 768, [1.0] * 767, [2.0] + [0.0] * 767]
+)
+def test_invalid_vectors_are_rejected(
+    db_engine: Engine, chunk_set: tuple[int, int, int], vector: list[float]
+) -> None:
+    _, set_id, chunk_id = chunk_set
+    profile = EmbeddingProfile(model_sha256="a" * 64, runtime_bundle_sha256="b" * 64)
+    owner = uuid4()
+    with try_advisory_lock(db_engine, retrieval_lock_key(set_id, profile)) as lock:
+        assert lock is not None
+        with Session(db_engine) as session, session.begin():
+            index = claim_index(
+                session, chunk_set_id=set_id, profile=profile, owner_token=owner, lock=lock
+            )
+        with Session(db_engine) as session, pytest.raises(ValueError):
+            write_segments(
+                session,
+                index_id=index.index_id,
+                owner_token=owner,
+                segments=[VectorSegment(chunk_id, 0, 0, 1, 1, vector)],
+            )
+        with Session(db_engine) as session:
+            assert session.scalar(text("SELECT count(*) FROM retrieval_vectors")) == 0
+
+
+def test_publication_rolls_back_with_caller_transaction(
+    db_engine: Engine, chunk_set: tuple[int, int, int]
+) -> None:
+    _, set_id, chunk_id = chunk_set
+    profile = EmbeddingProfile(model_sha256="a" * 64, runtime_bundle_sha256="b" * 64)
+    owner = uuid4()
+    with try_advisory_lock(db_engine, retrieval_lock_key(set_id, profile)) as lock:
+        assert lock is not None
+        with Session(db_engine) as session, session.begin():
+            index = claim_index(
+                session, chunk_set_id=set_id, profile=profile, owner_token=owner, lock=lock
+            )
+            write_segments(
+                session,
+                index_id=index.index_id,
+                owner_token=owner,
+                segments=[
+                    VectorSegment(
+                        chunk_id, 0, 0, len("example source text"), 3, [1.0] + [0.0] * 767
+                    )
+                ],
+            )
+        with Session(db_engine) as session:
+            complete_index(session, index_id=index.index_id, owner_token=owner, lock=lock)
+            session.rollback()
+        with Session(db_engine) as session:
+            status = session.scalar(
+                text("SELECT status FROM retrieval_indexes WHERE id = :id"), {"id": index.index_id}
+            )
+            assert status == "building"
+
+
+def test_retry_clears_failed_index_and_fences_old_owner(
+    db_engine: Engine, chunk_set: tuple[int, int, int]
+) -> None:
+    _, set_id, chunk_id = chunk_set
+    profile = EmbeddingProfile(model_sha256="a" * 64, runtime_bundle_sha256="b" * 64)
+    owner = uuid4()
+    with try_advisory_lock(db_engine, retrieval_lock_key(set_id, profile)) as lock:
+        assert lock is not None
+        with Session(db_engine) as session, session.begin():
+            index = claim_index(
+                session, chunk_set_id=set_id, profile=profile, owner_token=owner, lock=lock
+            )
+            write_segments(
+                session,
+                index_id=index.index_id,
+                owner_token=owner,
+                segments=[VectorSegment(chunk_id, 0, 0, 4, 3, [1.0] + [0.0] * 767)],
+            )
+            fail_index(session, index_id=index.index_id, owner_token=owner)
+        with Session(db_engine) as session, session.begin():
+            retry = claim_index(
+                session, chunk_set_id=set_id, profile=profile, owner_token=uuid4(), lock=lock
+            )
+            assert retry.index_id == index.index_id and not retry.reused
+            assert session.scalar(text("SELECT count(*) FROM retrieval_vectors")) == 0
+        with Session(db_engine) as session, pytest.raises(JobLeaseLostError):
+            fail_index(session, index_id=index.index_id, owner_token=owner)
+
+
+@pytest.mark.parametrize("second_ordinal,second_start", [(1, 5), (1, 3), (2, 4)])
+def test_publication_rejects_gaps_overlaps_and_discontinuous_ordinals(
+    db_engine: Engine,
+    chunk_set: tuple[int, int, int],
+    second_ordinal: int,
+    second_start: int,
+) -> None:
+    _, set_id, chunk_id = chunk_set
+    profile = EmbeddingProfile(model_sha256="a" * 64, runtime_bundle_sha256="b" * 64)
+    owner = uuid4()
+    vector = [1.0] + [0.0] * 767
+    with try_advisory_lock(db_engine, retrieval_lock_key(set_id, profile)) as lock:
+        assert lock is not None
+        with Session(db_engine) as session, session.begin():
+            index = claim_index(
+                session, chunk_set_id=set_id, profile=profile, owner_token=owner, lock=lock
+            )
+            write_segments(
+                session,
+                index_id=index.index_id,
+                owner_token=owner,
+                segments=[
+                    VectorSegment(chunk_id, 0, 0, 4, 3, vector),
+                    VectorSegment(
+                        chunk_id,
+                        second_ordinal,
+                        second_start,
+                        len("example source text"),
+                        3,
+                        vector,
+                    ),
+                ],
+            )
+        with Session(db_engine) as session, pytest.raises(ValueError):
+            complete_index(session, index_id=index.index_id, owner_token=owner, lock=lock)
+
+
+def test_publication_requires_live_exclusive_lock(
+    db_engine: Engine, chunk_set: tuple[int, int, int]
+) -> None:
+    _, set_id, chunk_id = chunk_set
+    profile = EmbeddingProfile(model_sha256="a" * 64, runtime_bundle_sha256="b" * 64)
+    owner = uuid4()
+    key = retrieval_lock_key(set_id, profile)
+    with try_advisory_lock(db_engine, key) as lock:
+        assert lock is not None
+        with try_advisory_lock(db_engine, key) as competing_lock:
+            assert competing_lock is None
+        with Session(db_engine) as session, session.begin():
+            index = claim_index(
+                session, chunk_set_id=set_id, profile=profile, owner_token=owner, lock=lock
+            )
+            write_segments(
+                session,
+                index_id=index.index_id,
+                owner_token=owner,
+                segments=[
+                    VectorSegment(
+                        chunk_id, 0, 0, len("example source text"), 3, [1.0] + [0.0] * 767
+                    )
+                ],
+            )
+    with Session(db_engine) as session, pytest.raises(DatabaseUnavailableError):
+        complete_index(session, index_id=index.index_id, owner_token=owner, lock=lock)

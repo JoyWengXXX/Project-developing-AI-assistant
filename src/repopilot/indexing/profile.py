@@ -26,6 +26,7 @@ PYTHON_ALGORITHM = 1
 CSHARP_ALGORITHM = 1
 SCRIPT_ALGORITHM = 1
 JAVA_ALGORITHM = 1
+GO_ALGORITHM = 1
 
 
 @dataclass(frozen=True)
@@ -38,6 +39,7 @@ class IndexProfile:
     typescript_grammar: str
     javascript_grammar: str
     java_grammar: str
+    go_grammar: str
 
     @classmethod
     def from_settings(cls, settings: Settings) -> "IndexProfile":
@@ -51,6 +53,7 @@ class IndexProfile:
             typescript_grammar=version("tree-sitter-typescript"),
             javascript_grammar=version("tree-sitter-javascript"),
             java_grammar=version("tree-sitter-java"),
+            go_grammar=version("tree-sitter-go"),
         )
 
     def analyzers(self) -> dict[str, Any]:
@@ -85,6 +88,12 @@ class IndexProfile:
                 "tree_sitter": self.tree_sitter,
                 "grammar": self.java_grammar,
                 "algorithm": JAVA_ALGORITHM,
+            },
+            "go": {
+                "enabled": True,
+                "tree_sitter": self.tree_sitter,
+                "grammar": self.go_grammar,
+                "algorithm": GO_ALGORITHM,
             },
         }
 

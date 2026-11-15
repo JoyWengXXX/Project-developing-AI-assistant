@@ -139,3 +139,27 @@ def test_worker_indexes_java_from_git_and_api_searches_it(stack: Stack, client: 
     assert [(ref["kind"], ref["target"]) for ref in detail["imports"]] == [
         ("java_static_import", "java.util.Collections.emptyList")
     ]
+
+
+def test_worker_indexes_go_from_git_and_api_searches_it(stack: Stack, client: TestClient) -> None:
+    repository_id = register(
+        client,
+        stack.new_repo(
+            "go",
+            {"src/main.go": 'package demo\nimport alias "net/http"\ntype Server struct {}\n'},
+        ),
+    )
+    accepted = submit(client, repository_id, revision="HEAD")
+    job = wait_for_status(client, accepted["job"]["id"], {"succeeded", "failed"}, timeout=120)
+    assert job["status"] == "succeeded", job
+    snapshot_id = job["snapshot_id"]
+    results = client.get(
+        f"/api/v1/snapshots/{snapshot_id}/search/symbols",
+        params={"q": "Server", "language": "go", "kind": "struct"},
+    ).json()
+    item = results["items"][0]
+    assert (item["name"], item["start_line"]) == ("Server", 3)
+    detail = client.get(f"/api/v1/snapshots/{snapshot_id}/symbols/{item['symbol_id']}").json()
+    assert [(ref["kind"], ref["target"], ref["alias"]) for ref in detail["imports"]] == [
+        ("go_import", "net/http", "alias")
+    ]

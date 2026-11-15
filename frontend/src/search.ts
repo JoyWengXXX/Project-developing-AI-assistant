@@ -42,7 +42,7 @@ export const SEARCH_SYMBOL_KINDS = [
   'field',
 ] as const
 
-export const SEARCH_LANGUAGES = ['python', 'csharp', 'typescript', 'javascript', 'java', 'go'] as const
+export const SEARCH_LANGUAGES = ['python', 'csharp', 'typescript', 'javascript', 'java', 'go', 'rust'] as const
 
 // ---------- q 的檢查 ----------
 

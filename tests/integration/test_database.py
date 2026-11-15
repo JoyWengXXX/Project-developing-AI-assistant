@@ -40,7 +40,7 @@ def test_migrations_upgrade_empty_database_to_head(
 
 
 def test_migration_upgrade_is_repeatable_and_downgrade_to_base_works(
-    test_database_url: str, db_engine: Engine
+    test_database_url: str, db_engine: Engine, clean_repositories: None
 ) -> None:
     config = alembic_config(test_database_url)
 
@@ -63,7 +63,7 @@ def test_models_and_migrations_have_no_drift(test_database_url: str, db_engine: 
 
 
 def test_every_migration_step_upgrades_and_downgrades_one_revision_at_a_time(
-    test_database_url: str, db_engine: Engine
+    test_database_url: str, db_engine: Engine, clean_repositories: None
 ) -> None:
     config = alembic_config(test_database_url)
     script = ScriptDirectory.from_config(config)

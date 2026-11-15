@@ -61,11 +61,11 @@ function Node({ ctx, symbol }: { ctx: TreeContext; symbol: SymbolSummary }) {
           aria-current={selected ? 'true' : undefined}
           onClick={() => ctx.onSelect(symbol.symbol_id)}
         >
-          <span className="muted">{kindLabel(symbol.kind)}</span> <code>{symbol.kind === 'module' ? symbol.path : symbol.name}</code>
+          <span className="muted">{kindLabel(symbol.kind)}</span> <code>{symbol.kind === 'module' && symbol.language === 'python' ? symbol.path : symbol.name}</code>
         </button>
         <span className="muted symbol-meta">
           第 {symbol.start_line} 行{flags.length > 0 && `・${flags.join('、')}`}
-          {symbol.parent_id === null && symbol.kind !== 'module' && `・${symbol.path}`}
+          {symbol.parent_id === null && !(symbol.kind === 'module' && symbol.language === 'python') && `・${symbol.path}`}
         </span>
       </div>
       {open && symbol.has_children && <Children ctx={ctx} parentId={symbol.symbol_id} />}

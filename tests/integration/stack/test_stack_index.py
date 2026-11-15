@@ -163,3 +163,27 @@ def test_worker_indexes_go_from_git_and_api_searches_it(stack: Stack, client: Te
     assert [(ref["kind"], ref["target"], ref["alias"]) for ref in detail["imports"]] == [
         ("go_import", "net/http", "alias")
     ]
+
+
+def test_worker_indexes_rust_from_git_and_api_searches_it(stack: Stack, client: TestClient) -> None:
+    repository_id = register(
+        client,
+        stack.new_repo(
+            "rust",
+            {"src/lib.rs": "use std::io::Read;\nmod api { pub struct Server {} }\n"},
+        ),
+    )
+    accepted = submit(client, repository_id, revision="HEAD")
+    job = wait_for_status(client, accepted["job"]["id"], {"succeeded", "failed"}, timeout=120)
+    assert job["status"] == "succeeded", job
+    snapshot_id = job["snapshot_id"]
+    results = client.get(
+        f"/api/v1/snapshots/{snapshot_id}/search/symbols",
+        params={"q": "Server", "language": "rust", "kind": "struct"},
+    ).json()
+    item = results["items"][0]
+    assert (item["qualified_name"], item["start_line"]) == ("api.Server", 2)
+    detail = client.get(f"/api/v1/snapshots/{snapshot_id}/symbols/{item['symbol_id']}").json()
+    assert [(ref["kind"], ref["target"]) for ref in detail["imports"]] == [
+        ("rust_use", "std::io::Read")
+    ]

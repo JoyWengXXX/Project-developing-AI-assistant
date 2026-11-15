@@ -60,6 +60,7 @@ from repopilot.indexing.go_extractor import extract_go
 from repopilot.indexing.java_extractor import extract_java
 from repopilot.indexing.profile import IndexProfile
 from repopilot.indexing.python_extractor import extract_python
+from repopilot.indexing.rust_extractor import extract_rust
 from repopilot.indexing.script_extractor import extract_script
 from repopilot.indexing.types import FileExtraction, Language
 from repopilot.logging_config import APP_LOGGER_NAME
@@ -109,6 +110,7 @@ _EXTENSIONS: dict[Language, tuple[str, ...]] = {
     "javascript": (".js", ".jsx", ".mjs", ".cjs"),
     "java": (".java",),
     "go": (".go",),
+    "rust": (".rs",),
 }
 
 
@@ -392,6 +394,8 @@ def _extract(file_id: int, path: str, content: str, settings: Settings) -> FileE
             return extract_java(path, content, max_symbols=settings.index_max_symbols_per_file)
         if language == "go":
             return extract_go(path, content, max_symbols=settings.index_max_symbols_per_file)
+        if language == "rust":
+            return extract_rust(path, content, max_symbols=settings.index_max_symbols_per_file)
         return extract_python(path, content, max_symbols=settings.index_max_symbols_per_file)
     except MemoryError:
         raise  # 記憶體耗盡是工作失敗，不偽裝成單檔錯誤（規格 7.1）

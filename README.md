@@ -7,12 +7,12 @@ AI 輔助專案客製化平台：管理參考 repos 與目標 repo，依自然�
 ## 開發原則：多語言 repo
 
 RepoPilot 的產品目標是適用不同程式語言的 repo，不以 Python／C# 為永久限制。目前結構索引另有
-TypeScript／JavaScript／Java／Go 語法層級解析；其他符合匯入規則的文字檔可用檔名及文字搜尋，**不能**宣稱已解析其程式結構。
+TypeScript／JavaScript／Java／Go／Rust 語法層級解析；其他符合匯入規則的文字檔可用檔名及文字搜尋，**不能**宣稱已解析其程式結構。
 每個階段的規格與驗收都應區分各語言的實際能力、明示未支援範圍，並評估混合語言 repo；
 新增解析器的語言與時程需另行確認，不假設所有語言已受支援。
 
 第三階段（語意與混合搜尋）**進行中**：TypeScript／JavaScript 結構索引已實作，
-並以隔離 worker 堆疊及瀏覽器操作驗證代表情境；Java／Go 結構索引亦已實作並通過代表情境驗證。Rust、SQL 解析及跨 repo／快照搜尋尚未實作；
+並以隔離 worker 堆疊及瀏覽器操作驗證代表情境；Java／Go／Rust 結構索引亦已實作並通過代表情境驗證。SQL 解析及跨 repo／快照搜尋尚未實作；
 IBM embedding 僅做本機試跑，尚未整合產品。
 
 ## 文件
@@ -35,7 +35,7 @@ IBM embedding 僅做本機試跑，尚未整合產品。
 - 把 revision 解析為完整 commit SHA，**只讀 Git 物件**（不讀工作目錄）匯入成**快照**：保存路徑、UTF-8 文字內容、blob ID、SHA-256、位元組大小與跳過原因；同 repo、同 commit、同匯入設定不重複匯入；`.env`、私鑰與憑證檔不讀內容。
 - **背景匯入**（第二階段）：`import-jobs` 立即回 202，由 dispatcher 與 Celery worker（Docker Linux 容器）在背景匯入；同步的 `imports` 保留但**已棄用**。
 - **背景 GitHub 註冊與 fetch**（第二階段切片 5）：`registration-jobs`、`fetch-jobs` 立即回 202，由 worker 在背景 clone／fetch（可取消、有階段與暫存目錄大小進度、worker 被殺後會清理暫存目錄）；同步的 `POST /repositories/github`、`POST /repositories/{id}/fetch` 保留但**已棄用**。
-- **程式結構索引**：Python（`ast`）、C#、TypeScript、JavaScript、Java 與 Go（tree-sitter）做語法層級解析，**不執行、不編譯、不 import** 受分析的程式，也不做跨檔語意分析。TypeScript／JavaScript 包括 `.ts`、`.tsx`、`.mts`、`.cts`、`.js`、`.jsx`、`.mjs`、`.cjs`，支援具名函式與箭頭函式、類別及方法、TS 介面／型別別名／列舉及靜態 import；Java 的 `.java` 抽取 class、interface、enum、record、constructor、method 及一般／靜態 import；Go 的 `.go` 抽取 struct、interface、具名函式、方法與 import，方法不關聯 receiver，import 路徑保留原始跳脫寫法。語法錯誤標示部分解析。C# 的 partial 類別不合併，`#if` 分支標示條件式定義，欄位預設不抽取（`INDEX_CSHARP_INCLUDE_FIELDS=true` 可啟用）。其他語言只保存文字，不產生符號。主控台顯示索引狀態與符號樹；可透過 `POST /snapshots/{id}/index-jobs` 建立索引。新解析器改變索引設定雜湊，舊資料保留但須依需求重建；worker 映像需重新建置並重建容器才能載入新依賴。
+- **程式結構索引**：Python（`ast`）、C#、TypeScript、JavaScript、Java、Go 與 Rust（tree-sitter）做語法層級解析，**不執行、不編譯、不 import** 受分析的程式，也不做跨檔語意分析。TypeScript／JavaScript 包括 `.ts`、`.tsx`、`.mts`、`.cts`、`.js`、`.jsx`、`.mjs`、`.cjs`，支援具名函式與箭頭函式、類別及方法、TS 介面／型別別名／列舉及靜態 import；Java 的 `.java` 抽取 class、interface、enum、record、constructor、method 及一般／靜態 import；Go 的 `.go` 抽取 struct、interface、具名函式、方法與 import，方法不關聯 receiver，import 路徑保留原始跳脫寫法；Rust 的 `.rs` 抽取模組、struct、enum、trait、具名函式與 use，trait 顯示為介面，impl 的方法不關聯型別，不展開巨集。語法錯誤標示部分解析。C# 的 partial 類別不合併，`#if` 分支標示條件式定義，欄位預設不抽取（`INDEX_CSHARP_INCLUDE_FIELDS=true` 可啟用）。其他語言只保存文字，不產生符號。主控台顯示索引狀態與符號樹；可透過 `POST /snapshots/{id}/index-jobs` 建立索引。新解析器改變索引設定雜湊，舊資料保留但須依需求重建；worker 映像需重新建置並重建容器才能載入新依賴。
 - **參考版本**：每個 repo 可把一個已匯入的版本設為參考（固定的快照，不跟著分支前進）；**只是標記，尚未連到 Agent**。可移除已匯入的版本（含批次，只刪資料庫紀錄）。
 - 查詢 repo、快照、檔案、分支與標籤、commit 歷史、repo 概況、符號與背景工作狀態；GitHub 來源可 fetch；可移除已註冊的 repo。
 - **搜尋**（第二階段切片 8）：對已匯入的快照做三種字面（區分大小寫）子字串搜尋——檔名（`search/files`）、符號（`search/symbols`，需要已完成的結構索引）、內容（`search/text`，一個命中行一筆並帶片段；不依賴索引）。沒有正規表示式、模糊比對或相關性排序；沒有加 `pg_trgm`（20,000 檔合成快照的最壞情況單次約 3.6 秒，低於預設逾時 10 秒；真實 repo 與 Linux 容器內未驗證）。超過 `SEARCH_STATEMENT_TIMEOUT_SECONDS` 回 504 `search_timeout`。主控台在版本管理的「搜尋」面板使用。
@@ -63,15 +63,15 @@ docker compose up -d --wait db db-test
 #    已經有 .env 時不要再執行這行（Copy-Item 會直接覆蓋）
 Copy-Item .env.example .env
 
-# 3. 建立資料表（目前最新 migration 為 0011；升級既有資料庫也是這行）
+# 3. 建立資料表（目前最新 migration 為 0012；升級既有資料庫也是這行）
 uv run alembic upgrade head
-uv run alembic current        # 預期 0011 (head)
+uv run alembic current        # 預期 0012 (head)
 
 # 4. 啟動後端（終端機 1）
 uv run uvicorn repopilot.main:create_app --factory --reload
 ```
 
-**降版風險**：從 `0011`、`0010` 或 `0009` 各降一版不刪資料，但若存在該版本新增的語言或種類的索引資料會拒絕降版；從 `0008` 降到 `0007` 會刪除結構索引及符號等衍生資料，升版不會自動還原。需先評估備份與重建，勿在共用資料庫試跑。
+**降版風險**：從 `0012`、`0011`、`0010` 或 `0009` 各降一版不刪資料，但若存在該版本新增的語言或種類的索引資料會拒絕降版；從 `0008` 降到 `0007` 會刪除結構索引及符號等衍生資料，升版不會自動還原。需先評估備份與重建，勿在共用資料庫試跑。
 
 ```powershell
 # 5. 啟動主控台（終端機 2）；後端必須先啟動

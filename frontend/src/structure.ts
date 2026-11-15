@@ -18,7 +18,7 @@ export const PARSE_STATUS_LABEL: Record<ParseStatus, string> = {
 }
 
 export const LANGUAGE_LABEL: Record<string, string> = {
-  python: 'Python', csharp: 'C#', typescript: 'TypeScript', javascript: 'JavaScript', java: 'Java', go: 'Go',
+  python: 'Python', csharp: 'C#', typescript: 'TypeScript', javascript: 'JavaScript', java: 'Java', go: 'Go', rust: 'Rust',
 }
 
 export const SYMBOL_KIND_LABEL: Record<string, string> = {
@@ -82,6 +82,7 @@ export function errorPositionText(error: { line: number; column: number } | null
 
 /** import／using 一行的白話：`import os`、`from ..pkg import name as alias`、`using static System.Math`。 */
 export function importText(ref: ImportReference): string {
+  if (ref.kind === 'rust_use') return `use ${ref.target}`
   if (ref.kind === 'go_import') return `import ${ref.alias === null ? '' : `${ref.alias} `}"${ref.target}"`
   if (ref.kind === 'java_import') return `import ${ref.target}`
   if (ref.kind === 'java_static_import') return `import static ${ref.target}`
@@ -130,7 +131,7 @@ export function analyzersText(analyzers: Record<string, unknown>): string {
       )
     }
   }
-  for (const [language, label] of [['typescript', 'TypeScript'], ['javascript', 'JavaScript'], ['java', 'Java'], ['go', 'Go']] as const) {
+  for (const [language, label] of [['typescript', 'TypeScript'], ['javascript', 'JavaScript'], ['java', 'Java'], ['go', 'Go'], ['rust', 'Rust']] as const) {
     const analyzer = analyzers[language]
     if (typeof analyzer === 'object' && analyzer !== null) {
       const info = analyzer as Record<string, unknown>

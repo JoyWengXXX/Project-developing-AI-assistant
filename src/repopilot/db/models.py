@@ -394,7 +394,7 @@ class IndexedFile(Base):
         # 冗餘的唯一約束：讓 symbols 等表以複合外鍵保證「同一個索引」
         UniqueConstraint("id", "snapshot_index_id"),
         CheckConstraint(
-            "language IN ('python', 'csharp', 'typescript', 'javascript', 'java', 'go')",
+            "language IN ('python', 'csharp', 'typescript', 'javascript', 'java', 'go', 'rust')",
             name="language_valid",
         ),
         CheckConstraint(
@@ -459,7 +459,7 @@ class Symbol(Base):
             ondelete="CASCADE",
         ),
         CheckConstraint(
-            "language IN ('python', 'csharp', 'typescript', 'javascript', 'java', 'go')",
+            "language IN ('python', 'csharp', 'typescript', 'javascript', 'java', 'go', 'rust')",
             name="language_valid",
         ),
         CheckConstraint(
@@ -525,12 +525,13 @@ class ImportReference(Base):
             ondelete="CASCADE",
         ),
         CheckConstraint(
-            "language IN ('python', 'csharp', 'typescript', 'javascript', 'java', 'go')",
+            "language IN ('python', 'csharp', 'typescript', 'javascript', 'java', 'go', 'rust')",
             name="language_valid",
         ),
         CheckConstraint(
             "kind IN ('import', 'from_import', 'using', 'using_static', 'using_alias', "
-            "'global_using', 'script_import', 'java_import', 'java_static_import', 'go_import')",
+            "'global_using', 'script_import', 'java_import', 'java_static_import', "
+            "'go_import', 'rust_use')",
             name="kind_valid",
         ),
         CheckConstraint("line >= 1", name="line_valid"),

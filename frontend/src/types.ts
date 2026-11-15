@@ -375,11 +375,13 @@ export interface RetrievalSearchItem {
   content: string
   split_kind: 'structure' | 'paragraph' | 'text'
   support_level: 'structure' | 'text'
-  keyword_score: number
+  keyword_score?: number
+  semantic_score?: number
+  hybrid_score?: number
 }
 
 export interface RetrievalSearchResponse {
-  mode: 'keyword'
+  mode: 'keyword' | 'semantic' | 'hybrid'
   items: RetrievalSearchItem[]
 }
 

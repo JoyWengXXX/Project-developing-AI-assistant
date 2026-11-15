@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, Literal, Self
 
 from fastapi import Path, Query
 from pydantic import (
@@ -9,6 +9,7 @@ from pydantic import (
     Field,
     StringConstraints,
     field_validator,
+    model_validator,
 )
 
 from repopilot.search_query import keyword_terms
@@ -535,7 +536,7 @@ class RetrievalSearchRequest(BaseModel):
         min_length=1, max_length=20
     )
     query: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=512)]
-    mode: Literal["keyword"]
+    mode: Literal["keyword", "semantic", "hybrid"]
     limit: int = Field(default=10, ge=1, le=50)
 
     @field_validator("snapshot_ids")
@@ -548,8 +549,19 @@ class RetrievalSearchRequest(BaseModel):
     @field_validator("query")
     @classmethod
     def _valid_query(cls, value: str) -> str:
-        keyword_terms(value)
+        if "\x00" in value:
+            raise ValueError("The search query contains an invalid character.")
+        try:
+            value.encode("utf-8")
+        except UnicodeEncodeError:
+            raise ValueError("The search query is not valid UTF-8.") from None
         return value
+
+    @model_validator(mode="after")
+    def _valid_keyword_query(self) -> Self:
+        if self.mode != "semantic":
+            keyword_terms(self.query)
+        return self
 
 
 class RetrievalSearchItem(BaseModel):
@@ -563,11 +575,13 @@ class RetrievalSearchItem(BaseModel):
     content: str
     split_kind: Literal["structure", "paragraph", "text"]
     support_level: Literal["structure", "text"]
-    keyword_score: int
+    keyword_score: int | None = None
+    semantic_score: float | None = None
+    hybrid_score: float | None = None
 
 
 class RetrievalSearchResponse(BaseModel):
-    mode: Literal["keyword"]
+    mode: Literal["keyword", "semantic", "hybrid"]
     items: list[RetrievalSearchItem]
 
 

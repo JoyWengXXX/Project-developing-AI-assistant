@@ -99,7 +99,7 @@ export function SymbolTree({
       {loading && <p role="status">載入中…</p>}
       <ErrorBox error={error} />
       {data && data.total === 0 && (
-        <p className="empty">{pathPrefix === '' ? '這個索引沒有符號（沒有可解析的 Python 檔案）。' : '這個路徑前綴底下沒有符號。'}</p>
+        <p className="empty">{pathPrefix === '' ? '這個索引沒有符號。' : '這個路徑前綴底下沒有符號。'}</p>
       )}
       {data && data.total > 0 && (
         <>

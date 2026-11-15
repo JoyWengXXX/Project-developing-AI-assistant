@@ -39,7 +39,11 @@ PY = {
     "pkg/util.py": "def helper(): ...\nasync def run(): ...\n",
     "pkg/broken.py": "def oops(:\n",
 }
-NON_INDEXED = {"README.md": "# readme\n", "web/app.js": "class A {}\n", "src/App.cshtml": "@{ }\n"}
+NON_INDEXED = {
+    "README.md": "# readme\n",
+    "web/app.html": "<p>Example</p>\n",
+    "src/App.cshtml": "@{ }\n",
+}
 
 
 @pytest.fixture
@@ -130,13 +134,13 @@ def count(engine: Engine, table: str) -> int:
     return int(scalar(engine, f"SELECT count(*) FROM {table}"))  # noqa: S608 - 固定表名
 
 
-def test_only_python_and_csharp_files_are_indexed_and_the_summary_counts_them(
+def test_python_files_are_indexed_and_unsupported_files_are_not(
     db_engine: Engine, session: Session, snapshot_id: int, settings: Settings
 ) -> None:
     summary = build(db_engine, session, snapshot_id, settings)
 
     assert not summary.reused
-    assert summary.file_count == 3  # README.md、.js、.cshtml 沒有對應列：不宣稱理解其結構
+    assert summary.file_count == 3  # README.md、.html、.cshtml 沒有對應列
     assert summary.parse_error_count == 1  # broken.py
     assert count(db_engine, "indexed_files") == 3
     row = index_row(db_engine, snapshot_id)

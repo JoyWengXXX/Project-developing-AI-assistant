@@ -31,6 +31,7 @@ export const SEARCH_SYMBOL_KINDS = [
   'struct',
   'record',
   'interface',
+  'type_alias',
   'enum',
   'enum_member',
   'delegate',
@@ -41,7 +42,7 @@ export const SEARCH_SYMBOL_KINDS = [
   'field',
 ] as const
 
-export const SEARCH_LANGUAGES = ['python', 'csharp'] as const
+export const SEARCH_LANGUAGES = ['python', 'csharp', 'typescript', 'javascript'] as const
 
 // ---------- q 的檢查 ----------
 

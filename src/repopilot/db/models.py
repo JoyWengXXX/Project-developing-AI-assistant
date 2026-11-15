@@ -386,14 +386,16 @@ class SnapshotIndex(Base):
 
 
 class IndexedFile(Base):
-    """索引過的檔案（只有 Python／C# 檔；其他檔案沒有列，不宣稱理解其結構）。"""
+    """索引過的檔案；不支援的檔案沒有列，不宣稱理解其結構。"""
 
     __tablename__ = "indexed_files"
     __table_args__ = (
         UniqueConstraint("snapshot_index_id", "snapshot_file_id"),
         # 冗餘的唯一約束：讓 symbols 等表以複合外鍵保證「同一個索引」
         UniqueConstraint("id", "snapshot_index_id"),
-        CheckConstraint("language IN ('python', 'csharp')", name="language_valid"),
+        CheckConstraint(
+            "language IN ('python', 'csharp', 'typescript', 'javascript')", name="language_valid"
+        ),
         CheckConstraint(
             "parse_status IN ('parsed', 'parsed_with_errors', 'failed')", name="parse_status_valid"
         ),
@@ -455,10 +457,13 @@ class Symbol(Base):
             ["symbols.id", "symbols.snapshot_index_id"],
             ondelete="CASCADE",
         ),
-        CheckConstraint("language IN ('python', 'csharp')", name="language_valid"),
         CheckConstraint(
-            "kind IN ('module', 'namespace', 'class', 'struct', 'record', 'interface', 'enum', "
-            "'enum_member', 'delegate', 'function', 'method', 'constructor', 'property', 'field')",
+            "language IN ('python', 'csharp', 'typescript', 'javascript')", name="language_valid"
+        ),
+        CheckConstraint(
+            "kind IN ('module', 'namespace', 'class', 'struct', 'record', 'interface', "
+            "'type_alias', 'enum', 'enum_member', 'delegate', 'function', 'method', "
+            "'constructor', 'property', 'field')",
             name="kind_valid",
         ),
         CheckConstraint("start_line >= 1 AND end_line >= start_line", name="lines_valid"),
@@ -517,10 +522,12 @@ class ImportReference(Base):
             ["symbols.id", "symbols.snapshot_index_id"],
             ondelete="CASCADE",
         ),
-        CheckConstraint("language IN ('python', 'csharp')", name="language_valid"),
+        CheckConstraint(
+            "language IN ('python', 'csharp', 'typescript', 'javascript')", name="language_valid"
+        ),
         CheckConstraint(
             "kind IN ('import', 'from_import', 'using', 'using_static', 'using_alias', "
-            "'global_using')",
+            "'global_using', 'script_import')",
             name="kind_valid",
         ),
         CheckConstraint("line >= 1", name="line_valid"),

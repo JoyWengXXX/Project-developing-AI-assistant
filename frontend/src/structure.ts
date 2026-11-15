@@ -17,7 +17,9 @@ export const PARSE_STATUS_LABEL: Record<ParseStatus, string> = {
   failed: '無法解析（整個檔案沒有符號）',
 }
 
-export const LANGUAGE_LABEL: Record<string, string> = { python: 'Python', csharp: 'C#' }
+export const LANGUAGE_LABEL: Record<string, string> = {
+  python: 'Python', csharp: 'C#', typescript: 'TypeScript', javascript: 'JavaScript',
+}
 
 export const SYMBOL_KIND_LABEL: Record<string, string> = {
   module: '模組',
@@ -26,6 +28,7 @@ export const SYMBOL_KIND_LABEL: Record<string, string> = {
   struct: 'struct',
   record: 'record',
   interface: '介面',
+  type_alias: '型別別名',
   enum: '列舉',
   enum_member: '列舉成員',
   delegate: '委派',
@@ -79,6 +82,16 @@ export function errorPositionText(error: { line: number; column: number } | null
 
 /** import／using 一行的白話：`import os`、`from ..pkg import name as alias`、`using static System.Math`。 */
 export function importText(ref: ImportReference): string {
+  if (ref.kind === 'script_import') {
+    if (ref.imported_name === null) return `import '${ref.target}'`
+    const alias = ref.alias === null ? '' : ` as ${ref.alias}`
+    const name = ref.imported_name === 'default'
+      ? ref.alias ?? 'default'
+      : ref.imported_name === '*'
+        ? `*${alias}`
+        : `{ ${ref.imported_name}${alias} }`
+    return `import ${name} from '${ref.target}'`
+  }
   if (ref.kind === 'using') return `using ${ref.target}`
   if (ref.kind === 'using_static') return `using static ${ref.target}`
   if (ref.kind === 'global_using') return `global using ${ref.alias === null ? '' : `${ref.alias} = `}${ref.target}`
@@ -112,6 +125,13 @@ export function analyzersText(analyzers: Record<string, unknown>): string {
       parts.push(
         `C# 抽取器（tree-sitter ${text(info.tree_sitter)}，tree-sitter-c-sharp ${text(info.grammar)}，ABI ${text(info.abi_version)}，規則版本 ${text(info.algorithm)}${fields}）`,
       )
+    }
+  }
+  for (const [language, label] of [['typescript', 'TypeScript'], ['javascript', 'JavaScript']] as const) {
+    const analyzer = analyzers[language]
+    if (typeof analyzer === 'object' && analyzer !== null) {
+      const info = analyzer as Record<string, unknown>
+      parts.push(`${label} 抽取器（tree-sitter ${text(info.tree_sitter)}，文法 ${text(info.grammar)}，規則版本 ${text(info.algorithm)}）`)
     }
   }
   return parts.length === 0 ? '沒有抽取器資訊' : parts.join('；')

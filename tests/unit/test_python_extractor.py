@@ -242,6 +242,8 @@ def test_index_profile_hash_changes_with_versions_limits_and_the_field_switch() 
         dataclasses.replace(base, python_major_minor="3.99"),
         dataclasses.replace(base, tree_sitter="9.9.9"),
         dataclasses.replace(base, csharp_grammar="9.9.9"),
+        dataclasses.replace(base, typescript_grammar="9.9.9"),
+        dataclasses.replace(base, javascript_grammar="9.9.9"),
     ]
     assert all(profile.hash() != base.hash() for profile in changed)
     csharp = base.analyzers()["csharp"]

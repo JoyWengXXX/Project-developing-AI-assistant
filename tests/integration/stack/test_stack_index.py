@@ -71,3 +71,39 @@ def test_an_index_job_runs_in_the_container_without_reading_the_repository(
     assert job["status"] == "succeeded", job
     assert job["kind"] == "snapshot_index"
     assert client.get(f"/api/v1/snapshots/{snapshot_id}/index").json()["status"] == "completed"
+
+
+def test_worker_indexes_script_files_from_git_and_api_searches_them(
+    stack: Stack, client: TestClient
+) -> None:
+    repository_id = register(
+        client,
+        stack.new_repo(
+            "scripts",
+            {
+                "src/auth.ts": 'import { hash as h } from "crypto";\n'
+                "export type UserId = string;\n",
+                "src/Card.tsx": "export const Card = () => <div>Hello</div>;\n",
+                "src/view.jsx": "export function View() { return <div>OK</div>; }\n",
+                "src/broken.js": "function okay() {}\nfunction broken( {\n",
+            },
+        ),
+    )
+    accepted = submit(client, repository_id, revision="HEAD")
+    job = wait_for_status(client, accepted["job"]["id"], {"succeeded", "failed"}, timeout=120)
+    assert job["status"] == "succeeded", job
+    snapshot_id = job["snapshot_id"]
+
+    index = client.get(f"/api/v1/snapshots/{snapshot_id}/index").json()
+    assert index["counts"]["files_by_language"] == {"typescript": 2, "javascript": 2}
+    problems = client.get(
+        f"/api/v1/snapshots/{snapshot_id}/index/files", params={"has_problems": True}
+    ).json()
+    assert [(item["path"], item["parse_status"]) for item in problems["items"]] == [
+        ("src/broken.js", "parsed_with_errors")
+    ]
+    results = client.get(
+        f"/api/v1/snapshots/{snapshot_id}/search/symbols",
+        params={"q": "UserId", "language": "typescript", "kind": "type_alias"},
+    ).json()
+    assert [(item["name"], item["start_line"]) for item in results["items"]] == [("UserId", 2)]

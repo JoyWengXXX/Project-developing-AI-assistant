@@ -10,6 +10,7 @@ from pathlib import Path
 from repopilot.embedding.local_runtime import EmbeddingRuntimeError
 from repopilot.embedding.profile import EmbeddingProfile
 from repopilot.embedding.socket_client import SocketEmbeddingClient
+from repopilot.embedding.socket_health import socket_ready
 from repopilot.embedding.socket_server import handle_request
 
 
@@ -29,7 +30,7 @@ class TestEmbeddingUnixSocket(unittest.TestCase):
                 server.settimeout(15)
 
                 def serve() -> None:
-                    for _ in range(3):
+                    for _ in range(4):
                         with server.accept()[0] as connection:
                             handle_request(
                                 connection,
@@ -42,6 +43,7 @@ class TestEmbeddingUnixSocket(unittest.TestCase):
                 thread.start()
                 client = SocketEmbeddingClient(socket_path=path, profile=profile)
                 try:
+                    self.assertTrue(socket_ready(path))
                     client.verify_identity()
                     self.assertEqual(len(client.embed("fake source")), 768)
                 finally:
@@ -50,3 +52,4 @@ class TestEmbeddingUnixSocket(unittest.TestCase):
                 os.chmod(path, 0o666)  # noqa: S103 - 驗證拒絕不安全權限
                 with self.assertRaises(EmbeddingRuntimeError):
                     client.verify_identity()
+        self.assertFalse(socket_ready(path))

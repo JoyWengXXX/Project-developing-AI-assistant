@@ -148,6 +148,10 @@ services:
       - type: bind
         source: ${WORKER_MANAGED_HOST_DIR:-./.test-managed}
         target: /mnt/managed
+      - type: volume
+        source: embedding_socket
+        target: /run/embed
+        read_only: true
     # Celery 的 warm shutdown 會等手上的任務；超過寬限期被 SIGKILL 時，租約過期後由復原掃描接手
     stop_grace_period: 60s
     healthcheck:
@@ -157,6 +161,61 @@ services:
       retries: 6
       start_period: 40s
     networks: [default, jobs]
+
+  embedding-init:
+    image: repopilot-worker:stage02-slice3
+    profiles: ["embedding"]
+    user: "0:0"
+    network_mode: none
+    read_only: true
+    cap_drop: [ALL]
+    cap_add: [CHOWN, FOWNER]
+    security_opt:
+      - no-new-privileges:true
+    entrypoint: ["sh", "-c", "chown 10001:10001 /run/embed && chmod 700 /run/embed"]
+    volumes:
+      - embedding_socket:/run/embed
+
+  embedding:
+    build:
+      context: .
+      dockerfile: docker/embedding.Dockerfile
+    image: repopilot-embedding:stage03
+    profiles: ["embedding"]
+    user: "10001:10001"
+    network_mode: none
+    read_only: true
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp
+    depends_on:
+      embedding-init: { condition: service_completed_successfully }
+    command:
+      - python
+      - -m
+      - repopilot.embedding.isolated_runtime
+      - --model
+      - /model/model.gguf
+      - --model-sha256
+      - ${EMBEDDING_MODEL_SHA256:-}
+      - --socket
+      - /run/embed/runtime.sock
+    volumes:
+      - type: bind
+        source: ${EMBEDDING_MODEL_HOST_PATH:-./.embedding-model-not-configured}
+        target: /model/model.gguf
+        read_only: true
+        bind:
+          create_host_path: false
+      - embedding_socket:/run/embed
+    healthcheck:
+      test: ["CMD", "python", "-m", "repopilot.embedding.socket_health"]
+      interval: 30s
+      timeout: 15s
+      retries: 5
+      start_period: 120s
 
   # ---- 測試堆疊（profile jobs-test）----
   # 由 tests/integration/stack 的 pytest fixture 啟動與停止（會設定 WORKER_TEST_*_HOST_DIR 為專案內的
@@ -278,3 +337,4 @@ networks:
 volumes:
   postgres_dev_data:
   redis_dev_data:
+  embedding_socket:

@@ -40,8 +40,8 @@ IBM embedding 執行器已完成內部假資料試跑，尚未整合產品。
 - **程式結構索引**：Python（`ast`）、C#、TypeScript、JavaScript、Java、Go 與 Rust（tree-sitter）做語法層級解析，**不執行、不編譯、不 import** 受分析的程式，也不做跨檔語意分析。TypeScript／JavaScript 包括 `.ts`、`.tsx`、`.mts`、`.cts`、`.js`、`.jsx`、`.mjs`、`.cjs`，支援具名函式與箭頭函式、類別及方法、TS 介面／型別別名／列舉及靜態 import；Java 的 `.java` 抽取 class、interface、enum、record、constructor、method 及一般／靜態 import；Go 的 `.go` 抽取 struct、interface、具名函式、方法與 import，方法不關聯 receiver，import 路徑保留原始跳脫寫法；Rust 的 `.rs` 抽取模組、struct、enum、trait、具名函式與 use，trait 顯示為介面，impl 的方法不關聯型別，不展開巨集。語法錯誤標示部分解析。C# 的 partial 類別不合併，`#if` 分支標示條件式定義，欄位預設不抽取（`INDEX_CSHARP_INCLUDE_FIELDS=true` 可啟用）。其他未列於本項或下項的語言只保存文字，不產生符號。主控台顯示索引狀態與符號樹；可透過 `POST /snapshots/{id}/index-jobs` 建立索引。新解析器改變索引設定雜湊，舊資料保留但須依需求重建；worker 映像需重新建置並重建容器才能載入新依賴。
 - **SQL 結構索引**：SQLFluff 語法層級抽取 `CREATE TABLE`、`VIEW`、`FUNCTION`、`PROCEDURE` 的受支援宣告，不執行 SQL 或模板，不解析跨檔關係。方言不自動推測：`INDEX_SQL_DIALECT` 可設 `postgres`、`tsql`、`mysql`、`sqlite`；檔名以 `.postgres.sql`、`.tsql.sql`、`.mysql.sql`、`.sqlite.sql` 結尾時覆寫預設，適合混合方言。未知方言、超過 `INDEX_SQL_MAX_FILE_BYTES`（預設 20,000 位元組）或宣告名稱超過 2,000 UTF-8 位元組的檔案列為無法解析，仍可使用文字搜尋。API 的 `.env` 和 worker 的 `.env.worker` 必須使用相同設定。四種方言只驗證代表宣告，完整語法、大型 SQL 檔案與效能未驗證。
 - **檢索片段基礎**：依 UTF-8 位元組上限切分已完成快照的已匯入文字；使用完成的結構索引輔助切分，其餘文字依段落或行切分，超長行以字元切分。片段記錄來源、行號、字元區間、切分方式及內容雜湊；整份集合在交易提交後才可見。片段送入模型前另依實際 tokenizer 上限重切；尚無片段操作介面。
-- **本機 embedding 執行器基礎**：執行器核對模型 SHA-256、模型路徑與維度，先計算 token，拒絕超過 512 token 的輸入，並檢查輸出向量。Linux 隔離執行器使用私有 Unix socket；已用 IBM Granite 模型及假資料驗證內部資料流。正式 Compose 部署、供應鏈信任、所有錯誤日誌與防外傳措施尚未完整驗證，不能據此將敏感內容交給執行器。
-- **向量儲存與背景工作基礎**：PostgreSQL 17 映像加入 pgvector 0.8.1；migration `0015` 啟用 extension，`0016` 新增帶片段歸屬與設定識別的 768 維向量資料表，`0017` 加入檢索工作種類與階段。已實作背景工作入口、租約與完成交易；隔離容器以真實模型和假資料驗證 worker 執行。Compose 部署、向量搜尋與操作介面尚未完成。
+- **本機 embedding 執行器基礎**：執行器核對模型 SHA-256、模型路徑與維度，先計算 token，拒絕超過 512 token 的輸入，並檢查輸出向量。Linux 隔離執行器使用私有 Unix socket；已用 IBM Granite 模型及假資料驗證 Compose 模型服務與 worker 資料流。供應鏈信任、所有錯誤日誌與防外傳措施尚未完整驗證，不能據此將敏感內容交給執行器。
+- **向量儲存與背景工作基礎**：PostgreSQL 17 映像加入 pgvector 0.8.1；migration `0015` 啟用 extension，`0016` 新增帶片段歸屬與設定識別的 768 維向量資料表，`0017` 加入檢索工作種類與階段。已實作背景工作入口、租約與完成交易；隔離容器以真實模型和假資料驗證 worker 執行。向量搜尋與操作介面尚未完成。
 - **參考版本**：每個 repo 可把一個已匯入的版本設為參考（固定的快照，不跟著分支前進）；**只是標記，尚未連到 Agent**。可移除已匯入的版本（含批次，只刪資料庫紀錄）。
 - 查詢 repo、快照、檔案、分支與標籤、commit 歷史、repo 概況、符號與背景工作狀態；GitHub 來源可 fetch；可移除已註冊的 repo。
 - **搜尋**（第二階段切片 8）：對已匯入的快照做三種字面（區分大小寫）子字串搜尋——檔名（`search/files`）、符號（`search/symbols`，需要已完成的結構索引）、內容（`search/text`，一個命中行一筆並帶片段；不依賴索引）。沒有正規表示式、模糊比對或相關性排序；沒有加 `pg_trgm`（20,000 檔合成快照的最壞情況單次約 3.6 秒，低於預設逾時 10 秒；真實 repo 與 Linux 容器內未驗證）。超過 `SEARCH_STATEMENT_TIMEOUT_SECONDS` 回 504 `search_timeout`。主控台在版本管理的「搜尋」面板使用。
@@ -170,6 +170,26 @@ docker compose --profile jobs stop worker dispatcher redis
 - **測試堆疊**：`redis-test`、`dispatcher-test`、`worker-test`（profile `jobs-test`）連 `db-test`，與開發的 `db`、`redis` 分屬不同 Docker 網路；由 `stack` 測試自動啟停，見下方「測試與品質檢查」。
 - 切片 1 的 spike 腳本在 `scripts\spike\`（腳本檔頭有說明）；切片 3 起部分腳本已不適用，未修改也未重跑。
 
+### 隔離 embedding 服務（第三階段）
+
+此服務尚未接上搜尋或主控台。使用前先自行取得相容的 768 維 IBM Granite GGUF 模型，存於 repo 外；下例路徑只是範例。API、worker 和隔離服務必須使用相同模型識別。
+
+1. 在 `.env` 設定 `EMBEDDING_MODEL_HOST_PATH` 與 `EMBEDDING_MODEL_SHA256`；後者須是小寫 SHA-256。先確認模型來源，再自行核對雜湊。
+2. 依序建置 worker 與模型映像。隔離服務不連網、以非 root 執行，模型掛載唯讀。
+
+```powershell
+(Get-FileHash D:\models\example.gguf -Algorithm SHA256).Hash.ToLowerInvariant()
+docker compose --profile jobs build worker
+docker compose --profile embedding build embedding
+docker compose --profile embedding up -d --wait embedding
+docker compose --profile embedding logs embedding
+```
+
+3. 從啟動日誌取得 `runtime_bundle_sha256`，自行確認執行環境後，將它填入 `.env` 與 `.env.worker` 的 `EMBEDDING_RUNTIME_SHA256`；兩者的 `EMBEDDING_MODEL_SHA256` 也必須一致。`.env.worker` 再設 `EMBEDDING_SOCKET_PATH=/run/embed/runtime.sock`。
+4. 重啟 API，並重建 worker 容器以讀取設定：`docker compose --profile jobs up -d --wait worker dispatcher`。停止模型服務可執行 `docker compose --profile embedding stop embedding`；不要使用 `down` 清除共享資源。
+
+runtime 雜湊是當前映像的識別，不是供應鏈驗證；重建映像後須重新核對。Docker 管理者及可存取 socket 的程序仍可接觸模型輸入。**未驗證**所有錯誤日誌、主機模型被修改及完整防外傳；不要因此將敏感內容交給本服務。
+
 ## 主控台操作流程
 
 React + TypeScript + Vite 的最小操作主控台（`frontend/`），用來以點擊理解「註冊 → 匯入 → 參考 → 檔案」的流程並對照 API；只呼叫下方 API 一覽的端點，不在前端重做業務規則，也沒有登入。結構見 [architecture.md「前端主控台結構」](docs/architecture.md#前端主控台結構)，逐區塊導覽見[學習筆記](docs/learning/stage-01.md#12-主控台導覽)。
@@ -221,7 +241,7 @@ React + TypeScript + Vite 的最小操作主控台（`frontend/`），用來以�
 | GET | `/api/v1/snapshots/{id}/files` | 檔案列表（不含 `content`；`status`、`path_prefix`、`limit`、`offset`） | 200 `{items, total, limit, offset}`；409 `snapshot_not_completed` |
 | GET | `/api/v1/snapshots/{id}/files/{file_id}` | 單檔含 `content`（`skipped` 為 `null`，帶 `skip_reason`） | 200；404 `snapshot_file_not_found`；409 `snapshot_not_completed`（[D30](docs/architecture.md)） |
 | POST | `/api/v1/snapshots/{id}/index-jobs` | **背景建立結構索引**（切片 6）：只讀資料庫裡的快照內容（不碰 Git）；同快照、同索引設定進行中只有一個 job；失敗或取消後再提交會重新排入同一個 job | 202＋`Location`；200 `reused=true`（目前設定的索引已完成）；404 `snapshot_not_found`；409 `snapshot_not_completed`（[D45](docs/architecture.md)） |
-| POST | `/api/v1/snapshots/{id}/retrieval-jobs` | 背景建立檢索索引；需要 API 與 worker 的模型／執行器 SHA-256 一致，worker 另需私有 socket。Compose 整合尚未完成 | 202＋`Location`；200 `reused=true`；404 `snapshot_not_found`；409 `snapshot_not_completed`；503 `embedding_not_configured` |
+| POST | `/api/v1/snapshots/{id}/retrieval-jobs` | 背景建立檢索索引；需要 API 與 worker 的模型／執行器 SHA-256 一致，worker 另需私有 socket | 202＋`Location`；200 `reused=true`；404 `snapshot_not_found`；409 `snapshot_not_completed`；503 `embedding_not_configured` |
 | GET | `/api/v1/snapshots/{id}/index` | 快照在**目前設定**下的索引狀態：`none`（沒有索引，200 不是錯誤）、`building`、`completed`（另有 `counts`：依語言、解析狀態、符號種類）、`failed`；`analyzers` 是抽取器與版本 | 200；404；409 `snapshot_not_completed` |
 | GET | `/api/v1/snapshots/{id}/index/files` | 被索引的檔案、解析狀態與 `error_kind`（`has_problems`、`language`、`limit`、`offset`；依 path 排序）；只有第一個語法錯誤的位置，**沒有程式碼片段** | 200；409 `snapshot_not_completed`、`snapshot_index_not_ready`（`details.index_status`） |
 | GET | `/api/v1/snapshots/{id}/symbols` | 符號列表（`kind`、`parent_id`、`top_level`、`file_id`、`path_prefix`、`limit`、`offset`；依 path、起始行排序；`has_children` 供符號樹逐層載入）；只採用 `completed` 的索引 | 200；409 `snapshot_not_completed`、`snapshot_index_not_ready` |

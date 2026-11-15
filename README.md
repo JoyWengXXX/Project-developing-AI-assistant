@@ -15,6 +15,8 @@ TypeScript／JavaScript／Java／Go／Rust／SQL 語法層級解析；其他符�
 並以隔離 worker 堆疊及瀏覽器操作驗證代表情境；Java／Go／Rust 結構索引亦已實作並通過代表情境驗證。SQL 四種方言的代表宣告已通過隔離測試，跨 repo／快照搜尋尚未實作；
 IBM embedding 僅做本機試跑，尚未整合產品。
 
+檢索片段的切分與資料儲存基礎已實作；目前尚未連接背景工作、API 或主控台，也不是已完成的語意索引。
+
 ## 文件
 
 > **`docs/` 目錄只是本機參考，已被 `.gitignore`，不在版本庫**；在 GitHub 上看這份 README 時，下列 `docs/` 連結會失效。
@@ -37,6 +39,7 @@ IBM embedding 僅做本機試跑，尚未整合產品。
 - **背景 GitHub 註冊與 fetch**（第二階段切片 5）：`registration-jobs`、`fetch-jobs` 立即回 202，由 worker 在背景 clone／fetch（可取消、有階段與暫存目錄大小進度、worker 被殺後會清理暫存目錄）；同步的 `POST /repositories/github`、`POST /repositories/{id}/fetch` 保留但**已棄用**。
 - **程式結構索引**：Python（`ast`）、C#、TypeScript、JavaScript、Java、Go 與 Rust（tree-sitter）做語法層級解析，**不執行、不編譯、不 import** 受分析的程式，也不做跨檔語意分析。TypeScript／JavaScript 包括 `.ts`、`.tsx`、`.mts`、`.cts`、`.js`、`.jsx`、`.mjs`、`.cjs`，支援具名函式與箭頭函式、類別及方法、TS 介面／型別別名／列舉及靜態 import；Java 的 `.java` 抽取 class、interface、enum、record、constructor、method 及一般／靜態 import；Go 的 `.go` 抽取 struct、interface、具名函式、方法與 import，方法不關聯 receiver，import 路徑保留原始跳脫寫法；Rust 的 `.rs` 抽取模組、struct、enum、trait、具名函式與 use，trait 顯示為介面，impl 的方法不關聯型別，不展開巨集。語法錯誤標示部分解析。C# 的 partial 類別不合併，`#if` 分支標示條件式定義，欄位預設不抽取（`INDEX_CSHARP_INCLUDE_FIELDS=true` 可啟用）。其他未列於本項或下項的語言只保存文字，不產生符號。主控台顯示索引狀態與符號樹；可透過 `POST /snapshots/{id}/index-jobs` 建立索引。新解析器改變索引設定雜湊，舊資料保留但須依需求重建；worker 映像需重新建置並重建容器才能載入新依賴。
 - **SQL 結構索引**：SQLFluff 語法層級抽取 `CREATE TABLE`、`VIEW`、`FUNCTION`、`PROCEDURE` 的受支援宣告，不執行 SQL 或模板，不解析跨檔關係。方言不自動推測：`INDEX_SQL_DIALECT` 可設 `postgres`、`tsql`、`mysql`、`sqlite`；檔名以 `.postgres.sql`、`.tsql.sql`、`.mysql.sql`、`.sqlite.sql` 結尾時覆寫預設，適合混合方言。未知方言、超過 `INDEX_SQL_MAX_FILE_BYTES`（預設 20,000 位元組）或宣告名稱超過 2,000 UTF-8 位元組的檔案列為無法解析，仍可使用文字搜尋。API 的 `.env` 和 worker 的 `.env.worker` 必須使用相同設定。四種方言只驗證代表宣告，完整語法、大型 SQL 檔案與效能未驗證。
+- **檢索片段基礎**：可在內部服務中依 UTF-8 位元組上限切分已完成快照的已匯入文字；使用完成的結構索引輔助切分，其餘文字依段落或行切分，超長行以字元切分。片段記錄來源、行號、字元區間、切分方式及內容雜湊；整份集合在交易提交後才可見。片段大小不是模型 token 上限，模型整合時仍須驗證並處理 token 限制。尚無公開操作介面或向量。
 - **參考版本**：每個 repo 可把一個已匯入的版本設為參考（固定的快照，不跟著分支前進）；**只是標記，尚未連到 Agent**。可移除已匯入的版本（含批次，只刪資料庫紀錄）。
 - 查詢 repo、快照、檔案、分支與標籤、commit 歷史、repo 概況、符號與背景工作狀態；GitHub 來源可 fetch；可移除已註冊的 repo。
 - **搜尋**（第二階段切片 8）：對已匯入的快照做三種字面（區分大小寫）子字串搜尋——檔名（`search/files`）、符號（`search/symbols`，需要已完成的結構索引）、內容（`search/text`，一個命中行一筆並帶片段；不依賴索引）。沒有正規表示式、模糊比對或相關性排序；沒有加 `pg_trgm`（20,000 檔合成快照的最壞情況單次約 3.6 秒，低於預設逾時 10 秒；真實 repo 與 Linux 容器內未驗證）。超過 `SEARCH_STATEMENT_TIMEOUT_SECONDS` 回 504 `search_timeout`。主控台在版本管理的「搜尋」面板使用。
@@ -64,15 +67,15 @@ docker compose up -d --wait db db-test
 #    已經有 .env 時不要再執行這行（Copy-Item 會直接覆蓋）
 Copy-Item .env.example .env
 
-# 3. 建立資料表（目前最新 migration 為 0013；升級既有資料庫也是這行）
+# 3. 建立資料表（目前最新 migration 為 0014；升級既有資料庫也是這行）
 uv run alembic upgrade head
-uv run alembic current        # 預期 0013 (head)
+uv run alembic current        # 預期 0014 (head)
 
 # 4. 啟動後端（終端機 1）
 uv run uvicorn repopilot.main:create_app --factory --reload
 ```
 
-**降版風險**：從 `0013`、`0012`、`0011`、`0010` 或 `0009` 各降一版不刪資料，但若存在該版本新增的語言或種類的索引資料會拒絕降版；從 `0008` 降到 `0007` 會刪除結構索引及符號等衍生資料，升版不會自動還原。需先評估備份與重建，勿在共用資料庫試跑。
+**降版風險**：`0014` 存在片段集合時拒絕降版；從 `0013`、`0012`、`0011`、`0010` 或 `0009` 各降一版不刪資料，但若存在該版本新增的語言或種類的索引資料會拒絕降版；從 `0008` 降到 `0007` 會刪除結構索引及符號等衍生資料，升版不會自動還原。需先評估備份與重建，勿在共用資料庫試跑。
 
 ```powershell
 # 5. 啟動主控台（終端機 2）；後端必須先啟動

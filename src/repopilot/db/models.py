@@ -137,6 +137,7 @@ class SnapshotFile(Base):
     __tablename__ = "snapshot_files"
     __table_args__ = (
         UniqueConstraint("snapshot_id", "path"),
+        UniqueConstraint("id", "snapshot_id"),
         CheckConstraint("status IN ('imported', 'skipped')", name="status_valid"),
         CheckConstraint(
             "(status = 'imported') = (content IS NOT NULL)", name="content_matches_status"
@@ -152,6 +153,68 @@ class SnapshotFile(Base):
     content: Mapped[str | None] = mapped_column(Text)
     status: Mapped[str] = mapped_column(String(20))
     skip_reason: Mapped[str | None] = mapped_column(String(30))
+
+
+class RetrievalChunkSet(Base):
+    """單一快照與切分設定下的完整片段集合，不代表 embedding 已完成。"""
+
+    __tablename__ = "retrieval_chunk_sets"
+    __table_args__ = (
+        UniqueConstraint("snapshot_id", "profile_hash"),
+        UniqueConstraint("id", "snapshot_id"),
+        CheckConstraint("max_bytes >= 4", name="max_bytes_valid"),
+        CheckConstraint("chunk_count >= 0", name="chunk_count_nonnegative"),
+        CheckConstraint(
+            "(structure_index_id IS NULL) = (structure_profile_hash IS NULL)",
+            name="structure_provenance_valid",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    snapshot_id: Mapped[int] = mapped_column(ForeignKey("snapshots.id", ondelete="CASCADE"))
+    profile_hash: Mapped[str] = mapped_column(String(64))
+    max_bytes: Mapped[int] = mapped_column(Integer)
+    structure_index_id: Mapped[int | None] = mapped_column(Integer)
+    structure_profile_hash: Mapped[str | None] = mapped_column(String(64))
+    chunk_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+
+
+class RetrievalChunk(Base):
+    """快照文字的半開字元區間，複合外鍵禁止跨快照引用。"""
+
+    __tablename__ = "retrieval_chunks"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["chunk_set_id", "snapshot_id"],
+            ["retrieval_chunk_sets.id", "retrieval_chunk_sets.snapshot_id"],
+            ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["snapshot_file_id", "snapshot_id"],
+            ["snapshot_files.id", "snapshot_files.snapshot_id"],
+            ondelete="CASCADE",
+        ),
+        UniqueConstraint("chunk_set_id", "snapshot_file_id", "ordinal"),
+        CheckConstraint("ordinal >= 0", name="ordinal_nonnegative"),
+        CheckConstraint("start_offset >= 0 AND end_offset > start_offset", name="offsets_valid"),
+        CheckConstraint("start_line >= 1 AND end_line >= start_line", name="lines_valid"),
+        CheckConstraint(
+            "split_kind IN ('structure', 'paragraph', 'text')", name="split_kind_valid"
+        ),
+        Index("ix_retrieval_chunks_snapshot_file_id", "snapshot_file_id"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    snapshot_id: Mapped[int] = mapped_column(Integer)
+    chunk_set_id: Mapped[int] = mapped_column(BigInteger)
+    snapshot_file_id: Mapped[int] = mapped_column(BigInteger)
+    ordinal: Mapped[int] = mapped_column(Integer)
+    start_offset: Mapped[int] = mapped_column(Integer)
+    end_offset: Mapped[int] = mapped_column(Integer)
+    start_line: Mapped[int] = mapped_column(Integer)
+    end_line: Mapped[int] = mapped_column(Integer)
+    split_kind: Mapped[str] = mapped_column(String(12))
+    content_hash: Mapped[str] = mapped_column(String(64))
 
 
 class GithubCredential(Base):

@@ -2,6 +2,7 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
+from pgvector.sqlalchemy import Vector
 from sqlalchemy import (
     BigInteger,
     Boolean,
@@ -195,6 +196,7 @@ class RetrievalChunk(Base):
             ondelete="CASCADE",
         ),
         UniqueConstraint("chunk_set_id", "snapshot_file_id", "ordinal"),
+        UniqueConstraint("id", "chunk_set_id"),
         CheckConstraint("ordinal >= 0", name="ordinal_nonnegative"),
         CheckConstraint("start_offset >= 0 AND end_offset > start_offset", name="offsets_valid"),
         CheckConstraint("start_line >= 1 AND end_line >= start_line", name="lines_valid"),
@@ -215,6 +217,76 @@ class RetrievalChunk(Base):
     end_line: Mapped[int] = mapped_column(Integer)
     split_kind: Mapped[str] = mapped_column(String(12))
     content_hash: Mapped[str] = mapped_column(String(64))
+
+
+class RetrievalIndex(Base):
+    """單一片段集合與 embedding 設定下的索引；只有完成狀態可查詢。"""
+
+    __tablename__ = "retrieval_indexes"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["chunk_set_id", "snapshot_id"],
+            ["retrieval_chunk_sets.id", "retrieval_chunk_sets.snapshot_id"],
+            ondelete="CASCADE",
+        ),
+        UniqueConstraint("chunk_set_id", "profile_hash"),
+        UniqueConstraint("id", "chunk_set_id"),
+        CheckConstraint("profile_hash ~ '^[0-9a-f]{64}$'", name="profile_hash_valid"),
+        CheckConstraint("jsonb_typeof(profile) = 'object'", name="profile_object"),
+        CheckConstraint(
+            "(status = 'building' AND owner_token IS NOT NULL AND completed_at IS NULL) OR "
+            "(status = 'failed' AND owner_token IS NULL AND completed_at IS NULL) OR "
+            "(status = 'completed' AND owner_token IS NULL AND completed_at IS NOT NULL)",
+            name="state_valid",
+        ),
+        CheckConstraint("segment_count >= 0", name="segment_count_nonnegative"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    snapshot_id: Mapped[int] = mapped_column(Integer)
+    chunk_set_id: Mapped[int] = mapped_column(BigInteger)
+    profile_hash: Mapped[str] = mapped_column(String(64))
+    profile: Mapped[dict[str, Any]] = mapped_column(JSONB)
+    status: Mapped[str] = mapped_column(String(20))
+    owner_token: Mapped[UUID | None] = mapped_column(Uuid)
+    segment_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, server_default=func.now()
+    )
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class RetrievalVector(Base):
+    """片段內的半開字元區間及 768 維向量；複合外鍵限制索引與片段的歸屬。"""
+
+    __tablename__ = "retrieval_vectors"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["index_id", "chunk_set_id"],
+            ["retrieval_indexes.id", "retrieval_indexes.chunk_set_id"],
+            ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["chunk_id", "chunk_set_id"],
+            ["retrieval_chunks.id", "retrieval_chunks.chunk_set_id"],
+            ondelete="CASCADE",
+        ),
+        UniqueConstraint("index_id", "chunk_id", "ordinal"),
+        CheckConstraint("ordinal >= 0", name="ordinal_nonnegative"),
+        CheckConstraint("start_offset >= 0 AND end_offset > start_offset", name="offsets_valid"),
+        CheckConstraint("token_count >= 1 AND token_count <= 512", name="token_count_valid"),
+        Index("ix_retrieval_vectors_chunk_id_chunk_set_id", "chunk_id", "chunk_set_id"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    index_id: Mapped[int] = mapped_column(BigInteger)
+    chunk_set_id: Mapped[int] = mapped_column(BigInteger)
+    chunk_id: Mapped[int] = mapped_column(BigInteger)
+    ordinal: Mapped[int] = mapped_column(Integer)
+    start_offset: Mapped[int] = mapped_column(Integer)
+    end_offset: Mapped[int] = mapped_column(Integer)
+    token_count: Mapped[int] = mapped_column(Integer)
+    embedding: Mapped[list[float]] = mapped_column(Vector(768))
 
 
 class GithubCredential(Base):

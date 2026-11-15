@@ -41,7 +41,7 @@ IBM embedding 執行器已完成內部假資料試跑，尚未整合產品。
 - **SQL 結構索引**：SQLFluff 語法層級抽取 `CREATE TABLE`、`VIEW`、`FUNCTION`、`PROCEDURE` 的受支援宣告，不執行 SQL 或模板，不解析跨檔關係。方言不自動推測：`INDEX_SQL_DIALECT` 可設 `postgres`、`tsql`、`mysql`、`sqlite`；檔名以 `.postgres.sql`、`.tsql.sql`、`.mysql.sql`、`.sqlite.sql` 結尾時覆寫預設，適合混合方言。未知方言、超過 `INDEX_SQL_MAX_FILE_BYTES`（預設 20,000 位元組）或宣告名稱超過 2,000 UTF-8 位元組的檔案列為無法解析，仍可使用文字搜尋。API 的 `.env` 和 worker 的 `.env.worker` 必須使用相同設定。四種方言只驗證代表宣告，完整語法、大型 SQL 檔案與效能未驗證。
 - **檢索片段基礎**：可在內部服務中依 UTF-8 位元組上限切分已完成快照的已匯入文字；使用完成的結構索引輔助切分，其餘文字依段落或行切分，超長行以字元切分。片段記錄來源、行號、字元區間、切分方式及內容雜湊；整份集合在交易提交後才可見。片段大小不是模型 token 上限，模型整合時仍須驗證並處理 token 限制。尚無公開操作介面或向量。
 - **本機 embedding 執行器基礎**：內部執行器啟動專用本機 `llama-server`，核對模型 SHA-256、模型路徑與維度，先計算 token，拒絕超過 512 token 的輸入，並檢查輸出向量。另有依 tokenizer 限制重切文字的內部函式，保留完整來源區間；尚未串接已儲存片段、背景工作或搜尋。Windows CPU 已用 IBM Granite 模型及假資料測試。`--offline` 不等於網路隔離；執行檔與動態函式庫的信任、Linux worker 部署和防外傳措施尚未驗證，不能據此將敏感內容交給執行器。
-- **pgvector 基礎**：PostgreSQL 17 映像加入 pgvector 0.8.1；migration `0015` 啟用 `vector` extension。這只提供資料庫能力，尚未儲存 embedding 或提供語意搜尋。
+- **向量儲存基礎**：PostgreSQL 17 映像加入 pgvector 0.8.1；migration `0015` 啟用 extension，`0016` 新增帶片段歸屬與設定識別的 768 維向量資料表。尚未連接模型或背景工作，不代表已有可搜尋的向量索引。
 - **參考版本**：每個 repo 可把一個已匯入的版本設為參考（固定的快照，不跟著分支前進）；**只是標記，尚未連到 Agent**。可移除已匯入的版本（含批次，只刪資料庫紀錄）。
 - 查詢 repo、快照、檔案、分支與標籤、commit 歷史、repo 概況、符號與背景工作狀態；GitHub 來源可 fetch；可移除已註冊的 repo。
 - **搜尋**（第二階段切片 8）：對已匯入的快照做三種字面（區分大小寫）子字串搜尋——檔名（`search/files`）、符號（`search/symbols`，需要已完成的結構索引）、內容（`search/text`，一個命中行一筆並帶片段；不依賴索引）。沒有正規表示式、模糊比對或相關性排序；沒有加 `pg_trgm`（20,000 檔合成快照的最壞情況單次約 3.6 秒，低於預設逾時 10 秒；真實 repo 與 Linux 容器內未驗證）。超過 `SEARCH_STATEMENT_TIMEOUT_SECONDS` 回 504 `search_timeout`。主控台在版本管理的「搜尋」面板使用。
@@ -72,15 +72,15 @@ docker compose up -d --wait db db-test
 #    已經有 .env 時不要再執行這行（Copy-Item 會直接覆蓋）
 Copy-Item .env.example .env
 
-# 3. 建立資料表（目前最新 migration 為 0015；升級既有資料庫也是這行）
+# 3. 建立資料表（目前最新 migration 為 0016；升級既有資料庫也是這行）
 uv run alembic upgrade head
-uv run alembic current        # 預期 0015 (head)
+uv run alembic current        # 預期 0016 (head)
 
 # 4. 啟動後端（終端機 1）
 uv run uvicorn repopilot.main:create_app --factory --reload
 ```
 
-**降版風險**：`0015` 降版保留 `vector` extension，避免刪除其他用途的資料；`0014` 存在片段集合時拒絕降版；從 `0013`、`0012`、`0011`、`0010` 或 `0009` 各降一版不刪資料，但若存在該版本新增的語言或種類的索引資料會拒絕降版；從 `0008` 降到 `0007` 會刪除結構索引及符號等衍生資料，升版不會自動還原。需先評估備份與重建，勿在共用資料庫試跑。
+**降版風險**：`0016` 存在檢索索引時拒絕降版；`0015` 降版保留 `vector` extension，避免刪除其他用途的資料；`0014` 存在片段集合時拒絕降版；從 `0013`、`0012`、`0011`、`0010` 或 `0009` 各降一版不刪資料，但若存在該版本新增的語言或種類的索引資料會拒絕降版；從 `0008` 降到 `0007` 會刪除結構索引及符號等衍生資料，升版不會自動還原。需先評估備份與重建，勿在共用資料庫試跑。
 
 ```powershell
 # 5. 啟動主控台（終端機 2）；後端必須先啟動

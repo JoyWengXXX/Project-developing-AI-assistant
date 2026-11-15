@@ -217,6 +217,54 @@ services:
       retries: 5
       start_period: 120s
 
+  embedding-gateway:
+    image: repopilot-worker:stage02-slice3
+    profiles: ["embedding"]
+    user: "10001:10001"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp
+    command: ["python", "-m", "repopilot.embedding.gateway"]
+    depends_on:
+      embedding: { condition: service_healthy }
+    environment:
+      EMBEDDING_MODEL_SHA256: ${EMBEDDING_MODEL_SHA256:-}
+      EMBEDDING_RUNTIME_SHA256: ${EMBEDDING_RUNTIME_SHA256:-}
+      EMBEDDING_GATEWAY_TOKEN: ${EMBEDDING_GATEWAY_TOKEN:-}
+      EMBEDDING_SOCKET_PATH: /run/embed/runtime.sock
+    volumes:
+      - type: volume
+        source: embedding_socket
+        target: /run/embed
+        read_only: true
+    networks: [embedding-gateway]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8765/health',timeout=2).read()"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+  embedding-proxy:
+    image: repopilot-worker:stage02-slice3
+    profiles: ["embedding"]
+    user: "10001:10001"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp
+    command: ["python", "-m", "repopilot.embedding.gateway_proxy"]
+    depends_on:
+      embedding-gateway: { condition: service_healthy }
+    ports:
+      - "127.0.0.1:${EMBEDDING_GATEWAY_PORT:-18763}:8765"
+    networks: [embedding-ingress, embedding-gateway]
+
   # ---- 測試堆疊（profile jobs-test）----
   # 由 tests/integration/stack 的 pytest fixture 啟動與停止（會設定 WORKER_TEST_*_HOST_DIR 為專案內的
   # .test-repos／.test-managed 絕對路徑）。連 db-test，不連開發的 db、redis；佇列名稱與 Redis 鍵前綴
@@ -331,6 +379,9 @@ services:
 
 networks:
   jobs:
+  embedding-gateway:
+    internal: true
+  embedding-ingress:
   # 測試堆疊專用網路：db-test、redis-test、worker-test、dispatcher-test 只在這裡（R5）
   jobs-test:
 

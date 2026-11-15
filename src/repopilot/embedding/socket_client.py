@@ -10,6 +10,7 @@ from typing import Any
 from repopilot.embedding.local_runtime import EmbeddingInputTooLongError, EmbeddingRuntimeError
 from repopilot.embedding.profile import EmbeddingProfile
 from repopilot.embedding.socket_protocol import receive_message, send_message
+from repopilot.embedding.vector_validation import validate_vector
 
 
 class SocketEmbeddingClient:
@@ -88,32 +89,8 @@ class SocketEmbeddingClient:
             raise EmbeddingInputTooLongError("Embedding input exceeds the model token limit.")
         response = self._request({"operation": "embed", "text": text})
         vector = response.get("embedding")
-        if (
-            type(response.get("tokens")) is not int
-            or response.get("tokens") != tokens
-            or not isinstance(vector, list)
-            or len(vector) != 768
-        ):
+        if type(response.get("tokens")) is not int or response.get("tokens") != tokens:
             raise EmbeddingRuntimeError(
                 "The isolated embedding runtime returned an invalid vector."
             )
-        if any(isinstance(value, bool) or not isinstance(value, int | float) for value in vector):
-            raise EmbeddingRuntimeError(
-                "The isolated embedding runtime returned an invalid vector."
-            )
-        try:
-            converted = [float(value) for value in vector]
-        except OverflowError:
-            raise EmbeddingRuntimeError(
-                "The isolated embedding runtime returned an invalid vector."
-            ) from None
-        norm = math.sqrt(sum(value * value for value in converted))
-        if not all(math.isfinite(value) for value in converted) or not math.isfinite(norm):
-            raise EmbeddingRuntimeError(
-                "The isolated embedding runtime returned an invalid vector."
-            )
-        if abs(norm - 1.0) > 0.0001:
-            raise EmbeddingRuntimeError(
-                "The isolated embedding runtime returned an invalid vector."
-            )
-        return converted
+        return validate_vector(vector)

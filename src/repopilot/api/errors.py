@@ -8,6 +8,7 @@ from fastapi.responses import JSONResponse
 from sqlalchemy.exc import OperationalError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+from repopilot.embedding.local_runtime import EmbeddingInputTooLongError, EmbeddingRuntimeError
 from repopilot.errors import (
     DatabaseUnavailableError,
     EmbeddingNotConfiguredError,
@@ -77,6 +78,8 @@ ERROR_STATUS: dict[type[RepoPilotError], int] = {
     # 設定問題（服務端缺金鑰）不是使用者輸入錯誤，故 503 而非 422
     TokenEncryptionNotConfiguredError: 503,
     EmbeddingNotConfiguredError: 503,
+    EmbeddingRuntimeError: 503,
+    EmbeddingInputTooLongError: 422,
     GitHubTokenInvalidError: 422,
     # 上游（GitHub）問題：連不上／非預期回應為 502，逾時為 504；GitHubTimeoutError 依 MRO 先於父類別
     GitHubUnreachableError: 502,

@@ -11,11 +11,7 @@ TypeScript／JavaScript／Java／Go／Rust／SQL 語法層級解析；其他符�
 每個階段的規格與驗收都應區分各語言的實際能力、明示未支援範圍，並評估混合語言 repo；
 新增解析器的語言與時程需另行確認，不假設所有語言已受支援。
 
-第三階段（語意與混合搜尋）**進行中**：TypeScript／JavaScript 結構索引已實作，
-並以隔離 worker 堆疊及瀏覽器操作驗證代表情境；Java／Go／Rust 結構索引亦已實作並通過代表情境驗證。SQL 四種方言的代表宣告已通過隔離測試，跨 repo／快照搜尋尚未實作；
-IBM embedding 執行器已完成內部假資料試跑，尚未整合產品。
-
-檢索片段的切分與資料儲存基礎已實作；目前尚未連接背景工作、API 或主控台，也不是已完成的語意索引。
+第三階段（語意與混合搜尋）**進行中**：TypeScript／JavaScript／Java／Go／Rust 結構索引與 SQL 四種方言代表宣告已通過隔離測試。檢索片段、背景 embedding 工作、索引狀態 API 及跨 repo／快照關鍵字搜尋已實作；語意／混合搜尋及主控台尚未完成。
 
 ## 文件
 
@@ -173,7 +169,7 @@ docker compose --profile jobs stop worker dispatcher redis
 
 ### 隔離 embedding 服務（第三階段）
 
-此服務尚未接上搜尋或主控台。使用前先自行取得相容的 768 維 IBM Granite GGUF 模型，存於 repo 外；下例路徑只是範例。API、worker 和隔離服務必須使用相同模型識別。
+此服務尚未接上語意搜尋或主控台。使用前先自行取得相容的 768 維 IBM Granite GGUF 模型，存於 repo 外；下例路徑只是範例。API、worker 和隔離服務必須使用相同模型識別。
 
 1. 在 `.env` 設定 `EMBEDDING_MODEL_HOST_PATH` 與 `EMBEDDING_MODEL_SHA256`；後者須是小寫 SHA-256。先確認模型來源，再自行核對雜湊。
 2. 依序建置 worker 與模型映像。隔離服務不連網、以非 root 執行，模型掛載唯讀。
@@ -187,9 +183,17 @@ docker compose --profile embedding logs embedding
 ```
 
 3. 從啟動日誌取得 `runtime_bundle_sha256`，自行確認執行環境後，將它填入 `.env` 與 `.env.worker` 的 `EMBEDDING_RUNTIME_SHA256`；兩者的 `EMBEDDING_MODEL_SHA256` 也必須一致。`.env.worker` 再設 `EMBEDDING_SOCKET_PATH=/run/embed/runtime.sock`。
-4. 重啟 API，並重建 worker 容器以讀取設定：`docker compose --profile jobs up -d --wait worker dispatcher`。停止模型服務可執行 `docker compose --profile embedding stop embedding`；不要使用 `down` 清除共享資源。
+4. 若要啟動查詢橋接，先產生專用高熵 token，放入 `.env` 的 `EMBEDDING_GATEWAY_TOKEN`，不要提交或分享；API 與 gateway 必須使用同一 token。選用 `EMBEDDING_GATEWAY_PORT` 預設為 18763。再執行：
 
-runtime 雜湊是當前映像的識別，不是供應鏈驗證；重建映像後須重新核對。Docker 管理者及可存取 socket 的程序仍可接觸模型輸入。**未驗證**所有錯誤日誌、主機模型被修改及完整防外傳；不要因此將敏感內容交給本服務。
+```powershell
+python -c "import secrets; print(secrets.token_urlsafe(32))"
+docker compose --profile embedding up -d --wait embedding-proxy
+docker compose --profile jobs up -d --wait worker dispatcher
+```
+
+5. 重啟 API 讀取設定。停止模型及橋接可執行 `docker compose --profile embedding stop embedding-proxy embedding-gateway embedding`；不要使用 `down` 清除共享資源。
+
+查詢橋接只綁定主機 loopback；固定目的地代理連接內部網路上的 gateway，gateway 再連接私有 socket。代理同時連接非內部網路；Docker 管理者、同主機具權限程序及可存取橋接流量的容器屬信任邊界。token 不能防止惡意本機程序搶先佔用埠。runtime 雜湊是當前映像的識別，不是供應鏈驗證；重建映像後須重新核對。**未驗證**所有錯誤日誌、主機模型被修改及完整防外傳；不要因此將敏感內容交給本服務。
 
 ## 主控台操作流程
 

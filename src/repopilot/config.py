@@ -1,5 +1,6 @@
 import json
 import os
+import re
 from functools import lru_cache
 from pathlib import Path
 from typing import Annotated, Any, Literal, Self
@@ -164,6 +165,8 @@ class Settings(BaseSettings):
     embedding_model_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     embedding_runtime_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     embedding_socket_path: Path | None = None
+    embedding_gateway_port: int = Field(default=18763, ge=1, le=65535)
+    embedding_gateway_token: SecretStr = SecretStr("")
 
     @field_validator(
         "embedding_model_sha256", "embedding_runtime_sha256", "embedding_socket_path", mode="before"
@@ -171,6 +174,14 @@ class Settings(BaseSettings):
     @classmethod
     def _empty_embedding_setting(cls, value: Any) -> Any:
         return None if value == "" else value
+
+    @field_validator("embedding_gateway_token")
+    @classmethod
+    def _valid_embedding_gateway_token(cls, value: SecretStr) -> SecretStr:
+        token = value.get_secret_value()
+        if token and re.fullmatch(r"[A-Za-z0-9_-]{32,128}", token) is None:
+            raise ValueError("EMBEDDING_GATEWAY_TOKEN must be 32 to 128 URL-safe characters.")
+        return value
 
     @model_validator(mode="after")
     def _job_settings_are_consistent(self) -> Self:

@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 
 from repopilot.config import Settings
 from repopilot.db.models import Job, RetrievalChunkSet, RetrievalIndex, Snapshot
+from repopilot.embedding.devices import DEFAULT_DEVICE, EmbeddingDevice, ensure_available
 from repopilot.embedding.profile import EmbeddingProfile
 from repopilot.errors import SnapshotNotCompletedError, SnapshotNotFoundError
 from repopilot.services import jobs
@@ -81,13 +82,22 @@ def current_index(
 
 
 def submit_retrieval_job(
-    session: Session, snapshot_id: int, settings: Settings, *, request_id: str | None = None
+    session: Session,
+    snapshot_id: int,
+    settings: Settings,
+    *,
+    request_id: str | None = None,
+    device: EmbeddingDevice = DEFAULT_DEVICE,
 ) -> RetrievalJobSubmission:
+    """提交檢索索引工作。`device` 只決定這個工作使用哪個 runtime，不影響去重與設定識別：
+    已有進行中的工作時回傳它（其裝置不變）；失敗或取消後重新提交會以新的裝置續跑已保存的片段。"""
+    ensure_available(settings, device)
     identity = current_identity(session, snapshot_id, settings)
     params = {
         "snapshot_id": snapshot_id,
         "structure_index_id": identity.structure_id,
         "embedding_profile_hash": identity.profile_hash,
+        "device": device,
     }
     session.rollback()
 

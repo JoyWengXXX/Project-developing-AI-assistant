@@ -96,6 +96,23 @@ class SearchTimeoutError(RepoPilotError):
     code = "search_timeout"
 
 
+class SearchScopeTooLargeError(RepoPilotError):
+    """選取快照的片段總數超過 `SEARCH_MAX_CHUNKS`：關鍵字比對會掃描全部片段，預期會逾時。
+
+    在執行掃描之前就拒絕（不是等到 504）；`chunk_count`／`max_chunks` 放在錯誤的 `details`。
+    """
+
+    code = "search_scope_too_large"
+
+    def __init__(self, chunk_count: int, max_chunks: int) -> None:
+        super().__init__(
+            "The selected snapshots contain too many chunks for keyword search; "
+            "select fewer snapshots or raise SEARCH_MAX_CHUNKS."
+        )
+        self.chunk_count = chunk_count
+        self.max_chunks = max_chunks
+
+
 class SymbolNotFoundError(RepoPilotError):
     """指定的符號不存在，或不屬於該快照目前的索引。"""
 
@@ -130,6 +147,15 @@ class EmbeddingNotConfiguredError(RepoPilotError):
     """模型或執行器的可信識別尚未設定。"""
 
     code = "embedding_not_configured"
+
+
+class EmbeddingDeviceUnavailableError(RepoPilotError):
+    """選取的 embedding 運算裝置（目前只有 `gpu` 可能不可用）沒有設定或沒有回應。
+
+    不會悄悄改用另一個裝置：使用者以為在用 GPU 卻實際跑 CPU（或反過來）會誤導耗時與資源預期。
+    """
+
+    code = "embedding_device_unavailable"
 
 
 class GitHubTokenInvalidError(RepoPilotError):

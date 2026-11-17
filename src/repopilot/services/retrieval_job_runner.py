@@ -10,9 +10,12 @@ from sqlalchemy.orm import Session
 from repopilot.config import Settings
 from repopilot.db.locks import LockBusyError, acquire_advisory_lock, repo_lock_key
 from repopilot.db.models import Job, Snapshot
+from repopilot.embedding.devices import device_of_params
+from repopilot.embedding.local_runtime import EmbeddingRuntimeError
 from repopilot.embedding.profile import EmbeddingProfile
 from repopilot.embedding.socket_client import SocketEmbeddingClient
 from repopilot.errors import (
+    EmbeddingDeviceUnavailableError,
     EmbeddingNotConfiguredError,
     ImportCancelledError,
     ProfileMismatchError,
@@ -20,8 +23,13 @@ from repopilot.errors import (
     SnapshotNotFoundError,
 )
 from repopilot.services import jobs
+from repopilot.services.job_progress import EMBEDDING_KEY
 from repopilot.services.repositories import get_repository, repository_key
-from repopilot.services.retrieval_build import RetrievalSummary, build_retrieval_index
+from repopilot.services.retrieval_build import (
+    BuildProgress,
+    RetrievalSummary,
+    build_retrieval_index,
+)
 from repopilot.services.retrieval_chunks import build_chunk_set
 from repopilot.services.retrieval_jobs import CHUNK_MAX_BYTES
 from repopilot.services.retrieval_vectors import retrieval_lock_key
@@ -53,7 +61,15 @@ def run_retrieval(
     structure_id = job.params.get("structure_index_id")
     if structure_id is not None and (type(structure_id) is not int or structure_id < 1):
         raise ProfileMismatchError("The job has an invalid structure index.")
-    if settings.embedding_socket_path is None:
+    device = device_of_params(job.params)
+    socket_path = (
+        settings.embedding_gpu_socket_path if device == "gpu" else settings.embedding_socket_path
+    )
+    if socket_path is None:
+        if device == "gpu":
+            raise EmbeddingDeviceUnavailableError(
+                "The GPU embedding runtime is not configured for this worker."
+            )
         raise EmbeddingNotConfiguredError("The isolated embedding socket is not configured.")
     session.commit()
 
@@ -68,8 +84,15 @@ def run_retrieval(
     if repo_lock is None:
         raise LockBusyError
     try:
-        client = SocketEmbeddingClient(socket_path=settings.embedding_socket_path, profile=profile)
-        client.verify_identity()
+        client = SocketEmbeddingClient(socket_path=socket_path, profile=profile)
+        try:
+            client.verify_identity()
+        except EmbeddingRuntimeError:
+            if device == "gpu":
+                raise EmbeddingDeviceUnavailableError(
+                    "The GPU embedding runtime is not responding."
+                ) from None
+            raise
         jobs.update_progress(session, job_id, token, phase="embedding")
         checkpoint()
         chunks = build_chunk_set(
@@ -93,6 +116,8 @@ def run_retrieval(
                     "index_id": summary.index_id,
                     "segment_count": summary.segment_count,
                     "index_reused": summary.reused,
+                    "reused_chunks": summary.reused_chunks,
+                    "device": device,
                 }
 
             def finalize(summary: RetrievalSummary, publish: Callable[[Session], None]) -> bool:
@@ -108,6 +133,27 @@ def run_retrieval(
                 finished["status"] = done.status
                 return done.status == "succeeded"
 
+            def on_progress(progress: BuildProgress) -> None:
+                jobs.update_progress(
+                    session,
+                    job_id,
+                    token,
+                    processed_files=progress.chunks_done,
+                    total_files=progress.chunks_total,
+                    work_state={
+                        EMBEDDING_KEY: {
+                            "vectors": progress.vectors,
+                            "chunks_done": progress.chunks_done,
+                            "chunks_total": progress.chunks_total,
+                            "chars_done": progress.chars_done,
+                            "chars_total": progress.chars_total,
+                            "run_base_chars": progress.base_chars,
+                            "reused_chunks": progress.reused_chunks,
+                            "run_seconds": round(progress.run_seconds, 1),
+                        }
+                    },
+                )
+
             summary = build_retrieval_index(
                 session,
                 chunk_set_id=chunks.chunk_set_id,
@@ -118,6 +164,8 @@ def run_retrieval(
                 embed=client.embed,
                 checkpoint=checkpoint,
                 finalize=finalize,
+                on_progress=on_progress,
+                time_slice_seconds=settings.effective_retrieval_slice_seconds,
             )
             if "status" not in finished:
                 checkpoint()

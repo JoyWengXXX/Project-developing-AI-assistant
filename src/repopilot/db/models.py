@@ -204,6 +204,7 @@ class RetrievalChunk(Base):
             "split_kind IN ('structure', 'paragraph', 'text')", name="split_kind_valid"
         ),
         Index("ix_retrieval_chunks_snapshot_file_id", "snapshot_file_id"),
+        Index("ix_retrieval_chunks_content_hash", "content_hash"),
     )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)

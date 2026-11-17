@@ -1,6 +1,7 @@
 """跨快照檢索透過 API 與實際 PostgreSQL 驗證。"""
 
 import os
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -112,6 +113,98 @@ def test_keyword_search_ranks_only_selected_snapshots(ready_search: SearchFixtur
     assert len(first["commit_sha"]) == 40
     assert first["support_level"] == "text"
     assert all(item["snapshot_id"] != ready_search.snapshot_ids[2] for item in result["items"])
+
+
+def _limit_scope(fixtures: SearchFixtures, max_chunks: int) -> None:
+    app = fixtures.client.app
+    app.state.settings = app.state.settings.model_copy(update={"search_max_chunks": max_chunks})  # type: ignore[attr-defined]
+
+
+@pytest.mark.parametrize("mode", ["keyword", "hybrid"])
+def test_keyword_and_hybrid_reject_a_scope_with_too_many_chunks_before_scanning(
+    ready_search: SearchFixtures, monkeypatch: pytest.MonkeyPatch, mode: str
+) -> None:
+    def must_not_run(*args: object, **kwargs: object) -> object:
+        pytest.fail("an oversized scope must be rejected before any scan or model call")
+
+    monkeypatch.setattr(retrieval_search, "_keyword_candidates", must_not_run)
+    monkeypatch.setattr(retrieval_search, "embed_query", must_not_run, raising=False)
+    _limit_scope(ready_search, 3)
+
+    response = ready_search.client.post(
+        "/api/v1/retrieval/search",
+        json={"snapshot_ids": ready_search.snapshot_ids, "query": "widget", "mode": mode},
+    )
+
+    assert response.status_code == 422, response.text
+    error = response.json()["error"]
+    assert error["code"] == "search_scope_too_large"
+    assert error["details"] == {"chunk_count": 4, "max_chunks": 3}
+
+
+def test_a_scope_exactly_at_the_limit_is_searched(ready_search: SearchFixtures) -> None:
+    _limit_scope(ready_search, 4)
+
+    response = ready_search.client.post(
+        "/api/v1/retrieval/search",
+        json={"snapshot_ids": ready_search.snapshot_ids, "query": "widget", "mode": "keyword"},
+    )
+
+    assert response.status_code == 200
+    assert len(response.json()["items"]) == 4
+
+
+def test_the_limit_counts_only_the_selected_snapshots_and_never_blocks_semantic_search(
+    ready_search: SearchFixtures, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        retrieval_search, "embed_query", lambda *args: [0.0, 1.0] + [0.0] * 766, raising=False
+    )
+    _limit_scope(ready_search, 1)
+
+    one = ready_search.client.post(
+        "/api/v1/retrieval/search",
+        json={"snapshot_ids": ready_search.snapshot_ids[:1], "query": "widget", "mode": "keyword"},
+    )
+    semantic = ready_search.client.post(
+        "/api/v1/retrieval/search",
+        json={"snapshot_ids": ready_search.snapshot_ids, "query": "lookup", "mode": "semantic"},
+    )
+
+    assert one.status_code == 200
+    assert semantic.status_code == 200 and len(semantic.json()["items"]) == 4
+
+
+def test_keyword_search_that_exceeds_the_time_limit_is_504_not_an_empty_list(
+    ready_search: SearchFixtures, db_engine: Engine
+) -> None:
+    app = ready_search.client.app
+    app.state.settings = app.state.settings.model_copy(  # type: ignore[attr-defined]
+        update={"search_statement_timeout_seconds": 0.3}
+    )
+    release = threading.Event()
+    locked = threading.Event()
+
+    def hold_lock() -> None:
+        with db_engine.begin() as connection:
+            connection.execute(text("LOCK TABLE snapshot_files IN ACCESS EXCLUSIVE MODE"))
+            locked.set()
+            release.wait(timeout=30)
+
+    holder = threading.Thread(target=hold_lock)
+    holder.start()
+    try:
+        assert locked.wait(timeout=10)
+        response = ready_search.client.post(
+            "/api/v1/retrieval/search",
+            json={"snapshot_ids": ready_search.snapshot_ids, "query": "widget", "mode": "keyword"},
+        )
+    finally:
+        release.set()
+        holder.join(timeout=10)
+
+    assert response.status_code == 504, response.text
+    assert response.json()["error"]["code"] == "search_timeout"
 
 
 def test_keyword_search_rejects_an_unready_snapshot_without_partial_results(

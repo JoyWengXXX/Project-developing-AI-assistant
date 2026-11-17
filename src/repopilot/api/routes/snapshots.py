@@ -1,7 +1,7 @@
 from dataclasses import asdict
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, Query, Response, status
+from fastapi import APIRouter, Body, Depends, Query, Response, status
 from sqlalchemy.orm import Session
 
 from repopilot.api.index_responses import (
@@ -24,6 +24,7 @@ from repopilot.api.schemas import (
     OffsetQuery,
     ParentIdQuery,
     RetrievalIndexResponse,
+    RetrievalJobRequest,
     SnapshotDetailResponse,
     SnapshotFileDetail,
     SnapshotFileListResponse,
@@ -156,7 +157,7 @@ def create_index_job(
         200: {"model": JobSubmitResponse, "description": "目前設定的檢索索引已完成"},
         404: {"description": "快照不存在"},
         409: {"description": "快照尚未完成"},
-        503: {"description": "embedding 模型或執行器的識別尚未設定"},
+        503: {"description": "embedding 模型或執行器的識別尚未設定，或選取的裝置不可用"},
     },
 )
 def create_retrieval_job(
@@ -164,9 +165,14 @@ def create_retrieval_job(
     response: Response,
     session: SessionDep,
     settings: SettingsDep,
+    request: Annotated[RetrievalJobRequest | None, Body()] = None,
 ) -> JobSubmitResponse:
     submission = retrieval_jobs.submit_retrieval_job(
-        session, snapshot_id, settings, request_id=request_id_var.get()
+        session,
+        snapshot_id,
+        settings,
+        request_id=request_id_var.get(),
+        device=request.device if request is not None else "cpu",
     )
     if submission.reused:
         response.status_code = status.HTTP_200_OK

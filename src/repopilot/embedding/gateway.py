@@ -31,11 +31,45 @@ def create_gateway_app(settings: Settings) -> FastAPI:
     if not token or settings.embedding_socket_path is None:
         raise EmbeddingNotConfiguredError("The embedding gateway is not configured.")
     client = SocketEmbeddingClient(socket_path=settings.embedding_socket_path, profile=profile)
+    gpu_client = (
+        SocketEmbeddingClient(socket_path=settings.embedding_gpu_socket_path, profile=profile)
+        if settings.embedding_gpu_socket_path is not None
+        else None
+    )
     app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
 
     @app.get("/health")
     def health() -> dict[str, str]:
         return {"status": "ok"}
+
+    @app.get("/devices")
+    async def devices(request: Request) -> JSONResponse:
+        """各運算裝置是否可用（runtime 回應且設定識別相符）；GPU 沒設定時 `configured=false`。"""
+        authorization = request.headers.get("authorization", "").encode("utf-8")
+        expected = f"Bearer {token}".encode("ascii")
+        if not hmac.compare_digest(authorization, expected):
+            return JSONResponse({"error": "unauthorized"}, status_code=401)
+
+        async def available(candidate: SocketEmbeddingClient | None) -> bool:
+            if candidate is None:
+                return False
+            try:
+                await run_in_threadpool(candidate.verify_identity)
+            except EmbeddingRuntimeError:
+                return False
+            return True
+
+        return JSONResponse(
+            {
+                "devices": {
+                    "cpu": {"configured": True, "available": await available(client)},
+                    "gpu": {
+                        "configured": gpu_client is not None,
+                        "available": await available(gpu_client),
+                    },
+                }
+            }
+        )
 
     @app.post("/embed")
     async def embed(request: Request) -> JSONResponse:

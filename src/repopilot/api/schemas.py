@@ -434,6 +434,12 @@ class JobProgressResponse(BaseModel):
     parse_error_count: int
     # 暫存目錄大小（非百分比）；沒有量測時為 null
     bytes_received: int | None
+    # 檢索索引工作（snapshot_retrieval）：此時 processed_files／total_files 是片段數；
+    # 已計算的向量數與估計剩餘秒數（估計值，資料不足時為 null）。其他種類的工作恆為 null
+    vectors_written: int | None = None
+    estimated_remaining_seconds: int | None = None
+    # 本次執行以相同內容的既有向量複製完成的片段數（跨快照、跨 repo 重用）；其他種類為 null
+    chunks_reused: int | None = None
 
 
 class JobErrorResponse(BaseModel):
@@ -527,6 +533,24 @@ class RetrievalIndexResponse(BaseModel):
     chunk_count: int | None
     segment_count: int | None
     job: JobResponse | None
+
+
+class RetrievalJobRequest(BaseModel):
+    """建立檢索索引工作的選用請求本文；沒有本文等同 `{"device": "cpu"}`。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    device: Literal["cpu", "gpu"] = "cpu"
+
+
+class EmbeddingDeviceState(BaseModel):
+    configured: bool
+    available: bool
+
+
+class EmbeddingDevicesResponse(BaseModel):
+    cpu: EmbeddingDeviceState
+    gpu: EmbeddingDeviceState
 
 
 class RetrievalSearchRequest(BaseModel):

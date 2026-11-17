@@ -1,5 +1,6 @@
 """快照片段到 embedding 的建構工具。"""
 
+import time
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from hashlib import sha256
@@ -17,6 +18,7 @@ from repopilot.services.retrieval_vectors import (
     VectorSegment,
     claim_index,
     complete_index,
+    copy_matching_vectors,
     fail_index,
     write_segments,
 )
@@ -33,6 +35,33 @@ class RetrievalSummary:
     index_id: int
     reused: bool
     segment_count: int
+    # 本次執行以「相同內容的既有向量」複製完成的片段數（跨快照、跨 repo；見 copy_matching_vectors）
+    reused_chunks: int = 0
+
+
+@dataclass(frozen=True)
+class BuildProgress:
+    """建構中的進度快照。字元數是片段原文的字元數（片段區間以字元計），供估計剩餘時間。"""
+
+    chunks_done: int
+    chunks_total: int
+    vectors: int
+    chars_done: int
+    chars_total: int
+    run_seconds: float
+    # 估計速率只看本次「實際呼叫模型」處理的字元：續跑前已涵蓋與本次重用的字元都算在 base_chars
+    base_chars: int = 0
+    reused_chunks: int = 0
+
+
+class SliceExhausted(Exception):  # noqa: N818 - 控制流程訊號，不是錯誤
+    """本次執行的時間切片用完：已完成的片段都已寫入，工作應放回佇列接著做。
+
+    只在完成至少一個新片段後、且還有片段未完成時丟出，所以每一段都有進展，不會無限排隊。
+    """
+
+
+PROGRESS_INTERVAL_SECONDS = 2.0
 
 
 def build_retrieval_index(
@@ -46,8 +75,17 @@ def build_retrieval_index(
     embed: Callable[[str], list[float]],
     checkpoint: Callable[[], None],
     finalize: Callable[[RetrievalSummary, Callable[[Session], None]], bool],
+    on_progress: Callable[[BuildProgress], None] | None = None,
+    progress_interval_seconds: float = PROGRESS_INTERVAL_SECONDS,
+    time_slice_seconds: float | None = None,
 ) -> RetrievalSummary:
-    """建構索引並委由呼叫者在同一交易發布索引與工作狀態。"""
+    """建構索引並委由呼叫者在同一交易發布索引與工作狀態。
+
+    `on_progress` 在開始時、之後最多每 `progress_interval_seconds` 秒一次（每個片段結束時判斷），
+    以及最後一個片段結束時呼叫；呼叫時沒有未提交的寫入，回呼可以提交自己的交易。
+    `time_slice_seconds` 不為 None 時，本次執行超過這段時間（在片段結束時判斷）且還有片段未完成，
+    就回報最新進度並丟出 `SliceExhausted`；索引維持 `building`，下一次接手時續跑。
+    """
     checkpoint()
     claimed = claim_index(
         session, chunk_set_id=chunk_set_id, profile=profile, owner_token=owner_token, lock=lock
@@ -61,9 +99,64 @@ def build_retrieval_index(
         return RetrievalSummary(claimed.index_id, True, previous_count)
 
     pending: list[VectorSegment] = []
-    count = 0
+    covered = claimed.covered_chunk_ids
+    count = claimed.covered_vectors
     cursor = 0
+    chunks_done = len(covered)
+    chars_done = claimed.covered_chars
+    embedded_chars = reused_chunks = 0
+    started = last_report = time.monotonic()
     try:
+        chunks_total, chars_total = session.execute(
+            select(
+                func.count(),
+                func.coalesce(func.sum(RetrievalChunk.end_offset - RetrievalChunk.start_offset), 0),
+            ).where(RetrievalChunk.chunk_set_id == chunk_set_id)
+        ).one()
+        if covered:
+            # 已完整涵蓋的前綴不必再載入原文；前綴之後零星已涵蓋的片段在下面略過
+            for chunk_id in session.scalars(
+                select(RetrievalChunk.id)
+                .where(RetrievalChunk.chunk_set_id == chunk_set_id)
+                .order_by(RetrievalChunk.id)
+            ):
+                if chunk_id not in covered:
+                    break
+                cursor = chunk_id
+        session.rollback()
+
+        def report(*, force: bool) -> None:
+            nonlocal last_report
+            if on_progress is None:
+                return
+            now = time.monotonic()
+            if not force and now - last_report < progress_interval_seconds:
+                return
+            last_report = now
+            on_progress(
+                BuildProgress(
+                    chunks_done=chunks_done,
+                    chunks_total=chunks_total,
+                    vectors=count,
+                    chars_done=chars_done,
+                    chars_total=int(chars_total),
+                    run_seconds=now - started,
+                    base_chars=chars_done - embedded_chars,
+                    reused_chunks=reused_chunks,
+                )
+            )
+
+        def flush() -> None:
+            if not pending:
+                return
+            checkpoint()
+            write_segments(
+                session, index_id=claimed.index_id, owner_token=owner_token, segments=pending
+            )
+            session.commit()
+            pending.clear()
+
+        report(force=True)
         while True:
             checkpoint()
             chunks = load_source_chunks(
@@ -73,31 +166,47 @@ def build_retrieval_index(
             if not chunks:
                 break
             for chunk in chunks:
-                for vector in vectorize_chunk(
-                    chunk, count_tokens=count_tokens, embed=embed, checkpoint=checkpoint
-                ):
-                    pending.append(vector)
-                    count += 1
-                    if len(pending) == 64:
-                        checkpoint()
-                        write_segments(
-                            session,
-                            index_id=claimed.index_id,
-                            owner_token=owner_token,
-                            segments=pending,
-                        )
-                        session.commit()
-                        pending.clear()
                 cursor = chunk.chunk_id
-        if pending:
-            checkpoint()
-            write_segments(
-                session, index_id=claimed.index_id, owner_token=owner_token, segments=pending
-            )
-            session.commit()
+                if chunk.chunk_id in covered:
+                    continue
+                copied = copy_matching_vectors(
+                    session,
+                    index_id=claimed.index_id,
+                    owner_token=owner_token,
+                    chunk_id=chunk.chunk_id,
+                    profile=profile,
+                )
+                if copied:
+                    session.commit()
+                    count += copied
+                    reused_chunks += 1
+                else:
+                    # 查詢（含索引列鎖）沒有結果：結束交易，不讓鎖跨過耗時的模型呼叫
+                    session.rollback()
+                    for vector in vectorize_chunk(
+                        chunk, count_tokens=count_tokens, embed=embed, checkpoint=checkpoint
+                    ):
+                        pending.append(vector)
+                        count += 1
+                        if len(pending) == 64:
+                            flush()
+                    # 每個片段結束就寫入並提交：中斷時，已完成的片段才能在續跑時保留
+                    flush()
+                    embedded_chars += len(chunk.content)
+                chunks_done += 1
+                chars_done += len(chunk.content)
+                report(force=chunks_done == chunks_total)
+                if (
+                    time_slice_seconds is not None
+                    and chunks_done < chunks_total
+                    and time.monotonic() - started >= time_slice_seconds
+                ):
+                    report(force=True)
+                    raise SliceExhausted
+        flush()
         checkpoint()
         lock.assert_alive()
-        summary = RetrievalSummary(claimed.index_id, False, count)
+        summary = RetrievalSummary(claimed.index_id, False, count, reused_chunks)
         published = False
 
         def publish(transaction: Session) -> None:
@@ -114,7 +223,7 @@ def build_retrieval_index(
         if not published:
             raise RuntimeError("The retrieval index finalizer did not publish the index.")
         return summary
-    except JobLeaseLostError:
+    except (JobLeaseLostError, SliceExhausted):
         session.rollback()
         raise
     except Exception:

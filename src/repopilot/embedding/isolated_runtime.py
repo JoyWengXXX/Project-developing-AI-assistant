@@ -5,6 +5,7 @@ import hashlib
 import importlib
 import logging
 import os
+import re
 import signal
 import socket
 import stat
@@ -18,12 +19,27 @@ from repopilot.embedding.socket_server import handle_request
 logger = logging.getLogger("repopilot.embedding.isolated_runtime")
 
 
+_HOST_DRIVER_LIBRARY = re.compile(
+    r"^(?:libcuda\.so|libcudadebugger\.so|libdxcore\.so|libnvidia-[^/]*\.so)"
+)
+
+
 def runtime_digest(bundle: Path, libraries: Path) -> str:
-    """涵蓋執行器封裝及映像內的系統共享函式庫。"""
+    """涵蓋執行器封裝及映像內的系統共享函式庫。
+
+    NVIDIA container runtime 在啟動容器時會把主機的 GPU 驅動函式庫（`libcuda`、`libnvidia-*`、
+    `libdxcore` 等）掛進系統函式庫目錄；它們屬於主機而非映像，版本隨主機驅動變動，所以不納入——
+    否則同一個映像在 CPU 與 GPU 模式、或驅動更新後會得到不同的識別，已建立的索引會被視為不相容。
+    驅動函式庫的信任邊界與 Docker 本身相同（見 README）。
+    """
     if not (bundle / "llama-server").is_file() or not libraries.is_dir():
         raise EmbeddingRuntimeError("The embedding runtime files are unavailable.")
     bundled = sorted(path for path in bundle.rglob("*") if path.is_file())
-    system = sorted(path for path in libraries.glob("*.so*") if path.is_file())
+    system = sorted(
+        path
+        for path in libraries.glob("*.so*")
+        if path.is_file() and not _HOST_DRIVER_LIBRARY.match(path.name)
+    )
     if not bundled or not system:
         raise EmbeddingRuntimeError("The embedding runtime files are unavailable.")
     digest = hashlib.sha256()
@@ -121,12 +137,17 @@ def main() -> int:
     parser.add_argument("--socket", type=Path, required=True)
     parser.add_argument("--runtime-dir", type=Path, default=Path("/opt/llama"))
     parser.add_argument("--library-dir", type=Path, default=Path("/usr/lib/x86_64-linux-gnu"))
+    # 只影響速度：不納入 EmbeddingProfile（執行環境雜湊相同則設定相容）。GPU 的向量與 CPU 有
+    # 微小數值差異（量測：餘弦相似度 ≥ 0.999998），不是逐位元相同
+    parser.add_argument("--threads", type=int, default=2)
+    parser.add_argument("--gpu-layers", type=int, default=0)
     args = parser.parse_args()
     signal.signal(signal.SIGTERM, _terminate)
     try:
         require_network_isolation()
         digest = runtime_digest(args.runtime_dir, args.library_dir)
         logger.info("runtime_bundle_sha256=%s", digest)
+        logger.info("embedding_compute threads=%d gpu_layers=%d", args.threads, args.gpu_layers)
         profile = EmbeddingProfile(
             model_sha256=args.model_sha256,
             runtime_bundle_sha256=digest,
@@ -135,6 +156,8 @@ def main() -> int:
             executable=args.runtime_dir / "llama-server",
             model=args.model,
             model_sha256=args.model_sha256,
+            threads=args.threads,
+            gpu_layers=args.gpu_layers,
         ) as runtime:
             _serve(args.socket, profile, runtime)
     except EmbeddingRuntimeError as exc:

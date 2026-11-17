@@ -11,6 +11,7 @@ from repopilot.config import Settings
 from repopilot.db.models import (
     Repository,
     RetrievalChunk,
+    RetrievalChunkSet,
     RetrievalIndex,
     RetrievalVector,
     Snapshot,
@@ -22,6 +23,7 @@ from repopilot.errors import (
     RetrievalIndexNotReadyError,
     RetrievalSnapshotNotCompletedError,
     RetrievalSnapshotNotFoundError,
+    SearchScopeTooLargeError,
 )
 from repopilot.search_query import keyword_terms
 from repopilot.services import retrieval_jobs
@@ -77,6 +79,18 @@ def _index_ids(session: Session, settings: Settings, snapshot_ids: list[int]) ->
     return result
 
 
+def _ensure_keyword_scope(session: Session, settings: Settings, index_ids: list[int]) -> None:
+    """關鍵字比對（含混合搜尋的關鍵字部分）掃描全部片段：太多就在掃描前拒絕。"""
+    chunk_count = session.scalar(
+        select(func.coalesce(func.sum(RetrievalChunkSet.chunk_count), 0))
+        .select_from(RetrievalIndex)
+        .join(RetrievalChunkSet, RetrievalChunkSet.id == RetrievalIndex.chunk_set_id)
+        .where(RetrievalIndex.id.in_(index_ids))
+    )
+    if chunk_count is not None and chunk_count > settings.search_max_chunks:
+        raise SearchScopeTooLargeError(int(chunk_count), settings.search_max_chunks)
+
+
 def keyword_search(
     session: Session, settings: Settings, *, snapshot_ids: list[int], query: str, limit: int
 ) -> list[KeywordMatch]:
@@ -84,6 +98,7 @@ def keyword_search(
     with _timeout_as_domain_error():
         _set_statement_timeout(session, settings.search_statement_timeout_seconds)
         index_ids = _index_ids(session, settings, snapshot_ids)
+        _ensure_keyword_scope(session, settings, index_ids)
         return _keyword_candidates(session, index_ids, terms, limit)
 
 
@@ -233,6 +248,8 @@ def search(
     with _timeout_as_domain_error():
         _set_statement_timeout(session, settings.search_statement_timeout_seconds)
         index_ids = _index_ids(session, settings, snapshot_ids)
+        if mode == "hybrid":
+            _ensure_keyword_scope(session, settings, index_ids)
         vector = embed_query(settings, EmbeddingProfile.from_settings(settings), query)
         semantic = _semantic_candidates(
             session, index_ids, vector, limit if mode == "semantic" else _CANDIDATE_LIMIT

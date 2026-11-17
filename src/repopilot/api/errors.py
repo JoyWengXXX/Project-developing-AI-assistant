@@ -11,6 +11,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from repopilot.embedding.local_runtime import EmbeddingInputTooLongError, EmbeddingRuntimeError
 from repopilot.errors import (
     DatabaseUnavailableError,
+    EmbeddingDeviceUnavailableError,
     EmbeddingNotConfiguredError,
     GitCommandError,
     GitHubApiError,
@@ -42,6 +43,7 @@ from repopilot.errors import (
     RetrievalIndexNotReadyError,
     RetrievalSnapshotNotCompletedError,
     RetrievalSnapshotNotFoundError,
+    SearchScopeTooLargeError,
     SearchTimeoutError,
     SnapshotBusyError,
     SnapshotFileNotFoundError,
@@ -78,6 +80,7 @@ ERROR_STATUS: dict[type[RepoPilotError], int] = {
     # 設定問題（服務端缺金鑰）不是使用者輸入錯誤，故 503 而非 422
     TokenEncryptionNotConfiguredError: 503,
     EmbeddingNotConfiguredError: 503,
+    EmbeddingDeviceUnavailableError: 503,
     EmbeddingRuntimeError: 503,
     EmbeddingInputTooLongError: 422,
     GitHubTokenInvalidError: 422,
@@ -116,6 +119,8 @@ ERROR_STATUS: dict[type[RepoPilotError], int] = {
     SymbolNotFoundError: 404,
     # 搜尋（第二階段切片 8）：逾時是 504（同 Git 逾時），不是資料庫不可用的 503
     SearchTimeoutError: 504,
+    # 選取範圍太大：在掃描前拒絕，是輸入（選取的快照）的問題，不是伺服器逾時
+    SearchScopeTooLargeError: 422,
 }
 
 _HTTP_ERROR_CODES = {
@@ -162,6 +167,8 @@ def _details_of(exc: RepoPilotError) -> dict[str, Any] | None:
         return {"snapshot_id": exc.snapshot_id, "index_status": exc.index_status}
     if isinstance(exc, RetrievalSnapshotNotFoundError | RetrievalSnapshotNotCompletedError):
         return {"snapshot_id": exc.snapshot_id}
+    if isinstance(exc, SearchScopeTooLargeError):
+        return {"chunk_count": exc.chunk_count, "max_chunks": exc.max_chunks}
     if isinstance(exc, SnapshotIndexNotReadyError):
         return {"index_status": exc.index_status}
     return None

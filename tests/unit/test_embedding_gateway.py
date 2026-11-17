@@ -147,3 +147,71 @@ def test_gateway_client_rejects_large_or_compressed_response(
     monkeypatch.setattr(httpx, "Client", lambda **kwargs: real_client(transport=transport))
     with pytest.raises(EmbeddingRuntimeError):
         gateway_client.embed_query(settings, EmbeddingProfile.from_settings(settings), FAKE_QUERY)
+
+
+def _fake_runtime(alive: dict[str, bool]) -> type:
+    class FakeRuntime:
+        def __init__(self, *, socket_path: Path, profile: EmbeddingProfile) -> None:
+            self.name = socket_path.name
+
+        def verify_identity(self) -> None:
+            if not alive[self.name]:
+                raise EmbeddingRuntimeError("down")
+
+    return FakeRuntime
+
+
+def test_gateway_devices_requires_auth_and_reports_each_device(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    alive = {"fake.sock": True, "gpu.sock": False}
+    monkeypatch.setattr(gateway, "SocketEmbeddingClient", _fake_runtime(alive))
+    with_gpu = settings.model_copy(update={"embedding_gpu_socket_path": Path.cwd() / "gpu.sock"})
+    auth = {"Authorization": f"Bearer {TOKEN}"}
+    with TestClient(gateway.create_gateway_app(with_gpu)) as client:
+        assert client.get("/devices").status_code == 401
+        assert client.get("/devices", headers={"Authorization": "Bearer x"}).status_code == 401
+        assert client.get("/devices", headers=auth).json() == {
+            "devices": {
+                "cpu": {"configured": True, "available": True},
+                "gpu": {"configured": True, "available": False},
+            }
+        }
+        alive["gpu.sock"] = True
+        assert client.get("/devices", headers=auth).json()["devices"]["gpu"]["available"] is True
+    with TestClient(gateway.create_gateway_app(settings)) as client:
+        assert client.get("/devices", headers=auth).json()["devices"]["gpu"] == {
+            "configured": False,
+            "available": False,
+        }
+
+
+def test_gateway_client_devices_parses_and_rejects_bad_payloads(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    real_client = httpx.Client
+    payload: dict[str, object] = {}
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        assert request.method == "GET"
+        assert str(request.url).endswith("/devices")
+        return httpx.Response(200, stream=httpx.ByteStream(json.dumps(payload).encode()))
+
+    monkeypatch.setattr(
+        httpx, "Client", lambda **kwargs: real_client(transport=httpx.MockTransport(respond))
+    )
+    payload.update(
+        devices={
+            "cpu": {"configured": True, "available": True},
+            "gpu": {"configured": False, "available": False},
+        }
+    )
+    assert gateway_client.embedding_devices(settings)["gpu"] == {
+        "configured": False,
+        "available": False,
+    }
+    for bad in ({}, {"devices": {"cpu": {"configured": 1, "available": True}}}):
+        payload.clear()
+        payload.update(bad)
+        with pytest.raises(EmbeddingRuntimeError):
+            gateway_client.embedding_devices(settings)

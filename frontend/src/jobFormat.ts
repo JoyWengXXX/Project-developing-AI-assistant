@@ -258,18 +258,34 @@ export function batchText(job: Job): string | null {
   return `第 ${Math.min(unit.index + 1, unit.count)}／${unit.count} 批`
 }
 
+/** 進度數字的單位：檢索索引工作的 processed_files／total_files 是「片段」，其餘是「檔案」。 */
+function progressUnit(job: Job): string {
+  return job.kind === 'snapshot_retrieval' ? '片段' : '檔案'
+}
+
 /** 進度文字（進度條旁）：百分比與「已處理 N / M 個檔案」；總數未知時不偽造百分比。 */
 export function progressText(job: Job): string {
   const { done, total } = progressNumbers(job)
   const pct = jobPercent(job)
   const verb = isIndexing(job) ? '已建立索引' : '已處理'
-  if (pct !== null && total !== null) return `${pct}%，${verb} ${done.toLocaleString('zh-TW')} / ${total.toLocaleString('zh-TW')} 個檔案`
-  if (total === 0) return isIndexing(job) ? '沒有可建立索引的檔案（目前只支援 Python）' : `沒有檔案需要處理（${done} / 0）`
+  const unit = progressUnit(job)
+  if (pct !== null && total !== null) return `${pct}%，${verb} ${done.toLocaleString('zh-TW')} / ${total.toLocaleString('zh-TW')} 個${unit}`
+  if (total === 0) return isIndexing(job) ? '沒有可建立索引的檔案（目前只支援 Python）' : `沒有${unit}需要處理（${done} / 0）`
   if (isEnumerating(job)) return '正在列舉檔案…'
-  if (done > 0) return `${verb} ${done.toLocaleString('zh-TW')} 個檔案（總數未知）`
+  if (done > 0) return `${verb} ${done.toLocaleString('zh-TW')} 個${unit}（總數未知）`
   if (job.status === 'running') return '進行中（總數未知，無法估計進度）'
   if (job.status === 'queued') return '尚未開始'
   return '沒有進度資料'
+}
+
+/**
+ * 檢索索引工作的「預估剩餘時間」說明；後端資料不足（太早、尚未處理）時為 null，不偽造。
+ * 這是以本次執行的平均速率線性外推的估計，片段大小與模型速度都會變。
+ */
+export function estimateText(job: Job): string | null {
+  const seconds = job.progress.estimated_remaining_seconds
+  if (job.status !== 'running' || seconds === null || seconds === undefined) return null
+  return `預估剩餘約 ${formatDuration(seconds * 1000)}（估計值，實際速度會變）`
 }
 
 export function canRetry(job: Job): boolean {
@@ -342,6 +358,10 @@ export function jobOutcome(job: Job, options: { workerOffline: boolean }): strin
   switch (job.status) {
     case 'queued':
       if (options.workerOffline) return '排隊中（背景執行器目前不在線，暫時不會執行）'
+      if (job.kind === 'snapshot_retrieval' && job.progress.processed_files > 0 && job.progress.total_files !== null) {
+        // 時間切片之間（或失敗後重試前）：已完成的片段已保存，下一次從這裡接著做
+        return `排隊中（已完成 ${job.progress.processed_files.toLocaleString('zh-TW')} / ${job.progress.total_files.toLocaleString('zh-TW')} 個片段，等待繼續）`
+      }
       return job.error !== null ? '排隊中（上次嘗試失敗，等待自動重試）' : '排隊中（等待背景執行器）'
     case 'running': {
       if (job.cancel_requested) return `取消中…（${cancellingWait(job.kind)}）`
@@ -349,7 +369,8 @@ export function jobOutcome(job: Job, options: { workerOffline: boolean }): strin
       if (job.kind !== 'snapshot_import') {
         // 註冊 clone 期間才有 bytes_received（其他階段與其他種類為 null，不顯示）
         const received = bytesReceivedText(job.progress.bytes_received)
-        return `進行中：${JOB_PHASE_LABEL[job.phase]}${received !== null ? `，${received}` : ''}`
+        const detail = job.kind === 'snapshot_retrieval' && job.progress.total_files !== null ? `（${progressText(job)}）` : ''
+        return `進行中：${JOB_PHASE_LABEL[job.phase]}${detail}${received !== null ? `，${received}` : ''}`
       }
       if (isEnumerating(job)) return '進行中：正在列舉檔案…'
       return files > 0 ? `進行中：已處理 ${files.toLocaleString('zh-TW')} 個檔案` : '進行中：正在讀取版本內容'

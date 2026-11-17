@@ -284,6 +284,10 @@ export interface JobProgress {
   indexed_files: number
   parse_error_count: number
   bytes_received: number | null // 暫存目錄大小（非百分比）
+  // 檢索索引工作（snapshot_retrieval）：此時 processed_files／total_files 是「片段」數；其他種類為 null／缺少
+  vectors_written?: number | null
+  estimated_remaining_seconds?: number | null // 估計值，資料不足時為 null
+  chunks_reused?: number | null // 本次執行以相同內容的既有向量複製完成的片段數
 }
 
 export interface JobError {
@@ -352,6 +356,15 @@ export interface JobSubmitResponse {
   repository_id: number | null
   reused: boolean
 }
+
+export type EmbeddingDevice = 'cpu' | 'gpu'
+
+export interface EmbeddingDeviceState {
+  configured: boolean
+  available: boolean
+}
+
+export type EmbeddingDevices = Record<EmbeddingDevice, EmbeddingDeviceState>
 
 export interface RetrievalIndex {
   snapshot_id: number

@@ -11,7 +11,7 @@ TypeScript／JavaScript／Java／Go／Rust／SQL 語法層級解析；其他符�
 每個階段的規格與驗收都應區分各語言的實際能力、明示未支援範圍，並評估混合語言 repo；
 新增解析器的語言與時程需另行確認，不假設所有語言已受支援。
 
-第三階段（語意與混合搜尋）**主要功能已完成，待使用者驗收**：TypeScript／JavaScript／Java／Go／Rust 結構索引與 SQL 四種方言代表宣告已通過隔離測試。檢索片段、背景 embedding 工作、索引狀態 API、跨 repo／快照三模式搜尋及主控台已實作；固定假資料初步評估及真實 Celery 堆疊的成功、取消、重試與 worker 中斷復原代表情境已驗證。真實 repo 的檢索品質、大型資料效能及其他故障情境仍未驗證。
+第三階段（語意與混合搜尋）**主要功能已完成，待使用者驗收**：TypeScript／JavaScript／Java／Go／Rust 結構索引與 SQL 四種方言代表宣告已通過隔離測試。檢索片段、背景 embedding 工作、索引狀態 API、跨 repo／快照三模式搜尋及主控台已實作；固定假資料初步評估及真實 Celery 堆疊的成功、取消、重試與 worker 中斷復原代表情境已驗證。真實 repo 的檢索品質、大型資料效能及其他故障情境仍未驗證。**2026-11-16 收尾驗證**：約 3 MB 的真實專案在 CPU 本機模型下，檢索索引預估需約 2 小時，超過預設 1 小時工作時限而失敗；較小的 Python 子集（736 KB）約 19 分完成，14 個查詢的初評為語意 Hit@5 1.00、混合 0.93、關鍵字 0.71（標註未經使用者核對）；合成 8 萬片段的搜尋延遲量測見本機 roadmap。使用者驗收清單見 `docs/stage-03-acceptance-checklist.md`。
 
 ## 文件
 
@@ -70,15 +70,15 @@ docker compose up -d --wait db db-test
 #    已經有 .env 時不要再執行這行（Copy-Item 會直接覆蓋）
 Copy-Item .env.example .env
 
-# 3. 建立資料表（目前最新 migration 為 0017；升級既有資料庫也是這行）
+# 3. 建立資料表（目前最新 migration 為 0018；升級既有資料庫也是這行）
 uv run alembic upgrade head
-uv run alembic current        # 預期 0017 (head)
+uv run alembic current        # 預期 0018 (head)
 
 # 4. 啟動後端（終端機 1）
 uv run uvicorn repopilot.main:create_app --factory --reload
 ```
 
-**降版風險**：`0017` 存在檢索工作或其階段時拒絕降版；`0016` 存在檢索索引時拒絕降版；`0015` 降版保留 `vector` extension，避免刪除其他用途的資料；`0014` 存在片段集合時拒絕降版；從 `0013`、`0012`、`0011`、`0010` 或 `0009` 各降一版不刪資料，但若存在該版本新增的語言或種類的索引資料會拒絕降版；從 `0008` 降到 `0007` 會刪除結構索引及符號等衍生資料，升版不會自動還原。需先評估備份與重建，勿在共用資料庫試跑。
+**降版風險**：`0018` 降版只移除片段內容雜湊索引，不刪資料；`0017` 存在檢索工作或其階段時拒絕降版；`0016` 存在檢索索引時拒絕降版；`0015` 降版保留 `vector` extension，避免刪除其他用途的資料；`0014` 存在片段集合時拒絕降版；從 `0013`、`0012`、`0011`、`0010` 或 `0009` 各降一版不刪資料，但若存在該版本新增的語言或種類的索引資料會拒絕降版；從 `0008` 降到 `0007` 會刪除結構索引及符號等衍生資料，升版不會自動還原。需先評估備份與重建，勿在共用資料庫試跑。
 
 ```powershell
 # 5. 啟動主控台（終端機 2）；後端必須先啟動
@@ -127,10 +127,12 @@ uv run python -c "from cryptography.fernet import Fernet; print(Fernet.generate_
 | `MANAGED_REPOS_DIR` | 空 | GitHub clone 的**受管目錄**（絕對路徑）；**空白＝停用 GitHub 註冊**；與 `REPOSITORY_ROOTS` 分開。背景註冊要求它能映射到 worker 的**可寫**掛載（`WORKER_PATH_MAPPINGS` 的 `mode` 為 `rw`），否則 503 `worker_path_not_mapped` |
 | `GITHUB_*` | 見 `.env.example` | GitHub API／clone 的基底位址（僅供測試指向本機假 GitHub）與逾時（未實測，大型 repo 可能需調高） |
 | `GIT_POLL_SECONDS`、`CLONE_PROGRESS_SECONDS`、`MANAGED_TEMP_ORPHAN_SECONDS` | 1、2、7200 | 切片 5（只影響 worker，未實測）：clone／fetch 期間檢查取消旗標與租約的間隔、量測暫存目錄大小（`progress.bytes_received`）的間隔、孤兒暫存目錄的年齡門檻（須大於 `GITHUB_CLONE_TIMEOUT_SECONDS`） |
+| `SEARCH_MAX_CHUNKS` | 5000 | 第三階段收尾 H7：`keyword` 與 `hybrid` 檢索會掃描選取快照的全部片段（耗時隨片段數線性成長），超過這個片段總數就在掃描前回 422 `search_scope_too_large`（`details` 帶 `chunk_count`、`max_chunks`），不等到逾時；`semantic` 不受限。預設值是依現行查詢在 20,000 片段的合成量測（常見詞約 3.5 秒、7 詞自然語言約 25 秒）保守訂的，其他硬體與真實 repo 未驗證 |
 | `SEARCH_STATEMENT_TIMEOUT_SECONDS` | 10 | 切片 8：每個搜尋請求的時間上限（PostgreSQL `statement_timeout`；內容搜尋另有整體期限）；超過回 504 `search_timeout`，不回空列表。預設值只在 20,000 檔合成快照上量測過一次 |
 | `WORKER_PATH_MAPPINGS` | 空 | 主機路徑 ↔ 容器路徑（JSON 陣列 `[{host, container, mode}]`）；**API 建立 import-job 時用它檢查路徑可映射**，未涵蓋回 503 `worker_path_not_mapped`；容器內的設定由 docker-compose 提供，所以 **API 的 `.env` 也要設** |
 | `WORKER_REPOSITORIES_HOST_DIR`、`WORKER_MANAGED_HOST_DIR` | 專案內 `.test-repos`、`.test-managed` | 只給 docker compose 插值（後端不讀）：worker 容器掛載的主機目錄 |
 | `WORKER_GIT_TIMEOUT_SECONDS`、`WORKER_IMPORT_GIT_TIMEOUT_SECONDS`、`WORKER_TASK_TIME_LIMIT_SECONDS` | 120、900、3600 | worker 的 Git 與任務逾時；未實測，只影響 worker |
+| `RETRIEVAL_TIME_SLICE_SECONDS` | 1200 | 檢索索引工作的單次執行時間：超過後在完成目前片段時停止、保留向量並放回佇列接著做（不消耗重試額度），大 repo 因此可分段完成；實際生效值不超過 `WORKER_TASK_TIME_LIMIT_SECONDS` 減 180；未實測，只影響 worker |
 | `CELERY_*`、`JOB_*`、`DISPATCH_*`、`RECOVERY_SCAN_SECONDS`、`SERVICE_HEARTBEAT_SECONDS` | 見 `.env.example` | 只有 dispatcher 與 worker 使用 Celery／Redis 設定（compose 已設定）；**API 不連 Redis**。租約、重試、派送與心跳秒數皆為未實測的起點 |
 | `TEST_DATABASE_URL` | `db-test` 預設值 | 只供整合測試讀取環境變數（不讀 `.env`）；資料庫名稱必須含 `test` |
 
@@ -194,6 +196,20 @@ docker compose --profile jobs up -d --wait worker dispatcher
 
 5. 重啟 API 讀取設定。停止模型及橋接可執行 `docker compose --profile embedding stop embedding-proxy embedding-gateway embedding`；不要使用 `down` 清除共享資源。
 
+**算力設定（只影響速度）**：`EMBEDDING_THREADS`（預設 8；`.env`）決定推論執行緒數。實測（8 核 16 執行緒的筆電）2 → 8 個執行緒約快 3 倍，8 以上收益很小，但建索引期間電腦會明顯變慢；沒有改變向量內容。映像改用 llama.cpp b12404 的 CUDA 版發行檔（含 CUDA 執行階段函式庫，映像約 1.5 GB），其 CPU 路徑在同一台機器上比先前的 `ubuntu-x64` 版快約 2 倍（原因未查明）。**這次映像更換會改變 `runtime_bundle_sha256`**：升級後請重建映像、重新取得日誌中的雜湊並更新 `.env` 與 `.env.worker`，先前建立的檢索索引會因設定不同而需要重建。
+
+**選用：使用 NVIDIA GPU（可在介面切換）**：GPU 是另一個常駐的服務 `embedding-gpu`（同一份映像與模型、同樣無網路，私有 socket 為獨立的 volume）。CPU 服務不受影響；沒有可用 GPU 時它會啟動失敗，介面的 GPU 選項會停用並說明原因。
+
+```powershell
+docker compose --profile embedding --profile embedding-gpu up -d --wait embedding-gpu embedding-gateway
+docker compose --profile embedding --profile embedding-gpu logs embedding-gpu   # 預期 embedding_compute threads=8 gpu_layers=99
+docker compose --profile embedding --profile embedding-gpu stop embedding-gpu   # 停用 GPU（介面的 GPU 選項隨即停用）
+```
+
+在主控台「檢索」面板建立索引時選擇「CPU」或「GPU」（預設 CPU）。選擇只記錄在該次檢索工作（`params.device`，工作結果 `result.device`），不影響索引的設定識別與去重：已有進行中的工作時沿用它的裝置；工作失敗或取消後再次提交可改選另一個裝置，並接續已保存的片段（不重算）。**不會自動改用另一個裝置**：GPU 在提交時不可用，API 回 503 `embedding_device_unavailable`；工作執行中 GPU 服務才中斷，工作會以一般的 `embedding_runtime_error` 失敗（已寫入的片段保留），由使用者改選 CPU 重新提交。查詢（語意搜尋時的查詢向量）固定使用 CPU 服務。`GET /api/v1/retrieval/devices` 回報兩種裝置目前是否可用。
+
+GPU 與 CPU 的 `runtime_bundle_sha256` 相同（雜湊不計入 NVIDIA runtime 掛進容器的主機驅動函式庫，所以驅動更新也不會讓索引失效），因此**切換不需要改 `.env`、不需要重建索引**，兩種裝置的向量可以互相搜尋與重用；但 GPU 的向量與 CPU 有微小數值差異（40 段文字量測：餘弦相似度 ≥ 0.999998，一份 14 個查詢的評估中 CPU 與 GPU 查詢、GPU 與 CPU 建的索引互相搭配，42 組結果有 40 組前 5 名清單完全相同，差異只在第 3～5 名的順序，第 1 名相同）。NVIDIA runtime 會把主機驅動函式庫掛進容器，信任邊界與 Docker 本身相同。只驗證過 Windows＋Docker Desktop＋RTX 3080 Laptop；Linux 原生、其他 GPU 未驗證，也沒有量測與其他 GPU 程式競爭的情況。
+
 查詢橋接只綁定主機 loopback；固定目的地代理連接內部網路上的 gateway，gateway 再連接私有 socket。代理同時連接非內部網路；Docker 管理者、同主機具權限程序及可存取橋接流量的容器屬信任邊界。token 不能防止惡意本機程序搶先佔用埠。runtime 雜湊是當前映像的識別，不是供應鏈驗證；重建映像後須重新核對。**未驗證**所有錯誤日誌、主機模型被修改及完整防外傳；不要因此將敏感內容交給本服務。
 
 ## 主控台操作流程
@@ -219,7 +235,7 @@ React + TypeScript + Vite 的最小操作主控台（`frontend/`），用來以�
 
 ## API 一覽
 
-共 39 個端點（可用 `http://127.0.0.1:8000/openapi.json` 對照；以 `create_app().openapi()` 核對為 39 個 method＋path，切片 6 新增 5 個、切片 8 新增 3 個）。契約與取捨見 [architecture.md](docs/architecture.md#設計決策) 的 D 編號。
+共 43 個端點（可用 `http://127.0.0.1:8000/openapi.json` 對照；2026-11-17 以 `create_app().openapi()` 核對為 43 個 method＋path，其中第三階段的檢索相關端點含 `GET /retrieval/devices`）。契約與取捨見 [architecture.md](docs/architecture.md#設計決策) 的 D 編號。
 
 | 方法 | 路徑 | 說明 | 主要狀態碼與錯誤碼 |
 | --- | --- | --- | --- |
@@ -247,9 +263,10 @@ React + TypeScript + Vite 的最小操作主控台（`frontend/`），用來以�
 | GET | `/api/v1/snapshots/{id}/files` | 檔案列表（不含 `content`；`status`、`path_prefix`、`limit`、`offset`） | 200 `{items, total, limit, offset}`；409 `snapshot_not_completed` |
 | GET | `/api/v1/snapshots/{id}/files/{file_id}` | 單檔含 `content`（`skipped` 為 `null`，帶 `skip_reason`） | 200；404 `snapshot_file_not_found`；409 `snapshot_not_completed`（[D30](docs/architecture.md)） |
 | POST | `/api/v1/snapshots/{id}/index-jobs` | **背景建立結構索引**（切片 6）：只讀資料庫裡的快照內容（不碰 Git）；同快照、同索引設定進行中只有一個 job；失敗或取消後再提交會重新排入同一個 job | 202＋`Location`；200 `reused=true`（目前設定的索引已完成）；404 `snapshot_not_found`；409 `snapshot_not_completed`（[D45](docs/architecture.md)） |
-| POST | `/api/v1/snapshots/{id}/retrieval-jobs` | 背景建立檢索索引；需要 API 與 worker 的模型／執行器 SHA-256 一致，worker 另需私有 socket | 202＋`Location`；200 `reused=true`；404 `snapshot_not_found`；409 `snapshot_not_completed`；503 `embedding_not_configured` |
+| POST | `/api/v1/snapshots/{id}/retrieval-jobs` | 背景建立檢索索引；選填本文 `{"device": "cpu" 或 "gpu"}`（預設 cpu）。需要 API 與 worker 的模型／執行器 SHA-256 一致，worker 另需私有 socket。失敗或取消後重試（含 `POST /jobs/{id}/retry`）會續跑：保留已完整涵蓋的片段向量，只補缺少的；內容與既有已完成索引（同 embedding 設定，可來自其他快照或 repo）相同的片段直接複製向量，不重算 | 202＋`Location`；200 `reused=true`；404 `snapshot_not_found`；409 `snapshot_not_completed`；503 `embedding_not_configured`／`embedding_device_unavailable` |
 | GET | `/api/v1/snapshots/{id}/retrieval-index` | 查詢目前設定的索引狀態、完成後的片段與向量數，以及最近的對應工作；尚無索引時為 `none` | 200；404 `snapshot_not_found`；409 `snapshot_not_completed`；503 `embedding_not_configured` |
-| POST | `/api/v1/retrieval/search` | 支援 `keyword`、`semantic`、`hybrid`；傳入 `snapshot_ids`、`query`、`mode` 與選填 `limit`，結果含來源、行號、片段與適用的排序分數 | 200；404 `snapshot_not_found`；409 `snapshot_not_completed`／`retrieval_index_not_ready`；422；503；504 |
+| GET | `/api/v1/retrieval/devices` | 建立檢索索引可選的運算裝置與各自的 `configured`／`available`（經本機 gateway 向各 runtime 驗證） | 200；503 |
+| POST | `/api/v1/retrieval/search` | 支援 `keyword`、`semantic`、`hybrid`；傳入 `snapshot_ids`、`query`、`mode` 與選填 `limit`，結果含來源、行號、片段與適用的排序分數 | 200；404 `snapshot_not_found`；409 `snapshot_not_completed`／`retrieval_index_not_ready`；422（含 `validation_error`，以及 `keyword`／`hybrid` 的選取片段總數超過 `SEARCH_MAX_CHUNKS` 時的 `search_scope_too_large`）；503；504 |
 | GET | `/api/v1/snapshots/{id}/index` | 快照在**目前設定**下的索引狀態：`none`（沒有索引，200 不是錯誤）、`building`、`completed`（另有 `counts`：依語言、解析狀態、符號種類）、`failed`；`analyzers` 是抽取器與版本 | 200；404；409 `snapshot_not_completed` |
 | GET | `/api/v1/snapshots/{id}/index/files` | 被索引的檔案、解析狀態與 `error_kind`（`has_problems`、`language`、`limit`、`offset`；依 path 排序）；只有第一個語法錯誤的位置，**沒有程式碼片段** | 200；409 `snapshot_not_completed`、`snapshot_index_not_ready`（`details.index_status`） |
 | GET | `/api/v1/snapshots/{id}/symbols` | 符號列表（`kind`、`parent_id`、`top_level`、`file_id`、`path_prefix`、`limit`、`offset`；依 path、起始行排序；`has_children` 供符號樹逐層載入）；只採用 `completed` 的索引 | 200；409 `snapshot_not_completed`、`snapshot_index_not_ready` |
@@ -262,7 +279,7 @@ React + TypeScript + Vite 的最小操作主控台（`frontend/`），用來以�
 | DELETE | `/api/v1/github/auth` | 刪除本機保存的 token（不在 GitHub 端撤銷） | 204（冪等） |
 | GET | `/api/v1/jobs` | 背景工作列表（新的在前；`status`＝`queued`／`running`／`succeeded`／`failed`／`cancelled`／`active`、`kind`、`repository_id`、`snapshot_id`、`limit`、`offset`） | 200 `{items, total, limit, offset}`；422 |
 | GET | `/api/v1/jobs/status` | dispatcher／worker 是否在線（讀 `service_heartbeats`，**不連 Redis**；`online`／`stale`／`absent`）與 `queued`／`running` 數量 | 200 |
-| GET | `/api/v1/jobs/{job_id}` | 單一工作（階段、進度、嘗試次數、安全的 `error`、`result`、取消請求時間 `cancel_requested_at`、失敗追查摘要 `diagnostics`；**不含租約令牌**）。背景匯入的 `progress.processed_files` 隨每一批 blob 讀完而前進；`total_files` 為 `null` 時（還在列舉檔案）請不要顯示百分比 | 200；404 `job_not_found`；422（id 超出 1～2⁶³−1） |
+| GET | `/api/v1/jobs/{job_id}` | 單一工作（階段、進度、嘗試次數、安全的 `error`、`result`、取消請求時間 `cancel_requested_at`、失敗追查摘要 `diagnostics`；**不含租約令牌**）。背景匯入的 `progress.processed_files` 隨每一批 blob 讀完而前進；`total_files` 為 `null` 時（還在列舉檔案）請不要顯示百分比。檢索索引工作（`snapshot_retrieval`）的 `progress.processed_files`／`total_files` 是**片段**數，另有 `progress.vectors_written` 與估計值 `progress.estimated_remaining_seconds`（執行中且資料足夠才有，否則 `null`；以本次執行速率線性外推，只是估計）。任一工作超過 worker 的單一任務時限（`WORKER_TASK_TIME_LIMIT_SECONDS`）時以永久性錯誤碼 `job_time_limit_exceeded` 失敗，不自動重試 | 200；404 `job_not_found`；422（id 超出 1～2⁶³−1） |
 | POST | `/api/v1/jobs/{job_id}/cancel` | 取消：`queued` 立即 `cancelled`；`running` 只記錄取消請求，worker 在目前這一批 blob 讀完後中止（最多延遲一批的時間，未實測大型 repo），快照標為 `failed`、不留檔案；已取消者冪等 | 200 已取消；202 已記錄請求；404；409 `job_not_cancellable` |
 | POST | `/api/v1/jobs/{job_id}/retry` | 重試 `failed` 的工作（同一 job id，重新排入佇列） | 202；404；409 `job_not_retryable` |
 
@@ -425,6 +442,7 @@ uv run alembic check               # model 與 migration 無差異（以 DATABAS
 - **第三階段 TS／JS 切片**（2026-11-15）：獨立副本與隔離 PostgreSQL 的 `python -m pytest -m "not stack" -q` 重跑 **2324 passed、18 deselected、1 warning**；首次執行的 6 項失敗為舊 fixture 仍將 `.js` 視為未支援，修正後重跑通過。真實 worker 的索引 stack 測試 3 passed；完整 stack 未執行。另以隔離 API、資料庫與瀏覽器驗證符號及搜尋代表情境。
 - **第三階段 Java 切片**（2026-11-15）：獨立副本與隔離 PostgreSQL 的 `python -m pytest tests\unit tests\integration\test_java_index.py tests\integration\test_script_index.py tests\integration\test_snapshot_indexing.py tests\integration\test_database.py -q`：1074 passed、1 warning；真實 worker 的 `python -m pytest tests\integration\stack\test_stack_index.py -q`：4 passed、1 warning。瀏覽器以隔離快照驗證語言統計、符號樹、靜態 import 與 Java 篩選；完整非 stack／stack 測試與真實大型 Java repo 未驗證。
 - **第三階段 Go 切片**（2026-11-15）：獨立副本與隔離 PostgreSQL 的 `python -m pytest tests\unit tests\integration\test_go_index.py tests\integration\test_java_index.py tests\integration\test_script_index.py tests\integration\test_snapshot_indexing.py tests\integration\test_database.py -q`：1078 passed、1 warning；真實 worker 的 `python -m pytest tests\integration\stack\test_stack_index.py -q`：5 passed、1 warning。瀏覽器以隔離快照驗證語言統計、符號樹、import 與 Go 篩選；完整非 stack／stack 測試與真實大型 Go repo 未驗證。
+- **第三階段收尾量測腳本**（2026-11-16）：`scripts\eval\run_real_eval.py` 對隔離 API 跑固定查詢集（Hit@5、Recall@5、MRR）；`scripts\eval\perf_search.py` 在名為 `repopilot_perf` 的拋棄式資料庫產生合成快照並量測搜尋 SQL 耗時（會 `TRUNCATE repositories`，勿指向共用資料庫；以 `PERF_DATABASE_URL` 指定）。兩者不是自動化測試，也不屬 `pytest`；結果與限制見本機 roadmap。
 - 前端僅有輪詢純邏輯自動化測試，尚無完整元件或端到端自動化測試（見「主控台操作流程」的驗證狀態）。
 
 ## 安全注意事項

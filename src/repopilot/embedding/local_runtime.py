@@ -55,6 +55,8 @@ class LocalEmbeddingRuntime:
         model_sha256: str,
         timeout_seconds: float = 30,
         startup_timeout_seconds: float = 120,
+        threads: int = 2,
+        gpu_layers: int = 0,
     ) -> None:
         if not executable.is_absolute() or not model.is_absolute():
             raise ValueError("Executable and model paths must be absolute.")
@@ -67,31 +69,26 @@ class LocalEmbeddingRuntime:
             or startup_timeout_seconds <= 0
         ):
             raise ValueError("Timeouts must be positive finite values.")
+        # 型別檢查排除 bool；這兩個值只決定速度，不影響向量的語意（GPU 的數值有微小差異）
+        if type(threads) is not int or not 1 <= threads <= 256:
+            raise ValueError("threads must be an integer from 1 to 256.")
+        if type(gpu_layers) is not int or not 0 <= gpu_layers <= 999:
+            raise ValueError("gpu_layers must be an integer from 0 to 999.")
         self._executable = executable
         self._model = model
         self._expected_hash = model_sha256
         self._timeout_seconds = timeout_seconds
         self._startup_timeout_seconds = startup_timeout_seconds
+        self._threads = threads
+        self._gpu_layers = gpu_layers
         self._process: subprocess.Popen[str] | None = None
         self._reader: threading.Thread | None = None
         self._client: httpx.Client | None = None
         self.executable_sha256: str | None = None
 
-    def __enter__(self) -> "LocalEmbeddingRuntime":
-        if self._process is not None:
-            raise EmbeddingRuntimeError("The embedding runtime is already running.")
-        try:
-            self._executable = self._executable.resolve(strict=True)
-            self._model = self._model.resolve(strict=True)
-            if not self._executable.is_file() or not self._model.is_file():
-                raise EmbeddingRuntimeError("Executable or model is not a regular file.")
-            if _file_sha256(self._model) != self._expected_hash:
-                raise EmbeddingRuntimeError("The local model digest does not match.")
-            self.executable_sha256 = _file_sha256(self._executable)
-        except (OSError, RuntimeError, ValueError):
-            raise EmbeddingRuntimeError("Could not read the local executable or model.") from None
-
-        args = [
+    def command(self) -> list[str]:
+        """llama-server 的參數；只有執行緒數與 GPU 層數可設定，其餘固定。"""
+        return [
             str(self._executable),
             "--model",
             str(self._model),
@@ -110,13 +107,29 @@ class LocalEmbeddingRuntime:
             "--parallel",
             "1",
             "--threads",
-            "2",
+            str(self._threads),
             "--threads-batch",
-            "2",
+            str(self._threads),
             "--n-gpu-layers",
-            "0",
+            str(self._gpu_layers),
             "--no-webui",
         ]
+
+    def __enter__(self) -> "LocalEmbeddingRuntime":
+        if self._process is not None:
+            raise EmbeddingRuntimeError("The embedding runtime is already running.")
+        try:
+            self._executable = self._executable.resolve(strict=True)
+            self._model = self._model.resolve(strict=True)
+            if not self._executable.is_file() or not self._model.is_file():
+                raise EmbeddingRuntimeError("Executable or model is not a regular file.")
+            if _file_sha256(self._model) != self._expected_hash:
+                raise EmbeddingRuntimeError("The local model digest does not match.")
+            self.executable_sha256 = _file_sha256(self._executable)
+        except (OSError, RuntimeError, ValueError):
+            raise EmbeddingRuntimeError("Could not read the local executable or model.") from None
+
+        args = self.command()
         env = {
             key: value
             for key, value in os.environ.items()

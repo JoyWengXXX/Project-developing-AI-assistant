@@ -13,33 +13,19 @@ from repopilot.errors import EmbeddingNotConfiguredError
 _MAX_RESPONSE_BYTES = 100_000
 
 
-def embed_query(settings: Settings, profile: EmbeddingProfile, query: str) -> list[float]:
+def _call(settings: Settings, method: str, path: str, body: bytes | None) -> tuple[int, bytes]:
+    """向 gateway 送一個受限的請求：不跟隨轉址、不接受壓縮、回應有大小上限。"""
     token = settings.embedding_gateway_token.get_secret_value()
     if not token:
         raise EmbeddingNotConfiguredError("The embedding gateway token is not configured.")
-    try:
-        query_bytes = query.encode("utf-8")
-    except UnicodeEncodeError:
-        raise EmbeddingRuntimeError("The embedding query is not valid UTF-8.") from None
-    if len(query_bytes) > 32768:
-        raise EmbeddingInputTooLongError("Embedding input exceeds the byte limit.")
-    body = json.dumps(
-        {"profile_hash": profile.hash(), "query": query}, ensure_ascii=False, separators=(",", ":")
-    ).encode("utf-8")
-    url = f"http://127.0.0.1:{settings.embedding_gateway_port}/embed"
+    url = f"http://127.0.0.1:{settings.embedding_gateway_port}{path}"
+    headers = {"Authorization": f"Bearer {token}", "Accept-Encoding": "identity"}
+    if body is not None:
+        headers["Content-Type"] = "application/json"
     try:
         with (
             httpx.Client(timeout=30.0, trust_env=False, follow_redirects=False) as client,
-            client.stream(
-                "POST",
-                url,
-                content=body,
-                headers={
-                    "Authorization": f"Bearer {token}",
-                    "Content-Type": "application/json",
-                    "Accept-Encoding": "identity",
-                },
-            ) as response,
+            client.stream(method, url, content=body, headers=headers) as response,
         ):
             status_code = response.status_code
             if response.headers.get("content-encoding", "identity").lower() != "identity":
@@ -53,6 +39,45 @@ def embed_query(settings: Settings, profile: EmbeddingProfile, query: str) -> li
                 result.extend(block)
     except httpx.HTTPError:
         raise EmbeddingRuntimeError("The local embedding gateway is unavailable.") from None
+    return status_code, bytes(result)
+
+
+def embedding_devices(settings: Settings) -> dict[str, dict[str, bool]]:
+    """各運算裝置的狀態：`{"cpu": {"configured", "available"}, "gpu": {...}}`。"""
+    status_code, raw = _call(settings, "GET", "/devices", None)
+    if status_code != 200:
+        raise EmbeddingRuntimeError("The local embedding gateway is unavailable.")
+    try:
+        data = json.loads(raw)
+        devices = data["devices"]
+        result = {
+            name: {
+                "configured": devices[name]["configured"],
+                "available": devices[name]["available"],
+            }
+            for name in ("cpu", "gpu")
+        }
+    except (ValueError, KeyError, TypeError, RecursionError):
+        raise EmbeddingRuntimeError("The local embedding gateway returned invalid data.") from None
+    if any(type(flag) is not bool for state in result.values() for flag in state.values()):
+        raise EmbeddingRuntimeError("The local embedding gateway returned invalid data.")
+    return result
+
+
+def embed_query(settings: Settings, profile: EmbeddingProfile, query: str) -> list[float]:
+    token = settings.embedding_gateway_token.get_secret_value()
+    if not token:
+        raise EmbeddingNotConfiguredError("The embedding gateway token is not configured.")
+    try:
+        query_bytes = query.encode("utf-8")
+    except UnicodeEncodeError:
+        raise EmbeddingRuntimeError("The embedding query is not valid UTF-8.") from None
+    if len(query_bytes) > 32768:
+        raise EmbeddingInputTooLongError("Embedding input exceeds the byte limit.")
+    body = json.dumps(
+        {"profile_hash": profile.hash(), "query": query}, ensure_ascii=False, separators=(",", ":")
+    ).encode("utf-8")
+    status_code, result = _call(settings, "POST", "/embed", body)
     try:
         data = json.loads(result)
     except (ValueError, UnicodeDecodeError, RecursionError):

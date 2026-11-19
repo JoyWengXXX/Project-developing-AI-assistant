@@ -22,7 +22,7 @@ export const QA_ERROR_HINT: Record<string, string> = {
   provider_timeout: '供應商沒有在時限內回應。RepoPilot 已自動重試過，仍然失敗；請稍後再提問。',
   provider_rate_limited: '供應商限流（請求太頻繁）。RepoPilot 已自動重試過，仍然失敗；請稍後再提問。',
   provider_unavailable: '供應商暫時無法使用或過載。RepoPilot 已自動重試過，仍然失敗；請稍後再提問。',
-  provider_payment_required: '供應商要求付款：請檢查供應商帳號的計費設定（這不是 RepoPilot 的額度）。',
+  provider_payment_required: '供應商帳號餘額不足或需要付款：請到 Anthropic Console 的 Plans & Billing 購買額度（API 與 Claude 訂閱的額度是分開的；這不是 RepoPilot 的額度）。',
   provider_request_too_large: '請求對供應商來說太大；請減少選取的版本或縮短問題。',
   provider_malformed_response: '供應商回傳了無法使用的回應。可以重新提問。',
   provider_auth_failed: '供應商拒絕了這把 API key（無效、過期或已撤銷）；請到「問答設定」重新貼上有效的 key。',

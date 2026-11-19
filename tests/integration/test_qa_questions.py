@@ -402,17 +402,23 @@ def test_qa_questions_invalid_citations_are_flagged_and_excluded(env: Env) -> No
     ) == (40, 41)
 
 
-def test_qa_questions_insufficient_evidence_keeps_statements_out_of_the_answer(env: Env) -> None:
+def test_qa_questions_insufficient_evidence_explanation_is_verified_and_shown(env: Env) -> None:
     env.provider = FakeProvider(
-        text=_answer(_statement("made up", "fact", ("C1", 1, 1)), status="insufficient_evidence")
+        text=_answer(
+            _statement("repo covers jobs", "fact", ("C1", 1, 1)),
+            _statement("invented", "fact", ("C9", 1, 1)),
+            _statement("need a shop repo", "open_question"),
+            status="insufficient_evidence",
+        )
     )
 
     done = _ask_and_run(env)
 
     assert done["answer_status"] == "insufficient_evidence"
-    assert done["statements"] == []
+    assert [s["text"] for s in done["statements"]] == ["repo covers jobs", "need a shop repo"]
+    assert [r["text"] for r in done["rejected_statements"]] == ["invented"]
     assert [r["reason"] for r in done["rejected_statements"][0]["reasons"]] == [
-        "statement_with_insufficient_evidence"
+        "unknown_chunk_code"
     ]
 
 

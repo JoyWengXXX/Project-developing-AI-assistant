@@ -259,6 +259,26 @@ def test_qa_failures_spend_limit_signature_only_applies_to_400_and_429(status: i
     assert not isinstance(error, ProviderSpendLimitReachedError)
 
 
+def test_qa_failures_low_credit_balance_400_is_a_payment_problem_not_a_bad_request() -> None:
+    body = {
+        "type": "error",
+        "error": {
+            "type": "invalid_request_error",
+            "message": "Your credit balance is too low to access the Anthropic API.",
+        },
+    }
+    error = classify_error(api_error(400, body=body))
+
+    assert isinstance(error, ProviderPaymentRequiredError)
+    assert not error.retryable and error.status_code == 400
+
+
+def test_qa_failures_other_400_stays_a_bad_request() -> None:
+    error = classify_error(api_error(400, body={"error": {"message": "max_tokens too large"}}))
+
+    assert isinstance(error, ProviderBadRequestError)
+
+
 def test_qa_failures_plain_429_is_a_transient_rate_limit_with_or_without_retry_after() -> None:
     plain = classify_error(api_error(429, body={"error": {"type": "rate_limit_error"}}))
     timed = classify_error(api_error(429, headers={"retry-after": "7"}))

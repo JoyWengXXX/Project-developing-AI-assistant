@@ -36,6 +36,7 @@ logger = logging.getLogger(__name__)
 
 _THINKING_DISABLE_MAX_EFFORT = {"low", "medium", "high"}
 _SPEND_LIMIT_SIGNAL = "enforced_spend_limit_reached"
+_LOW_CREDIT_SIGNAL = "credit balance is too low"
 
 _STOP_REASON_OUTCOMES = {
     "end_turn": GenerationOutcome.COMPLETED,
@@ -106,6 +107,13 @@ def _is_spend_limit(exc: anthropic.APIStatusError) -> bool:
     return _SPEND_LIMIT_SIGNAL in f"{exc.message} {json.dumps(exc.body, default=str)}"
 
 
+def _is_low_credit_balance(exc: anthropic.APIStatusError) -> bool:
+    """餘額不足：實測 Anthropic 以 400 `invalid_request_error` 回報，而不是 402。"""
+    if exc.status_code != 400:
+        return False
+    return _LOW_CREDIT_SIGNAL in f"{exc.message} {json.dumps(exc.body, default=str)}".lower()
+
+
 def classify_error(exc: Exception) -> QAProviderError:
     """把 SDK 例外轉成領域例外；402、413、529 沒有專屬 SDK 類別，依 `status_code` 分派。"""
     if isinstance(exc, anthropic.APITimeoutError):
@@ -129,7 +137,7 @@ def classify_error(exc: Exception) -> QAProviderError:
             )
         if status in (401, 403):
             error_type: type[QAProviderError] = ProviderAuthError
-        elif status == 402:
+        elif status == 402 or _is_low_credit_balance(exc):
             error_type = ProviderPaymentRequiredError
         elif status == 413:
             error_type = ProviderRequestTooLargeError

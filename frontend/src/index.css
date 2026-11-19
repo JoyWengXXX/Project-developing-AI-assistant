@@ -2094,6 +2094,18 @@ label.qa-model input {
 .qa-source-gap {
   padding: 2px 0;
 }
+.qa-prose p {
+  margin: 0 0 12px;
+  line-height: 1.7;
+  font-size: 1.05em;
+}
+.qa-sources,
+.qa-technical {
+  margin-top: 12px;
+}
+.qa-brief {
+  margin: 8px 0 0;
+}
 /* 引用無效：與驗證通過的答案明顯分開（虛線框＋底色），不單靠顏色 */
 .qa-rejected {
   margin-top: 16px;

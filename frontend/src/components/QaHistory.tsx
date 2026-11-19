@@ -54,7 +54,7 @@ function Row({ item, viewing, onView, onDeleted }: { item: QaQuestionListItem; v
       <div className="qa-history-line">
         <strong>#{item.id}</strong>
         <span className={`badge ${QA_STATUS_BADGE[item.status]}`}>{QA_STATUS_LABEL[item.status]}</span>
-        {item.answer_status === 'insufficient_evidence' && <span className="badge badge-importing">找不到足夠證據</span>}
+        {item.answer_status === 'insufficient_evidence' && <span className="badge badge-importing">證據不足</span>}
         <span className="qa-history-question">{preview(item.question)}</span>
       </div>
       <div className="muted qa-history-meta">

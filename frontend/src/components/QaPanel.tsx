@@ -148,6 +148,7 @@ export function QaPanel({
                     submitEstimate={submitEstimate}
                     jobsStatus={jobs.status}
                     onChanged={onChanged}
+                    onResubmitted={onSubmitted}
                   />
                   {viewStatus !== null && !isQaActive(viewStatus) && (
                     <button type="button" className="secondary small" onClick={() => setViewId(null)}>

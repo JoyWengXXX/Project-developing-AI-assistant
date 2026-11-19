@@ -1,8 +1,10 @@
 import { useEffect, useState } from 'react'
+import { api } from '../api'
 import { JOB_PHASE_LABEL, queueWarning } from '../jobFormat'
 import { QA_STATUS_BADGE, QA_STATUS_LABEL, isQaActive } from '../qaQuestion'
-import type { Job, JobsStatus, QaEstimate, QaQuestion, QaQuestionStatus } from '../types'
+import type { Job, JobsStatus, QaEstimate, QaQuestion, QaQuestionStatus, QaQuestionSubmitResponse } from '../types'
 import { ApiHint } from '../ui'
+import { useAction } from '../useAction'
 import { usePolling, type PollState } from '../usePolling'
 import { useSnapshotPresence } from '../useSnapshotPresence'
 import { formatTokens, formatUsd } from '../qaFormat'
@@ -23,6 +25,32 @@ interface Props {
   jobsStatus: PollState<JobsStatus>
   /** 問答的狀態有變（第一次載入、進入終態）：呼叫端重新讀取額度與歷史，並知道目前檢視的問答是否還在進行。呼叫端須提供穩定的函式。 */
   onChanged: (status: QaQuestionStatus) => void
+  /** 以同一個問題與版本重新提問成功（新的問答 id）：呼叫端改為檢視新的問答。 */
+  onResubmitted: (response: QaQuestionSubmitResponse) => void
+}
+
+function ResubmitButton({ question, onResubmitted }: { question: QaQuestion; onResubmitted: (response: QaQuestionSubmitResponse) => void }) {
+  const action = useAction()
+  async function resubmit() {
+    await action.run(async () => {
+      const res = await api<QaQuestionSubmitResponse>('POST', '/api/v1/qa/questions', {
+        body: { snapshot_ids: question.snapshot_ids, question: question.question, max_tokens: question.max_tokens },
+      })
+      onResubmitted(res.data)
+    })
+  }
+  return (
+    <div className="qa-resubmit">
+      <p className="note">
+        重新提問會用同樣的版本與問題建立一筆新的問答（重新檢索、重新預留額度，這次的用量另外計算）；原本這筆保留在歷史裡。
+        請先處理上面的失敗原因再重試。
+      </p>
+      <button type="button" disabled={action.busy} onClick={() => void resubmit()}>
+        {action.busy ? '送出中…' : '重新提問'}
+      </button>
+      <QaErrorBox error={action.error} title="無法重新提問" />
+    </div>
+  )
 }
 
 function newer(a: Job | null, b: Job | null): Job | null {
@@ -58,7 +86,7 @@ function ActiveStatus({ question, job, jobsStatus }: { question: QaQuestion; job
  * 完成後顯示答案、費用與追蹤資訊；呼叫端用 key={id} 換問答時整個重建。
  * 問題與答案都是不可信內容，一律當文字節點顯示。
  */
-export function QaQuestionView({ id, submitEstimate, jobsStatus, onChanged }: Props) {
+export function QaQuestionView({ id, submitEstimate, jobsStatus, onChanged, onResubmitted }: Props) {
   const [final, setFinal] = useState<QaQuestion | null>(null)
   const [gone, setGone] = useState(false)
   const [reload, setReload] = useState(0)
@@ -110,7 +138,7 @@ export function QaQuestionView({ id, submitEstimate, jobsStatus, onChanged }: Pr
 
   return (
     <div className="qa-question-view">
-      <ApiHint apis={[`GET ${path}`, 'GET /api/v1/jobs/{job_id}', 'POST /api/v1/jobs/{job_id}/cancel']} />
+      <ApiHint apis={[`GET ${path}`, 'GET /api/v1/jobs/{job_id}', 'POST /api/v1/jobs/{job_id}/cancel', 'POST /api/v1/qa/questions（重新提問）']} />
       {question === null && poll.loading && <p role="status">載入問答 #{id} 中…</p>}
       <PollErrorBox state={poll} />
       {question !== null && (
@@ -137,23 +165,33 @@ export function QaQuestionView({ id, submitEstimate, jobsStatus, onChanged }: Pr
             <CancelJobButton job={job} label="取消這次問答" onResult={afterCancel} />
           )}
           {question.status === 'failed' && (
-            <QaErrorBox
-              title="問答失敗"
-              error={question.error ?? { code: question.error_code ?? 'job_failed', message: '問答失敗，但後端沒有回報原因。' }}
-            />
+            <>
+              <QaErrorBox
+                title="問答失敗"
+                error={question.error ?? { code: question.error_code ?? 'job_failed', message: '問答失敗，但後端沒有回報原因。' }}
+              />
+              <ResubmitButton question={question} onResubmitted={onResubmitted} />
+            </>
           )}
           {question.status === 'cancelled' && (
-            <p className="note" role="status">
-              這次問答已取消。已實際花費的用量仍計入今日額度，沒用到的預留已釋放。
-            </p>
+            <>
+              <p className="note" role="status">
+                這次問答已取消。已實際花費的用量仍計入今日額度，沒用到的預留已釋放。
+              </p>
+              <ResubmitButton question={question} onResubmitted={onResubmitted} />
+            </>
           )}
           {question.status === 'succeeded' && <QaAnswer question={question} presence={presence} />}
           {!active && (
             <>
-              <h3>費用與追蹤</h3>
-              <QaQuestionMeta question={question} />
-              <details className="qa-chunks-details">
-                <summary>送出的片段（{question.context_chunks.length} 個）</summary>
+              <p className="muted qa-brief">
+                {question.status === 'succeeded' && `約花費 ${formatUsd(question.cost.actual_usd ?? '0')} 美元`}
+                {question.duration_ms !== null && `${question.status === 'succeeded' ? '・' : ''}耗時 ${(question.duration_ms / 1000).toFixed(1)} 秒`}
+              </p>
+              <details className="qa-technical">
+                <summary>詳細資訊（模型、用量、送出的片段，給工程人員看）</summary>
+                <QaQuestionMeta question={question} />
+                <h4>送出的片段（{question.context_chunks.length} 個）</h4>
                 <p className="note">只列出來源位置；已送出的有代號（引用用），沒送出的說明原因。片段內容不在記錄中。</p>
                 <QaContextChunks question={question} presence={presence} />
               </details>

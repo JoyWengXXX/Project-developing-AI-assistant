@@ -5,7 +5,7 @@
 
 from repopilot.qa.context import ContextResult
 
-PROMPT_VERSION = "v1"
+PROMPT_VERSION = "v3"
 
 SYSTEM_PROMPT = """\
 You answer questions about a source-code repository using ONLY the evidence supplied in the \
@@ -36,11 +36,20 @@ lie within the lines of that chunk.
   - "inference": a conclusion you derived from the evidence. It MUST cite the lines it is \
 based on.
   - "open_question": something the evidence does not settle. Citations are optional.
-- If the evidence is not enough to answer, output status "insufficient_evidence" with an \
-empty `statements` list. Do not guess.
+- If the evidence is not enough to answer, output status "insufficient_evidence". Do not \
+guess, and do NOT leave `statements` empty: explain, in 2 to 6 statements, (a) what the \
+supplied chunks actually show, as "fact" statements with citations (for example what kind of \
+project or area the chunks come from); (b) why that does not answer the question, for \
+example because the repository is about a different domain than the question assumes; and \
+(c) what would be needed to answer it, as "open_question" statements (for example which \
+kind of repository or files). Be specific and honest; never pretend the chunks contain \
+something they do not.
 - Never invent citations: do not cite chunk codes or line numbers that are not in the DATA \
 block.
-- Write statement text in the same language as the question.
+- Language: write ALL statement text in the language of the question, even when the code, \
+comments and documentation in the DATA block are in another language. If the question is \
+written in Chinese, answer in Traditional Chinese (繁體中文, Taiwan usage), never Simplified \
+Chinese. Keep identifiers, file paths, and code in their original form.
 """
 
 _STATUSES = ["answered", "insufficient_evidence"]
@@ -92,4 +101,8 @@ def build_user_message(question: str, context: ContextResult) -> str:
         )
     else:
         data_section = "No repository chunks are available."
-    return f"## Evidence\n{data_section}\n\n## Question\n{question}\n"
+    return (
+        f"## Evidence\n{data_section}\n\n## Question\n{question}\n\n"
+        "## Reply language\nWrite every statement in the language of the question above "
+        "(Traditional Chinese if the question is Chinese), not in the language of the code.\n"
+    )

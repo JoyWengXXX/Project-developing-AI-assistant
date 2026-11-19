@@ -243,16 +243,20 @@ def test_qa_citations_insufficient_evidence_with_no_statements_is_fine() -> None
     assert result.verdicts == ()
 
 
-def test_qa_citations_statements_under_insufficient_evidence_are_ignored_but_kept() -> None:
+def test_qa_citations_insufficient_evidence_explanations_are_verified_like_any_statement() -> None:
     result = verify(
         statement("fact", [cite("C1", 10, 11)]),
+        statement("open_question", []),
         statement("fact", []),
+        statement("fact", [cite("C9", 1, 1)]),
         status="insufficient_evidence",
     )
 
-    assert result.statements == ()
-    assert len(result.rejected) == 2
-    assert all(reason_codes(v) == ["statement_with_insufficient_evidence"] for v in result.rejected)
+    assert [s.kind for s in result.statements] == ["fact", "open_question"]
+    assert [reason_codes(v) for v in result.rejected] == [
+        ["fact_without_citation"],
+        ["unknown_chunk_code"],
+    ]
 
 
 def test_qa_citations_verification_ignores_extra_validity_claims_by_rejecting_them() -> None:

@@ -106,7 +106,6 @@ class InvalidReason(StrEnum):
     CITATION_RANGE_INVERTED = "citation_range_inverted"
     FACT_WITHOUT_CITATION = "fact_without_citation"
     INFERENCE_WITHOUT_CITATIONS = "inference_without_citations"
-    STATEMENT_WITH_INSUFFICIENT_EVIDENCE = "statement_with_insufficient_evidence"
 
 
 @dataclass(frozen=True)
@@ -164,36 +163,34 @@ def verify_answer(parsed: ParsedAnswer, context: ContextResult) -> VerifiedAnswe
       不修正、不夾限。
     - 任何一個引用無效，整個陳述就無效（保守）；`reasons` 列出是哪幾個引用。
     - `fact` 與 `inference` 至少要有一個引用；`open_question` 可無引用，但有的引用仍須有效。
-    - `status=insufficient_evidence` 時不接受任何陳述：全部標為無效並保留，不進已驗證答案。
+    - `status=insufficient_evidence` 時陳述照常驗證：模型應說明片段實際顯示什麼、為何無法回答
+      （有引用的事實仍須通過驗證才會被採用，`open_question` 可無引用）。
     """
     verdicts = tuple(
-        _verify_statement(index, statement, parsed.status, context)
+        _verify_statement(index, statement, context)
         for index, statement in enumerate(parsed.statements)
     )
     return VerifiedAnswer(status=parsed.status, verdicts=verdicts)
 
 
 def _verify_statement(
-    index: int, statement: ParsedStatement, status: AnswerStatus, context: ContextResult
+    index: int, statement: ParsedStatement, context: ContextResult
 ) -> StatementVerdict:
     claimed = tuple(statement.citations)
     reasons: list[Rejection] = []
     resolved: list[ResolvedCitation] = []
 
-    if status == "insufficient_evidence":
-        reasons.append(Rejection(InvalidReason.STATEMENT_WITH_INSUFFICIENT_EVIDENCE))
-    else:
-        if not claimed:
-            if statement.kind == "fact":
-                reasons.append(Rejection(InvalidReason.FACT_WITHOUT_CITATION))
-            elif statement.kind == "inference":
-                reasons.append(Rejection(InvalidReason.INFERENCE_WITHOUT_CITATIONS))
-        for position, citation in enumerate(claimed):
-            outcome = _resolve_citation(citation, context)
-            if isinstance(outcome, ResolvedCitation):
-                resolved.append(outcome)
-            else:
-                reasons.extend(Rejection(reason, position) for reason in outcome)
+    if not claimed:
+        if statement.kind == "fact":
+            reasons.append(Rejection(InvalidReason.FACT_WITHOUT_CITATION))
+        elif statement.kind == "inference":
+            reasons.append(Rejection(InvalidReason.INFERENCE_WITHOUT_CITATIONS))
+    for position, citation in enumerate(claimed):
+        outcome = _resolve_citation(citation, context)
+        if isinstance(outcome, ResolvedCitation):
+            resolved.append(outcome)
+        else:
+            reasons.extend(Rejection(reason, position) for reason in outcome)
 
     valid = not reasons
     return StatementVerdict(

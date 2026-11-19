@@ -1,4 +1,5 @@
 from datetime import UTC, datetime
+from decimal import Decimal
 from typing import Any
 from uuid import UUID
 
@@ -12,6 +13,7 @@ from sqlalchemy import (
     ForeignKeyConstraint,
     Index,
     Integer,
+    Numeric,
     String,
     Text,
     UniqueConstraint,
@@ -749,3 +751,59 @@ class SymbolRelation(Base):
     target_symbol_id: Mapped[int | None] = mapped_column(BigInteger)
     resolution: Mapped[str] = mapped_column(String(25))
     line: Mapped[int] = mapped_column(Integer)
+
+
+class QaUsageLedger(Base):
+    """問答額度帳本（第四階段 4-1b，migration 0019）：只追加，不更新、不刪除。
+
+    同一個預留的事件以 `reservation_id` 串起來：一個 `reserve`，之後至多一個 `settle` 或
+    `release`（部分唯一索引保證）。`reset` 不屬於任何預留（`reservation_id` 為 NULL）。
+    各事件的 token 與費用是「該事件當下對這個預留的有效用量」：reserve＝預留量，settle／release＝
+    實際用量（用量未知的 settle 沿用預留量並標記 `usage_unknown`），reset 一律為 0。
+    `created_at` 由服務傳入（可注入時間），沒有預設值。
+    """
+
+    __tablename__ = "qa_usage_ledger"
+    __table_args__ = (
+        CheckConstraint(
+            "event_type IN ('reserve', 'settle', 'release', 'reset')", name="event_type_valid"
+        ),
+        CheckConstraint(
+            "(event_type = 'reset') = (reservation_id IS NULL)", name="reservation_matches_event"
+        ),
+        CheckConstraint(
+            "input_tokens >= 0 AND output_tokens >= 0 AND cost_usd >= 0",
+            name="amounts_nonnegative",
+        ),
+        CheckConstraint(
+            "event_type <> 'reset' OR (input_tokens = 0 AND output_tokens = 0 AND cost_usd = 0)",
+            name="reset_amounts_zero",
+        ),
+        CheckConstraint(
+            "NOT usage_unknown OR event_type = 'settle'", name="usage_unknown_only_on_settle"
+        ),
+        Index(
+            "uq_qa_usage_ledger_reservation_id_reserve",
+            "reservation_id",
+            unique=True,
+            postgresql_where=text("event_type = 'reserve'"),
+        ),
+        Index(
+            "uq_qa_usage_ledger_reservation_id_final",
+            "reservation_id",
+            unique=True,
+            postgresql_where=text("event_type IN ('settle', 'release')"),
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    reservation_id: Mapped[UUID | None] = mapped_column(Uuid)
+    event_type: Mapped[str] = mapped_column(String(10))
+    input_tokens: Mapped[int] = mapped_column(BigInteger)
+    output_tokens: Mapped[int] = mapped_column(BigInteger)
+    # 美元；小數 8 位，足以表示每百萬 token 單價乘上整數 token 數
+    cost_usd: Mapped[Decimal] = mapped_column(Numeric(18, 8))
+    usage_unknown: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default=text("false")
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))

@@ -5,6 +5,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Annotated, Any, Literal, Self
 from urllib.parse import urlsplit
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
@@ -171,6 +172,9 @@ class Settings(BaseSettings):
     # 硬體驗證；語意搜尋不受限（80,000 片段約 4.5 秒）
     search_max_chunks: int = Field(default=5_000, ge=1, le=100_000_000)
 
+    # 問答額度「每日」的邊界：該時區（IANA 名稱）的 00:00；載入設定時就驗證名稱
+    qa_usage_timezone: str = "Asia/Taipei"
+
     # 設定必須由部署者核對；空值代表尚未啟用檢索。
     embedding_model_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     embedding_runtime_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
@@ -191,6 +195,15 @@ class Settings(BaseSettings):
     @classmethod
     def _empty_embedding_setting(cls, value: Any) -> Any:
         return None if value == "" else value
+
+    @field_validator("qa_usage_timezone")
+    @classmethod
+    def _valid_qa_usage_timezone(cls, value: str) -> str:
+        try:
+            ZoneInfo(value)
+        except (ValueError, ZoneInfoNotFoundError):
+            raise ValueError("QA_USAGE_TIMEZONE must be a valid IANA time zone name.") from None
+        return value
 
     @field_validator("embedding_gateway_token")
     @classmethod

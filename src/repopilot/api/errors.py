@@ -36,6 +36,8 @@ from repopilot.errors import (
     JobNotRetryableError,
     ManagedStorageError,
     PathNotMappedError,
+    QaReservationFinalizedError,
+    QaReservationNotFoundError,
     RepoPilotError,
     RepositoryBusyError,
     RepositoryNotFoundError,
@@ -53,6 +55,7 @@ from repopilot.errors import (
     SnapshotNotFoundError,
     SnapshotReferencedError,
     SymbolNotFoundError,
+    TokenBudgetExceededError,
     TokenEncryptionNotConfiguredError,
     WorkerPathNotMappedError,
 )
@@ -121,6 +124,11 @@ ERROR_STATUS: dict[type[RepoPilotError], int] = {
     SearchTimeoutError: 504,
     # 選取範圍太大：在掃描前拒絕，是輸入（選取的快照）的問題，不是伺服器逾時
     SearchScopeTooLargeError: 422,
+    # 問答額度（第四階段 4-1b）：超過額度是「目前狀態不允許」的衝突；不用 402，
+    # 以免與供應商端的 provider_payment_required 混淆。重複結算同一預留也是衝突
+    TokenBudgetExceededError: 409,
+    QaReservationNotFoundError: 404,
+    QaReservationFinalizedError: 409,
 }
 
 _HTTP_ERROR_CODES = {
@@ -171,6 +179,15 @@ def _details_of(exc: RepoPilotError) -> dict[str, Any] | None:
         return {"chunk_count": exc.chunk_count, "max_chunks": exc.max_chunks}
     if isinstance(exc, SnapshotIndexNotReadyError):
         return {"index_status": exc.index_status}
+    if isinstance(exc, TokenBudgetExceededError):
+        details: dict[str, Any] = {
+            "reason": exc.reason,
+            "limit": exc.limit,
+            "requested": exc.requested,
+        }
+        if exc.used is not None:
+            details["used"] = exc.used
+        return details
     return None
 
 

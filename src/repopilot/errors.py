@@ -149,6 +149,37 @@ class EmbeddingNotConfiguredError(RepoPilotError):
     code = "embedding_not_configured"
 
 
+class TokenBudgetExceededError(RepoPilotError):
+    """預留額度被拒絕：超過單次上限或每日上限（token 或費用）；帳本沒有寫入任何事件。
+
+    `reason` 為 `per_request_tokens`、`daily_tokens` 或 `daily_cost_usd`；數值以 `int`（token）或
+    字串（美元，避免浮點誤差）放在錯誤的 `details`。
+    """
+
+    code = "token_budget_exceeded"
+
+    def __init__(
+        self, reason: str, *, limit: int | str, requested: int | str, used: int | str | None = None
+    ) -> None:
+        super().__init__("The token budget does not allow this request.")
+        self.reason = reason
+        self.limit = limit
+        self.requested = requested
+        self.used = used
+
+
+class QaReservationNotFoundError(RepoPilotError):
+    """結算或歸還的預留 id 在帳本中沒有 reserve 事件。"""
+
+    code = "qa_reservation_not_found"
+
+
+class QaReservationFinalizedError(RepoPilotError):
+    """預留已經結算或歸還過；同一個預留只能有一個結束事件。"""
+
+    code = "qa_reservation_finalized"
+
+
 class EmbeddingDeviceUnavailableError(RepoPilotError):
     """選取的 embedding 運算裝置（目前只有 `gpu` 可能不可用）沒有設定或沒有回應。
 

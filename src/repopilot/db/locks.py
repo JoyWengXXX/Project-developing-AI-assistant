@@ -26,6 +26,8 @@
   持有這把鎖。
 - `index:{snapshot_id}:{index_profile_hash}`：索引級，獨占（切片 6）。建構同一份結構索引的
   job 互斥；持有者可以立即接手殘留的 `building` 索引。
+- `qa:usage_ledger`：問答額度帳本（第四階段 4-1b），**交易級、會等待**（`pg_advisory_xact_lock`），
+  與上面其他鍵不同：持有時間只有一個短交易，所以等待是安全的，commit／rollback 時自動釋放。
 
 .NET 對照：像 SQL Server 的 `sp_getapplock`（Session 範圍），但這裡用 `try` 語意、不阻塞。
 """
@@ -75,6 +77,11 @@ def index_lock_key(snapshot_id: int, index_profile_hash: str) -> int:
     想建立同一份索引；持有這把鎖的人才可以接手殘留的 `building` 索引。
     """
     return lock_key("index", f"{snapshot_id}:{index_profile_hash}")
+
+
+def qa_usage_lock_key() -> int:
+    """問答額度帳本的鎖（只有一把）：預留、結算、歸還與重置都在交易內先取它再讀寫帳本。"""
+    return lock_key("qa", "usage_ledger")
 
 
 class AdvisoryLock:

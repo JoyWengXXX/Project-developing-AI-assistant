@@ -1,4 +1,5 @@
 from datetime import datetime
+from decimal import Decimal
 from typing import Annotated, Any, Literal, Self
 
 from fastapi import Path, Query
@@ -607,6 +608,26 @@ class RetrievalSearchItem(BaseModel):
 class RetrievalSearchResponse(BaseModel):
     mode: Literal["keyword", "semantic", "hybrid"]
     items: list[RetrievalSearchItem]
+
+
+class QaUsageTotalsResponse(BaseModel):
+    input_tokens: int
+    output_tokens: int
+    total_tokens: int
+    # 美元，JSON 以字串表示（Decimal，避免浮點誤差）
+    cost_usd: Decimal
+
+
+class QaUsageResponse(BaseModel):
+    today: QaUsageTotalsResponse
+    cumulative: QaUsageTotalsResponse
+    # 今日視窗 [start, end)，UTC；start 已考慮設定時區的午夜
+    window_start: datetime
+    window_end: datetime
+    last_reset_at: datetime | None
+    # 沒有設定上限時為 null
+    remaining_tokens: int | None
+    remaining_cost_usd: Decimal | None
 
 
 class ServiceStateResponse(BaseModel):

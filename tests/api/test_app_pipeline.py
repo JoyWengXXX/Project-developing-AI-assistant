@@ -28,7 +28,8 @@ def test_valid_incoming_request_id_is_echoed(client: TestClient) -> None:
 
 @pytest.mark.parametrize("incoming", ["has space", "a" * 65, "<script>", "a/b", "中文".encode()])
 def test_invalid_incoming_request_id_is_replaced(client: TestClient, incoming: str | bytes) -> None:
-    response = client.get("/health", headers={"X-Request-ID": incoming})
+    value = incoming.encode() if isinstance(incoming, str) else incoming
+    response = client.get("/health", headers=[(b"X-Request-ID", value)])
 
     assert re.fullmatch(r"[0-9a-f]{32}", response.headers["X-Request-ID"])
 

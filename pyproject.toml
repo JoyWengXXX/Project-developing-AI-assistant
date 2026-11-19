@@ -6,6 +6,8 @@ readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "alembic>=1.20.1,<2",
+    # 第四階段 4-1a：生成模型供應商（Anthropic）轉接層
+    "anthropic>=2.10.0,<3",
     # 第二階段切片 3：背景工作。Celery 只做 worker 與 dispatcher 的發布端（`send_task`），Redis 只做 broker，
     # 事實來源是 PostgreSQL；`redis` extra 帶入 kombu 的 Redis transport 與 redis-py。純 Python wheel，
     # worker 在 Linux 容器執行（Celery 官方不支援 Windows），API 程序不匯入也不連線。5.7.x 是支援 3.11 的最後一版

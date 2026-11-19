@@ -9,12 +9,13 @@ from repopilot.api.routes.repositories import SettingsDep
 from repopilot.api.schemas import QaUsageResponse, QaUsageTotalsResponse
 from repopilot.db.session import get_session
 from repopilot.qa import usage_ledger
+from repopilot.services import qa_settings as qa_settings_service
 
 router = APIRouter(prefix="/api/v1/qa", tags=["qa"])
 SessionDep = Annotated[Session, Depends(get_session)]
 
 
-def _to_response(summary: usage_ledger.UsageSummary) -> QaUsageResponse:
+def to_usage_response(summary: usage_ledger.UsageSummary) -> QaUsageResponse:
     def totals(value: usage_ledger.UsageTotals) -> QaUsageTotalsResponse:
         return QaUsageTotalsResponse(
             input_tokens=value.input_tokens,
@@ -34,14 +35,14 @@ def _to_response(summary: usage_ledger.UsageSummary) -> QaUsageResponse:
     )
 
 
-# 額度上限由 4-1c 的 qa_settings 提供；在那之前沒有上限，剩餘額度一律為 null
 @router.get("/usage", response_model=QaUsageResponse)
 def get_usage(session: SessionDep, settings: SettingsDep) -> QaUsageResponse:
-    """今日（所在時區的當地日）與累計的 token 與費用。"""
+    """今日（所在時區的當地日）與累計的 token 與費用；剩餘額度依設定的上限計算（未設定為 null）。"""
+    limits = qa_settings_service.get_limits(session)
     summary = usage_ledger.get_usage(
-        session, None, now=datetime.now(UTC), tz=ZoneInfo(settings.qa_usage_timezone)
+        session, limits, now=datetime.now(UTC), tz=ZoneInfo(settings.qa_usage_timezone)
     )
-    return _to_response(summary)
+    return to_usage_response(summary)
 
 
 @router.post("/usage/reset", response_model=QaUsageResponse)
@@ -49,7 +50,8 @@ def reset_usage(session: SessionDep, settings: SettingsDep) -> QaUsageResponse:
     """手動重置：今日用量歸零；帳本保留所有歷史事件，累計不變。回傳重置後的用量。"""
     now = datetime.now(UTC)
     usage_ledger.reset(session, now=now)
+    limits = qa_settings_service.get_limits(session)
     summary = usage_ledger.get_usage(
-        session, None, now=now, tz=ZoneInfo(settings.qa_usage_timezone)
+        session, limits, now=now, tz=ZoneInfo(settings.qa_usage_timezone)
     )
-    return _to_response(summary)
+    return to_usage_response(summary)

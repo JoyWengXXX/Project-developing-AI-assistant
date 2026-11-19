@@ -53,8 +53,8 @@ def warning_for(kind: TokenType) -> str | None:
     return CLASSIC_WARNING if kind == "classic" else None
 
 
-def _fernet(settings: Settings) -> Fernet:
-    """依設定建立 Fernet；沒有預設金鑰，未設定或格式無效就拒絕。"""
+def build_fernet(settings: Settings) -> Fernet:
+    """依設定建立 Fernet；沒有預設金鑰，未設定或格式無效就拒絕（問答的 API key 也用它）。"""
     raw_key = settings.token_encryption_key.get_secret_value().strip()
     if not raw_key:
         raise TokenEncryptionNotConfiguredError(
@@ -77,7 +77,7 @@ def connect_token(
     順序刻意如此：先確認金鑰可用（否則不該把 token 送出去）→ 呼叫 GitHub 驗證 →
     成功後才以單一 upsert 寫入。
     """
-    fernet = _fernet(settings)
+    fernet = build_fernet(settings)
     user = client.get_authenticated_user(token)
     token_type = detect_token_type(token)
     ciphertext = fernet.encrypt(token.encode("utf-8")).decode("ascii")
@@ -103,7 +103,7 @@ def connect_token(
 def _decrypt(credential: GithubCredential, settings: Settings) -> str | None:
     """解密已保存的 token；金鑰缺失或不符時回 None 並記錄警告（不記錄任何內容）。"""
     try:
-        fernet = _fernet(settings)
+        fernet = build_fernet(settings)
     except TokenEncryptionNotConfiguredError:
         logger.warning("github_token_unusable", extra={"reason": "key_not_configured"})
         return None

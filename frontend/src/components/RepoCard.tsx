@@ -6,11 +6,13 @@ import { ErrorBox } from '../ui'
 import type { GitHubJobs } from '../useGitHubJobs'
 import { useOnFalling, type JobsOverview } from '../useJobsOverview'
 import { useOverview, type OverviewState } from '../useOverview'
+import type { QaConsents } from '../useQaConsents'
 import type { RepoImports } from '../useRepoImports'
 import { useSnapshotList } from '../useSnapshotList'
 import { ImportRunStatus } from './ImportRunStatus'
 import { LanguageBar } from './LanguageBar'
 import { ProjectInfoBadges } from './ProjectInfoBadges'
+import { QaConsentToggle } from './QaConsentToggle'
 import { ReadmePreview } from './ReadmePreview'
 import { RepoActions } from './RepoActions'
 import { RepoJobNotice } from './RepoJobNotice'
@@ -24,6 +26,8 @@ interface Props {
   jobs: JobsOverview
   /** GitHub 更新（fetch）：送出、最近一次的 refs 變更清單、完成次數（App 持有，換頁不會中斷）。 */
   github: GitHubJobs
+  /** 逐 repo 的問答資料外送同意（App 持有，一次請求讀全部）。 */
+  consents: QaConsents
   /** 這個 repo 的參考版本（GET /references）；沒有為 null。 */
   reference: ReferenceItem | null
   /** 設定／取消參考、或重新整理後：通知總覽頁重新讀取參考清單。 */
@@ -175,6 +179,7 @@ export function RepoCard(props: Props) {
             }}
           />
         )}
+        <QaConsentToggle repo={repo} consents={props.consents} />
         <div className="action-row">
           <button type="button" disabled={removing || removeLocked} onClick={() => onOpen(repo)}>
             查看詳情

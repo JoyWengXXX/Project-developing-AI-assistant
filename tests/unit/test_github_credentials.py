@@ -11,7 +11,7 @@ from repopilot.errors import TokenEncryptionNotConfiguredError
 from repopilot.logging_config import configure_logging
 from repopilot.services.github_credentials import (
     CLASSIC_WARNING,
-    _fernet,
+    build_fernet,
     detect_token_type,
     get_decrypted_token,
     get_required_token,
@@ -91,13 +91,13 @@ def test_unknown_fields_are_rejected() -> None:
 
 def test_fernet_requires_a_key() -> None:
     with pytest.raises(TokenEncryptionNotConfiguredError):
-        _fernet(Settings(token_encryption_key=SecretStr("")))
+        build_fernet(Settings(token_encryption_key=SecretStr("")))
 
 
 @pytest.mark.parametrize("key", ["not-a-fernet-key", "   ", "短", "a" * 44, "x" * 10])
 def test_fernet_rejects_invalid_key_without_echoing_it(key: str) -> None:
     with pytest.raises(TokenEncryptionNotConfiguredError) as exc_info:
-        _fernet(Settings(token_encryption_key=SecretStr(key)))
+        build_fernet(Settings(token_encryption_key=SecretStr(key)))
 
     assert key.strip() == "" or key not in exc_info.value.message
 
@@ -105,7 +105,7 @@ def test_fernet_rejects_invalid_key_without_echoing_it(key: str) -> None:
 def test_fernet_accepts_generated_key() -> None:
     key = Fernet.generate_key().decode()
 
-    fernet = _fernet(Settings(token_encryption_key=SecretStr(key)))
+    fernet = build_fernet(Settings(token_encryption_key=SecretStr(key)))
 
     assert fernet.decrypt(fernet.encrypt(b"x")) == b"x"
 

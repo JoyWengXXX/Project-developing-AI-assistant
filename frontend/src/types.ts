@@ -398,6 +398,86 @@ export interface RetrievalSearchResponse {
   items: RetrievalSearchItem[]
 }
 
+// ---------- 問答設定（第四階段 4-1c，對應 schemas.py 的 Qa* 模型） ----------
+
+// 美元一律是字串（後端 Decimal，避免浮點誤差）；只做顯示，不在前端做金額運算
+export type QaTier = 'low' | 'mid' | 'high'
+
+export interface QaModelPrice {
+  input_usd_per_million: string
+  output_usd_per_million: string
+}
+
+export interface QaModelOption {
+  id: string
+  tier: QaTier
+  price: QaModelPrice
+  estimated_cost_per_question_usd: string // 假設值（見 estimate_basis），不是實測
+  price_note: string | null
+}
+
+export interface QaLimits {
+  per_request_tokens: number | null
+  daily_tokens: number | null
+  daily_cost_usd: string | null
+}
+
+export interface QaUsageTotals {
+  input_tokens: number
+  output_tokens: number
+  total_tokens: number
+  cost_usd: string
+}
+
+export interface QaUsage {
+  today: QaUsageTotals
+  cumulative: QaUsageTotals
+  window_start: string
+  window_end: string
+  last_reset_at: string | null
+  remaining_tokens: number | null // 沒有設定上限時為 null
+  remaining_cost_usd: string | null
+}
+
+// GET／PUT /qa/settings、PUT /qa/provider-key：永遠不含 API key，只有 provider_key_configured
+export interface QaSettings {
+  provider: 'anthropic'
+  model: string | null // 沒有預設模型，未選擇前為 null
+  provider_key_configured: boolean
+  provider_key_warning: string | null
+  can_ask: boolean // 已選模型且 API key 可用；逐 repo 的同意另計
+  limits: QaLimits
+  price_table_as_of: string // YYYY-MM-DD
+  estimate_basis: { input_tokens: number; output_tokens: number }
+  models: QaModelOption[]
+  usage: QaUsage
+  updated_at: string | null
+}
+
+// PUT /qa/settings 的 body：沒送的欄位不變；model 與三個額度送 null 代表清除
+export interface QaSettingsUpdate {
+  model?: string | null
+  per_request_tokens?: number | null
+  daily_tokens?: number | null
+  daily_cost_usd?: string | null
+  price_table?: Record<string, QaModelPrice>
+}
+
+export interface QaConsentItem {
+  repository_id: number
+  consented_at: string
+}
+
+export interface QaConsentList {
+  items: QaConsentItem[]
+}
+
+export interface QaConsent {
+  repository_id: number
+  consented: boolean
+  consented_at: string | null
+}
+
 // online：至少一個實例的心跳未過期；stale：有紀錄但都過期；absent：從來沒有紀錄
 export type ServiceStatus = 'online' | 'stale' | 'absent'
 

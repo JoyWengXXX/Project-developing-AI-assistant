@@ -3,6 +3,7 @@ import { AddRepoPanel } from './components/AddRepoPanel'
 import { GitHubPanel } from './components/GitHubPanel'
 import { GitHubRegistrations } from './components/GitHubRegistrations'
 import { JobsSummaryBar } from './components/JobsSummaryBar'
+import { QaSettingsPanel } from './components/QaSettingsPanel'
 import { RepoDetailHeader } from './components/RepoDetailHeader'
 import { RepoOverviewGrid } from './components/RepoOverviewGrid'
 import { RetrievalPanel } from './components/RetrievalPanel'
@@ -11,6 +12,7 @@ import { VersionPanel } from './components/VersionPanel'
 import type { Repository } from './types'
 import { useGitHubJobs } from './useGitHubJobs'
 import { useJobsOverview } from './useJobsOverview'
+import { useQaConsents } from './useQaConsents'
 import { useRepoImports } from './useRepoImports'
 import { useRepoList } from './useRepoList'
 
@@ -22,6 +24,7 @@ import { useRepoList } from './useRepoList'
 // 背景工作的資料也只在這裡輪詢一次（useJobsOverview）：頂端摘要、repo 卡片、詳情版本區與完整列表共用同一份，用 props 往下傳。
 // GitHub 註冊與更新（fetch）也是背景工作，由這裡的 useGitHubJobs 送出並偵測完成（成功後重新載入列表、自動匯入一次、保存 refs 變更清單）。
 // 面板上的 key={...} 讓「換 repo」時，版本區的分支選擇、commit 圖、檔案樹等內部狀態與進行中的請求自動重置。
+// 問答的「資料外送同意」（逐 repo）也由這裡持有一份（useQaConsents，一次請求讀全部），repo 卡片與「問答設定」面板共用。
 export default function App() {
   const [repo, setRepo] = useState<Repository | null>(null)
   const [returnedFromDetail, setReturnedFromDetail] = useState(false) // 回到總覽時把焦點移到標題
@@ -29,6 +32,7 @@ export default function App() {
   const list = useRepoList()
   const imports = useRepoImports()
   const jobs = useJobsOverview(imports.busy)
+  const consents = useQaConsents()
   // repo 已註冊（本機註冊、GitHub 註冊的各種結果）：重新載入列表。只有新建的才自動匯入一次預設分支最新版本；
   // 已存在的不匯入。revision 用 HEAD：後端在提交時解析成完整 SHA。失敗時卡片會顯示錯誤與「重試匯入」，不會自動再試。
   function handleRegistered(repoId: number, created: boolean) {
@@ -81,6 +85,7 @@ export default function App() {
           <GitHubRegistrations github={github} jobs={jobs} />
           <AddRepoPanel github={github} onRegistered={handleRegistered} />
           <GitHubPanel />
+          <QaSettingsPanel repos={list.items} consents={consents} />
         </div>
 
         {repo === null ? (
@@ -91,6 +96,7 @@ export default function App() {
               imports={imports}
               jobs={jobs}
               github={github}
+              consents={consents}
               onOpen={openRepo}
               onRemoved={handleRepoRemoved}
               focusTitle={returnedFromDetail}

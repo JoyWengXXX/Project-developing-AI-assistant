@@ -1,4 +1,4 @@
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from decimal import Decimal
 from typing import Any
 from uuid import UUID
@@ -8,6 +8,7 @@ from sqlalchemy import (
     BigInteger,
     Boolean,
     CheckConstraint,
+    Date,
     DateTime,
     ForeignKey,
     ForeignKeyConstraint,
@@ -807,3 +808,59 @@ class QaUsageLedger(Base):
         Boolean, default=False, server_default=text("false")
     )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class QaSettings(Base):
+    """問答設定（第四階段 4-1c，migration 0020；單一使用者，最多一列，`id` 固定為 1）。
+
+    `model` 為 NULL＝尚未選擇（沒有預設，規格 D11）；是否為已知模型由 API 層驗證。
+    額度上限 NULL＝不限制。`price_table` 是 `{模型: {輸入單價, 輸出單價}}`（鍵為
+    `input_usd_per_million`、`output_usd_per_million`，數字以字串保存，避免浮點誤差），
+    `price_table_as_of` 是價格的讀取日期。
+    `encrypted_provider_key` 是 Fernet 密文，只寫不讀。
+    """
+
+    __tablename__ = "qa_settings"
+    __table_args__ = (
+        CheckConstraint("id = 1", name="single_row"),
+        CheckConstraint("provider IN ('anthropic')", name="provider_valid"),
+        CheckConstraint(
+            "per_request_token_limit IS NULL OR per_request_token_limit > 0",
+            name="per_request_token_limit_positive",
+        ),
+        CheckConstraint(
+            "daily_token_limit IS NULL OR daily_token_limit > 0",
+            name="daily_token_limit_positive",
+        ),
+        CheckConstraint(
+            "daily_cost_limit_usd IS NULL OR daily_cost_limit_usd > 0",
+            name="daily_cost_limit_usd_positive",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=False)
+    provider: Mapped[str] = mapped_column(
+        String(20), default="anthropic", server_default=text("'anthropic'")
+    )
+    model: Mapped[str | None] = mapped_column(String(100))
+    per_request_token_limit: Mapped[int | None] = mapped_column(Integer)
+    daily_token_limit: Mapped[int | None] = mapped_column(BigInteger)
+    daily_cost_limit_usd: Mapped[Decimal | None] = mapped_column(Numeric(18, 8))
+    price_table: Mapped[dict[str, Any]] = mapped_column(JSONB)
+    price_table_as_of: Mapped[date] = mapped_column(Date)
+    encrypted_provider_key: Mapped[str | None] = mapped_column(Text)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class RepositoryQaConsent(Base):
+    """逐 repo 同意把片段送往問答供應商（規格 D2）：沒有資料列＝未同意，撤回即刪除。
+
+    `repository_id` 為 ON DELETE CASCADE，移除 repo 時同意一併消失。
+    """
+
+    __tablename__ = "repository_qa_consent"
+
+    repository_id: Mapped[int] = mapped_column(
+        ForeignKey("repositories.id", ondelete="CASCADE"), primary_key=True, autoincrement=False
+    )
+    consented_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))

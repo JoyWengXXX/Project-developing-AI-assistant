@@ -1876,3 +1876,86 @@ button.imported-main {
   outline: 1px solid var(--warn-fg);
   border-radius: 2px;
 }
+
+/* ---------- 問答設定（模型選擇、單價表、資料外送同意） ---------- */
+
+.qa-models {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+label.qa-model {
+  flex-direction: row;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font-weight: 400;
+  cursor: pointer;
+}
+label.qa-model:has(input:checked) {
+  border-color: var(--accent);
+  background: var(--soft-bg);
+}
+label.qa-model input {
+  width: 16px;
+  height: 16px;
+  margin: 3px 0 0;
+  padding: 0;
+  flex: none;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+.qa-model-body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.qa-model-badge {
+  margin-left: 8px;
+}
+.qa-price-table input {
+  width: 100%;
+  min-width: 6em;
+}
+.field-error {
+  color: var(--bad-fg);
+  font-weight: 400;
+}
+.qa-consent {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  min-width: 0;
+}
+.qa-consent > * {
+  margin-top: 0;
+  margin-bottom: 0;
+  max-width: 100%;
+}
+.qa-consent-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.qa-consent .job-confirm,
+.qa-consent .error-box {
+  align-self: stretch;
+}
+.qa-consent-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.qa-consent-list h4 {
+  margin: 0 0 4px;
+}

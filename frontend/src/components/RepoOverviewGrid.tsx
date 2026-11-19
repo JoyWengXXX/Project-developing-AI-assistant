@@ -11,6 +11,7 @@ import { ReferenceSummary } from './ReferenceSummary'
 import { RepoCard } from './RepoCard'
 import type { JobsOverview } from '../useJobsOverview'
 import type { GitHubJobs } from '../useGitHubJobs'
+import type { QaConsents } from '../useQaConsents'
 
 interface Props {
   list: RepoListState
@@ -20,6 +21,8 @@ interface Props {
   jobs: JobsOverview
   /** GitHub 更新（fetch）的送出與結果（App 持有）；依 repo 分給各張卡片。 */
   github: GitHubJobs
+  /** 逐 repo 的問答資料外送同意（App 持有，一次請求讀全部）；卡片只取自己這個 repo 的狀態。 */
+  consents: QaConsents
   /** 點卡片或「查看詳情」：進入該 repo 的詳情；「管理已匯入版本」同樣進入詳情，並把焦點移到「已匯入的版本」。 */
   onOpen: (repo: Repository, options?: { focusImported?: boolean }) => void
   /** repo 已從後端消失（移除成功或回 404）後通知 App，讓它清除對該 repo 的選取。 */
@@ -41,7 +44,7 @@ type RemoveNotice =
  * 參考版本清單（GET /references）在這裡載入，設定、取消、匯入完成、移除 repo 之後重新讀取；
  * 在詳情頁移除版本後回到總覽，這一頁會重新掛載並讀取最新資料。
  */
-export function RepoOverviewGrid({ list, imports, jobs, github, onOpen, onRemoved, focusTitle }: Props) {
+export function RepoOverviewGrid({ list, imports, jobs, github, consents, onOpen, onRemoved, focusTitle }: Props) {
   const references = useReferences()
   const clearAction = useAction()
   const titleRef = useRef<HTMLHeadingElement>(null)
@@ -143,6 +146,8 @@ export function RepoOverviewGrid({ list, imports, jobs, github, onOpen, onRemove
             'POST /api/v1/repositories/{id}/fetch-jobs（GitHub 更新；背景工作，進度為階段與已耗時；完成後 job.result 帶 refs 變更清單）',
             'POST /api/v1/repositories/{id}/fetch（deprecated：worker 不可用時的同步回退）',
             'DELETE /api/v1/repositories/{id}（移除；有背景工作進行中時回 409 repository_busy，卡片先停用按鈕）',
+            'GET /api/v1/qa/consents（每張卡片的「問答資料外送」同意狀態，一次讀全部）',
+            'PUT／DELETE /api/v1/repositories/{id}/qa-consent（同意／撤回把此 repo 的程式片段送往 Anthropic API）',
           ]}
         />
         <ReferenceSummary
@@ -180,6 +185,7 @@ export function RepoOverviewGrid({ list, imports, jobs, github, onOpen, onRemove
               imports={imports}
               jobs={jobs}
               github={github}
+              consents={consents}
               reference={references.byRepo.get(r.id) ?? null}
               onReferenceChanged={reloadReferences}
               onOpen={onOpen}

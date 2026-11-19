@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
 from typing import Annotated, Any, Literal, Self
 
@@ -8,11 +8,14 @@ from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
+    PlainSerializer,
+    SecretStr,
     StringConstraints,
     field_validator,
     model_validator,
 )
 
+from repopilot.qa.pricing import MODEL_TIERS
 from repopilot.search_query import keyword_terms
 
 RepositoryName = Annotated[
@@ -610,12 +613,18 @@ class RetrievalSearchResponse(BaseModel):
     items: list[RetrievalSearchItem]
 
 
+# 以定點格式輸出，避免 Decimal 的 "0E-8" 之類指數字串
+UsdAmount = Annotated[
+    Decimal, PlainSerializer(lambda value: format(value, "f"), return_type=str, when_used="json")
+]
+
+
 class QaUsageTotalsResponse(BaseModel):
     input_tokens: int
     output_tokens: int
     total_tokens: int
     # 美元，JSON 以字串表示（Decimal，避免浮點誤差）
-    cost_usd: Decimal
+    cost_usd: UsdAmount
 
 
 class QaUsageResponse(BaseModel):
@@ -627,7 +636,134 @@ class QaUsageResponse(BaseModel):
     last_reset_at: datetime | None
     # 沒有設定上限時為 null
     remaining_tokens: int | None
-    remaining_cost_usd: Decimal | None
+    remaining_cost_usd: UsdAmount | None
+
+
+QaTokenLimit = Annotated[int, Field(strict=True, ge=1, le=_INT32_MAX)]
+QaDailyTokenLimit = Annotated[int, Field(strict=True, ge=1, le=_INT64_MAX)]
+# 美元；Numeric(18, 8) 能保存的範圍，且必須為正（不限制請送 null）
+QaCostLimit = Annotated[Decimal, Field(gt=0, max_digits=18, decimal_places=8)]
+# 每百萬 token 的單價（美元）
+QaPriceNumber = Annotated[Decimal, Field(ge=0, max_digits=12, decimal_places=6)]
+
+
+class QaModelPriceInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    input_usd_per_million: QaPriceNumber
+    output_usd_per_million: QaPriceNumber
+
+
+class QaSettingsUpdate(BaseModel):
+    """部分更新：沒送的欄位不變；`model` 與三個額度明確送 `null` 代表清除（未選／不限制）。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    model: str | None = None
+    per_request_tokens: QaTokenLimit | None = None
+    daily_tokens: QaDailyTokenLimit | None = None
+    daily_cost_usd: QaCostLimit | None = None
+    # 只需送要改的模型；沒送的模型沿用舊單價
+    price_table: dict[str, QaModelPriceInput] | None = None
+    # 單價的讀取日期；更新單價但沒送時用今天（設定的時區）
+    price_table_as_of: date | None = None
+
+    @field_validator("model")
+    @classmethod
+    def _known_model(cls, value: str | None) -> str | None:
+        if value is not None and value not in MODEL_TIERS:
+            raise ValueError("Unknown model.")
+        return value
+
+    @field_validator("price_table")
+    @classmethod
+    def _known_price_models(
+        cls, value: dict[str, QaModelPriceInput] | None
+    ) -> dict[str, QaModelPriceInput] | None:
+        if value is not None and (not value or not set(value) <= set(MODEL_TIERS)):
+            raise ValueError("The price table must be non-empty and list only known models.")
+        return value
+
+    @model_validator(mode="after")
+    def _price_fields_are_consistent(self) -> Self:
+        for name in ("price_table", "price_table_as_of"):
+            if name in self.model_fields_set and getattr(self, name) is None:
+                raise ValueError(f"{name} must not be null.")
+        if self.price_table_as_of is not None and self.price_table is None:
+            raise ValueError("price_table_as_of requires price_table.")
+        return self
+
+
+class QaProviderKeySubmit(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    api_key: SecretStr = Field(min_length=1, max_length=512)
+
+    @field_validator("api_key")
+    @classmethod
+    def _valid_api_key(cls, value: SecretStr) -> SecretStr:
+        key = value.get_secret_value().strip()
+        if not key or any(ch.isspace() or not ch.isprintable() for ch in key):
+            raise ValueError("The API key is not valid.")
+        return SecretStr(key)
+
+
+class QaModelPriceResponse(BaseModel):
+    input_usd_per_million: UsdAmount
+    output_usd_per_million: UsdAmount
+
+
+class QaModelOptionResponse(BaseModel):
+    id: str
+    tier: Literal["low", "mid", "high"]
+    price: QaModelPriceResponse
+    # 假設值（見 estimate_basis），不是實測
+    estimated_cost_per_question_usd: UsdAmount
+    price_note: str | None
+
+
+class QaLimitsResponse(BaseModel):
+    per_request_tokens: int | None
+    daily_tokens: int | None
+    daily_cost_usd: UsdAmount | None
+
+
+class QaEstimateBasisResponse(BaseModel):
+    input_tokens: int
+    output_tokens: int
+
+
+class QaSettingsResponse(BaseModel):
+    provider: Literal["anthropic"]
+    # 未選擇前為 null（沒有預設模型）
+    model: str | None
+    # 永不回傳 key 或其片段；已保存但無法解密（TOKEN_ENCRYPTION_KEY 遺失或更換）時為 false 並附警告
+    provider_key_configured: bool
+    provider_key_warning: str | None
+    # 已選模型且 API key 可用；逐 repo 的同意另由 qa-consent 端點回報
+    can_ask: bool
+    limits: QaLimitsResponse
+    price_table_as_of: date
+    estimate_basis: QaEstimateBasisResponse
+    models: list[QaModelOptionResponse]
+    usage: QaUsageResponse
+    # 尚未儲存過任何設定時為 null
+    updated_at: datetime | None
+
+
+class QaConsentResponse(BaseModel):
+    repository_id: int
+    consented: bool
+    consented_at: datetime | None
+
+
+class QaConsentItem(BaseModel):
+    repository_id: int
+    consented_at: datetime
+
+
+class QaConsentListResponse(BaseModel):
+    items: list[QaConsentItem]
 
 
 class ServiceStateResponse(BaseModel):

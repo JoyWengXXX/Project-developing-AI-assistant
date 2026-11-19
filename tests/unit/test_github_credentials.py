@@ -6,12 +6,15 @@ from pydantic import SecretStr, ValidationError
 
 from repopilot.api.schemas import GitHubTokenSubmit
 from repopilot.config import Settings
+from repopilot.db.models import GithubCredential
 from repopilot.errors import TokenEncryptionNotConfiguredError
 from repopilot.logging_config import configure_logging
 from repopilot.services.github_credentials import (
     CLASSIC_WARNING,
     _fernet,
     detect_token_type,
+    get_decrypted_token,
+    get_required_token,
     warning_for,
 )
 from tests.github_helpers import FAKE_CLASSIC_TOKEN, FAKE_TOKEN
@@ -149,3 +152,59 @@ def test_classic_fake_token_is_detected_as_classic() -> None:
     # 確認測試用的假 token 前綴符合其用途，避免整合測試的前提悄悄失效
     assert detect_token_type(FAKE_CLASSIC_TOKEN) == "classic"
     assert detect_token_type(FAKE_TOKEN) == "fine_grained"
+
+
+# --- worker 版的 token 讀取（第二階段切片 5，D44）---
+
+
+class _OneRowSession:
+    """只回答 `session.get(GithubCredential, 1)` 的替身（不需要資料庫）。"""
+
+    def __init__(self, credential: GithubCredential | None) -> None:
+        self._credential = credential
+
+    def get(self, model: object, key: object) -> GithubCredential | None:
+        return self._credential
+
+
+def _credential(key: str, token: str = FAKE_TOKEN) -> GithubCredential:
+    encrypted = Fernet(key.encode()).encrypt(token.encode()).decode()
+    return GithubCredential(
+        id=1,
+        encrypted_token=encrypted,
+        login="octocat",
+        token_type="unknown",  # noqa: S106 - 類型標籤，不是密碼
+    )
+
+
+def test_the_worker_reads_the_saved_token_with_the_same_key() -> None:
+    key = Fernet.generate_key().decode()
+    session = _OneRowSession(_credential(key))
+    settings = Settings(_env_file=None, token_encryption_key=SecretStr(key))
+
+    assert get_required_token(session, settings) == FAKE_TOKEN  # type: ignore[arg-type]
+
+
+def test_the_worker_treats_no_saved_token_as_anonymous_even_without_a_key() -> None:
+    settings = Settings(_env_file=None, token_encryption_key=SecretStr(""))
+
+    assert get_required_token(_OneRowSession(None), settings) is None  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("worker_key", ["", "not-a-fernet-key", "other"])
+def test_the_worker_refuses_a_saved_token_it_cannot_decrypt(worker_key: str) -> None:
+    saved_with = Fernet.generate_key().decode()
+    if worker_key == "other":
+        worker_key = Fernet.generate_key().decode()  # 有效但不同的金鑰（更換過）
+    session = _OneRowSession(_credential(saved_with))
+    settings = Settings(_env_file=None, token_encryption_key=SecretStr(worker_key))
+
+    with pytest.raises(TokenEncryptionNotConfiguredError) as exc_info:
+        get_required_token(session, settings)  # type: ignore[arg-type]
+
+    message = exc_info.value.message
+    assert saved_with not in message
+    assert worker_key not in message or worker_key == ""
+    assert FAKE_TOKEN not in message
+    # 同步端點的既有策略不變：無法解密時退回匿名（D31）
+    assert get_decrypted_token(session, settings) is None  # type: ignore[arg-type]

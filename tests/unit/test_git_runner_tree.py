@@ -1,3 +1,4 @@
+import itertools
 import os
 import subprocess
 import sys
@@ -74,3 +75,112 @@ def test_run_git_redacts_secrets_before_truncating_stderr(monkeypatch: pytest.Mo
 
     assert "github" not in result.stderr
     assert result.stderr.startswith("x" * 490)
+
+
+# --- poll：取消與租約的輪詢（第二階段切片 5，D44）---
+
+_SLEEPER = "import time; time.sleep(60)"
+
+
+def test_poll_is_called_repeatedly_while_the_command_runs_and_not_after_it_ends() -> None:
+    calls: list[float] = []
+    started = time.monotonic()
+
+    code, out, _ = _run_killing_tree(
+        [sys.executable, "-c", "import time; time.sleep(1.2); print('done')"],
+        timeout=30,
+        stdin=None,
+        env=dict(os.environ),
+        poll=lambda: calls.append(time.monotonic() - started),
+        poll_interval=0.2,
+    )
+
+    assert (code, out.strip()) == (0, b"done")
+    assert 3 <= len(calls) <= 7  # 約每 0.2 秒一次（約 1.2 秒）
+    assert all(b - a >= 0.1 for a, b in itertools.pairwise(calls))
+    assert calls[-1] < 1.6  # 指令結束後不再輪詢
+
+
+def test_a_poll_exception_kills_the_process_tree_and_propagates_unchanged(
+    tmp_path: Path,
+) -> None:
+    marker = tmp_path / "grandchild-survived.txt"
+
+    class StopError(Exception):
+        pass
+
+    def poll() -> None:
+        raise StopError("cancel")
+
+    started = time.monotonic()
+    with pytest.raises(StopError):
+        _run_killing_tree(
+            [sys.executable, "-c", _PARENT, str(marker)],
+            timeout=60,
+            stdin=None,
+            env=dict(os.environ),
+            poll=poll,
+            poll_interval=0.2,
+        )
+    elapsed = time.monotonic() - started
+    time.sleep(4)  # 孫程序若沒被殺，會在這段時間內寫出標記檔
+
+    assert elapsed < 20  # 不是等 60 秒的指令結束
+    assert not marker.exists()
+
+
+def test_the_overall_timeout_still_applies_while_polling() -> None:
+    polls: list[int] = []
+
+    started = time.monotonic()
+    with pytest.raises(subprocess.TimeoutExpired):
+        _run_killing_tree(
+            [sys.executable, "-c", _SLEEPER],
+            timeout=1.0,
+            stdin=None,
+            env=dict(os.environ),
+            poll=lambda: polls.append(1),
+            poll_interval=0.2,
+        )
+
+    assert time.monotonic() - started < 20
+    assert polls  # 逾時前有輪詢
+
+
+def test_output_is_complete_when_polling_with_input() -> None:
+    code, out, _ = _run_killing_tree(
+        [
+            sys.executable,
+            "-c",
+            "import sys, time; time.sleep(0.6); sys.stdout.write(sys.stdin.read())",
+        ],
+        timeout=30,
+        stdin=b"hello through stdin",
+        env=dict(os.environ),
+        poll=lambda: None,
+        poll_interval=0.1,
+    )
+
+    assert (code, out) == (0, b"hello through stdin")
+
+
+def test_run_git_passes_poll_only_when_given_and_requires_kill_process_tree(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen: list[dict[str, object]] = []
+
+    def fake(command: list[str], **kwargs: object) -> tuple[int, bytes, bytes]:
+        seen.append(kwargs)
+        return 0, b"", b""
+
+    monkeypatch.setattr("repopilot.git.runner._run_killing_tree", fake)
+
+    run_git(Path("repo"), ["fetch"], timeout=1, kill_process_tree=True)
+    poll = lambda: None  # noqa: E731
+    run_git(Path("repo"), ["fetch"], timeout=1, kill_process_tree=True, poll=poll, poll_interval=2)
+
+    assert "poll" not in seen[0]
+    assert seen[1]["poll"] is poll
+    assert seen[1]["poll_interval"] == 2
+    with pytest.raises(ValueError, match="kill_process_tree"):
+        run_git(Path("repo"), ["fetch"], timeout=1, poll=poll)

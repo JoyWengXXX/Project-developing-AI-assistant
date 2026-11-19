@@ -7,7 +7,7 @@ import { WorkerStatusBadge } from './WorkerStatusBadge'
 
 /**
  * 背景執行器是否在線：dispatcher／worker 的狀態、佇列數量，以及「有工作排隊但沒有 worker」的提示。
- * 離線時匯入會改用同步方式（請求會占住直到完成，畫面不會顯示進度）。
+ * 離線時匯入、GitHub 註冊與更新會改用同步方式（請求會占住直到完成，畫面不會顯示進度）。
  */
 export function JobsBackendStatus({ status }: { status: PollState<JobsStatus> }) {
   const data = status.data
@@ -16,7 +16,7 @@ export function JobsBackendStatus({ status }: { status: PollState<JobsStatus> })
     <section className="jobs-backend" aria-labelledby="jobs-backend-title">
       <h3 id="jobs-backend-title">背景執行器是否在線</h3>
       <p className="note">
-        在線時，匯入會交給背景執行器處理並顯示進度；離線時匯入會改用同步方式（請求會一直等到完成，畫面不會顯示進度）。
+        在線時，匯入與 GitHub 註冊、更新會交給背景執行器處理並顯示進度；離線時會改用同步方式（請求會一直等到完成，畫面不會顯示進度）。
       </p>
       <ApiHint apis={['GET /api/v1/jobs/status（只讀資料庫的心跳紀錄，不連 Redis）']} />
       {status.loading && <p role="status">檢查中…</p>}
@@ -43,7 +43,7 @@ export function JobsBackendStatus({ status }: { status: PollState<JobsStatus> })
             </div>
           )}
           {data.worker.status === 'absent' && (
-            <p className="note">背景執行器（worker）尚未啟動，匯入會改用同步方式。啟動方式見 README 的「第二階段：背景工作」。</p>
+            <p className="note">背景執行器（worker）尚未啟動，匯入與 GitHub 註冊、更新會改用同步方式。啟動方式見 README 的「第二階段：背景工作」。</p>
           )}
           {data.worker.status === 'stale' && (
             <p className="note">worker 曾經回報過心跳，但目前已逾時，可能已經停止。</p>

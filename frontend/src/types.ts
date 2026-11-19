@@ -50,11 +50,20 @@ export interface RefChange {
   new_sha: string | null
 }
 
-// POST /api/v1/repositories/{id}/fetch 的回應
+// fetch 的結果：同步的 POST /repositories/{id}/fetch（deprecated）的回應，
+// 與背景工作 github_fetch 成功後的 job.result 共用這個形狀（job 版多一個 changed_refs）。
 export interface FetchResult {
   repository_id: number
   updated_refs: RefChange[]
   truncated: boolean // true：變動超過後端上限（100 筆），只回傳部分
+  changed_refs?: number // 只有 job.result 有：實際變動的 ref 數（可能大於 updated_refs 的筆數）
+}
+
+// github_register 成功後的 job.result；already_registered＝worker 發現這個 repo 已經註冊過（沒有新建、沒有 clone）
+export interface RegisterJobResult {
+  repository_id: number
+  github_repo: string
+  already_registered: boolean
 }
 
 // ---------- 版本瀏覽（切片 5e：refs 與 commits） ----------
@@ -281,6 +290,24 @@ export interface JobError {
   message: string
 }
 
+// 失敗追查用的摘要（切片 4）；不含路徑、令牌或內容
+export interface JobUnit {
+  kind: string // 例如 "blob_batch"（匯入：一批檔案內容）
+  index: number | null // 從 0 起算
+  count: number | null
+}
+
+export interface JobPoison {
+  suspect_crashes: number
+  skipped_units: number
+  total_crashes: number // > 0＝worker 曾在處理這個工作時中斷
+}
+
+export interface JobDiagnostics {
+  current_unit: JobUnit | null // 只在 running 時有值
+  poison: JobPoison
+}
+
 export interface Job {
   id: number
   kind: JobKind
@@ -293,6 +320,9 @@ export interface Job {
   max_attempts: number
   next_attempt_at: string | null
   cancel_requested: boolean
+  // 切片 4 新增的兩個欄位：舊版後端的回應沒有，所以宣告為可省略，讀取時要容錯
+  cancel_requested_at?: string | null
+  diagnostics?: JobDiagnostics
   progress: JobProgress
   error: JobError | null // queued 時是「上次失敗原因」
   result: Record<string, unknown> | null // 不可信內容：只能當文字顯示
@@ -306,13 +336,19 @@ export interface Job {
   status_url: string
 }
 
-// POST /api/v1/repositories/{id}/import-jobs 的回應（JobSubmitResponse）：
-//   202＝job 為新建、重新排入或既有的進行中 job（reused=false，snapshot_id 為 null）；
-//   200＝該版本快照早已存在（reused=true，snapshot_id 有值；job 可能為 null＝快照來自同步匯入）。
+// 建立背景工作的回應（JobSubmitResponse），三個端點共用：
+//   POST /repositories/{id}/import-jobs
+//     202＝job 為新建、重新排入或既有的進行中 job（reused=false，snapshot_id 為 null）；
+//     200＝該版本快照早已存在（reused=true，snapshot_id 有值；job 可能為 null＝快照來自同步匯入）。
+//   POST /repositories/{id}/fetch-jobs
+//     202＝job 為新建或既有的進行中 job（repository_id 有值）。
+//   POST /github/registration-jobs
+//     202＝job 為新建或既有的進行中 job（註冊成功前還沒有 repo：repository_id 為 null）；
+//     200＝這個 repo 早已註冊（reused=true，job 為 null，repository_id 有值）：直接用它，不輪詢。
 export interface JobSubmitResponse {
   job: Job | null
   snapshot_id: number | null
-  repository_id: number
+  repository_id: number | null
   reused: boolean
 }
 
@@ -355,6 +391,140 @@ export interface ErrorBody {
     code: string
     message: string
     request_id: string | null
-    details?: ValidationDetail[]
+    // 422 validation_error 是陣列；snapshot_index_not_ready 是 { index_status }
+    details?: ValidationDetail[] | { index_status: string }
   }
 }
+
+// ---------- 程式結構索引（第二階段切片 6，對應 schemas.py 的索引模型） ----------
+
+export type IndexStatus = 'none' | 'building' | 'completed' | 'failed'
+export type ParseStatus = 'parsed' | 'parsed_with_errors' | 'failed'
+
+export interface IndexCounts {
+  files_by_language: Record<string, number>
+  files_by_parse_status: Record<string, number>
+  symbols: number
+  symbols_by_kind: Record<string, number>
+  truncated_files: number // 符號數超過單檔上限而被截斷的檔案數
+}
+
+// GET /snapshots/{id}/index：沒有索引時 200＋status="none"（不是錯誤）；只有 completed 才有 counts
+export interface SnapshotIndex {
+  snapshot_id: number
+  status: IndexStatus
+  index_id: number | null
+  started_at: string | null
+  completed_at: string | null
+  analyzers: Record<string, unknown> // 抽取器與版本；不可信內容，只當文字顯示
+  counts: IndexCounts | null
+  error_summary: string | null
+}
+
+export interface IndexedFile {
+  indexed_file_id: number
+  file_id: number
+  path: string
+  language: 'python' | 'csharp'
+  parse_status: ParseStatus
+  error_count: number
+  first_error: { line: number; column: number } | null // column 是 0-based UTF-8 位元組位移
+  symbol_count: number
+  symbols_truncated: boolean
+}
+
+export type IndexedFileList = Page<IndexedFile>
+
+export interface SymbolSummary {
+  symbol_id: number
+  kind: string
+  language: 'python' | 'csharp'
+  name: string
+  qualified_name: string
+  file_id: number
+  path: string
+  start_line: number
+  end_line: number
+  parent_id: number | null
+  modifiers: string | null
+  is_async: boolean
+  has_errors: boolean
+  conditional: boolean
+  has_children: boolean
+}
+
+export type SymbolList = Page<SymbolSummary>
+
+export interface ImportReference {
+  kind: string
+  target: string
+  imported_name: string | null
+  alias: string | null
+  relative_level: number | null
+  line: number
+}
+
+export interface SymbolRelation {
+  relation_type: string
+  target_name: string
+  target_symbol_id: number | null // 只有 resolved_same_file 才有值
+  resolution: 'resolved_same_file' | 'ambiguous' | 'unresolved'
+  line: number
+}
+
+export interface SymbolDetail extends SymbolSummary {
+  start_column: number
+  end_column: number
+  leading_start_line: number | null
+  type_parameter_count: number
+  imports: ImportReference[]
+  relations: SymbolRelation[]
+}
+
+// ---------- 搜尋（第二階段切片 8，對應 schemas.py 的 Search*Response） ----------
+
+// 三個搜尋端點共用的回應外框：total 在內容搜尋為 null（只能靠 has_more 分頁）
+export interface SearchPageBase<T> {
+  snapshot_id: number
+  repository_id: number
+  commit_sha: string
+  items: T[]
+  total: number | null
+  limit: number
+  offset: number
+  has_more: boolean
+}
+
+export interface FileMatch {
+  file_id: number
+  path: string
+  byte_size: number | null
+}
+
+export interface SymbolMatch {
+  symbol_id: number
+  kind: string
+  language: 'python' | 'csharp'
+  name: string
+  qualified_name: string
+  file_id: number
+  path: string
+  start_line: number
+  end_line: number
+  has_errors: boolean
+}
+
+// snippet_offset／match_offset 以 Unicode 碼點計（不是 UTF-16 單位，也不是 UTF-8 位元組）
+export interface TextMatch {
+  file_id: number
+  path: string
+  line: number // 1-based
+  snippet: string // 不可信內容，只能當文字顯示
+  snippet_truncated: boolean
+  snippet_offset: number // 片段在該行中的位移
+  match_offset: number // 第一個命中在片段中的位移
+}
+
+export type FileSearchPage = SearchPageBase<FileMatch>
+export type SymbolSearchPage = SearchPageBase<SymbolMatch>
+export type TextSearchPage = SearchPageBase<TextMatch>

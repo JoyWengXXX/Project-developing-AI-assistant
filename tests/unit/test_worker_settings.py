@@ -15,6 +15,10 @@ ENV_NAMES = [
     "WORKER_GIT_TIMEOUT_SECONDS",
     "WORKER_IMPORT_GIT_TIMEOUT_SECONDS",
     "WORKER_TASK_TIME_LIMIT_SECONDS",
+    "GIT_POLL_SECONDS",
+    "CLONE_PROGRESS_SECONDS",
+    "MANAGED_TEMP_ORPHAN_SECONDS",
+    "GITHUB_CLONE_TIMEOUT_SECONDS",
 ]
 
 
@@ -130,3 +134,50 @@ def test_worker_git_timeouts_are_independent_of_the_api_git_timeouts() -> None:
     assert settings.git_timeout_seconds == 7
     assert settings.import_git_timeout_seconds == 11
     assert settings.worker_git_timeout_seconds == 200
+
+
+# --- GitHub 背景化的設定（第二階段切片 5，D44）---
+
+
+def test_github_job_defaults() -> None:
+    settings = _settings()
+
+    assert settings.git_poll_seconds == 1.0
+    assert settings.clone_progress_seconds == 2.0
+    assert settings.managed_temp_orphan_seconds == 7200
+
+
+@pytest.mark.parametrize(
+    "values",
+    [
+        {"git_poll_seconds": 0},
+        {"git_poll_seconds": -1},
+        {"git_poll_seconds": 61},
+        {"clone_progress_seconds": 0},
+        {"clone_progress_seconds": 601},
+        {"managed_temp_orphan_seconds": 59},
+    ],
+)
+def test_github_job_setting_ranges(values: dict[str, object]) -> None:
+    with pytest.raises(ValidationError):
+        _settings(**values)
+
+
+def test_the_orphan_threshold_must_exceed_the_clone_timeout() -> None:
+    # 同步端點的 clone 沒有 job 記錄：門檻若小於 clone 逾時，進行中的 clone 會被誤判為孤兒
+    with pytest.raises(ValidationError, match="MANAGED_TEMP_ORPHAN_SECONDS"):
+        _settings(github_clone_timeout_seconds=300, managed_temp_orphan_seconds=300)
+    assert (
+        _settings(
+            github_clone_timeout_seconds=300, managed_temp_orphan_seconds=301
+        ).managed_temp_orphan_seconds
+        == 301
+    )
+
+
+def test_the_task_time_limit_must_cover_the_worst_case_registration() -> None:
+    # 300（clone）＋10（GitHub API）＋2×120（本機 Git）＝550
+    with pytest.raises(ValidationError, match="GITHUB_CLONE_TIMEOUT_SECONDS"):
+        _settings(worker_task_time_limit_seconds=1400, github_clone_timeout_seconds=1200)
+    ok = _settings(worker_task_time_limit_seconds=1500, github_clone_timeout_seconds=1200)
+    assert ok.github_clone_timeout_seconds == 1200

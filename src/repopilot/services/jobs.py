@@ -22,13 +22,25 @@
 
 import logging
 import random
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any, Literal
 from uuid import UUID, uuid4
 
-from sqlalchemy import ColumnElement, DateTime, delete, func, literal, or_, select, text, update
+from sqlalchemy import (
+    ColumnElement,
+    DateTime,
+    cast,
+    delete,
+    func,
+    literal,
+    or_,
+    select,
+    text,
+    update,
+)
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -57,6 +69,9 @@ SNAPSHOT_FOREIGN_KEY = "fk_jobs_snapshot_id_snapshots"
 _MAX_CREATE_ATTEMPTS = 5
 
 _ACTIVE_PREDICATE = text("status IN ('queued', 'running')")
+
+# `complete_job` 的 `before_publish` 回呼可以覆寫的欄位（D44）
+_PUBLISH_OVERRIDES = frozenset({"repository_id", "snapshot_id", "result"})
 
 # 每次重新排隊（新的執行嘗試）時歸零的進度欄位；`work_state` 不重設（毒藥檔案偵測要跨 attempt）
 _PROGRESS_RESET: dict[str, Any] = {
@@ -287,6 +302,19 @@ def heartbeat(
     return row[0] is not None
 
 
+def read_cancel_requested(session: Session, job_id: int, token: UUID) -> bool:
+    """讀取取消旗標（令牌柵欄；單列 SELECT，不鎖列、不延長租約）。
+
+    給 clone／fetch 的輪詢使用（D44）：子程序執行期間每 `GIT_POLL_SECONDS` 秒問一次，
+    比等心跳執行緒（`JOB_HEARTBEAT_SECONDS`）快。令牌不符拋 `JobLeaseLostError`。
+    """
+    row = session.execute(select(Job.cancel_requested_at).where(*_fence(job_id, token))).first()
+    session.commit()  # 結束讀取交易，輪詢之間不持有連線
+    if row is None:
+        raise JobLeaseLostError("The job lease is no longer held by this worker.")
+    return row[0] is not None
+
+
 def _fence(job_id: int, token: UUID) -> list[ColumnElement[bool]]:
     """令牌柵欄條件：只有目前的租約擁有者能寫入。"""
     return [Job.id == job_id, Job.status == "running", Job.lease_token == token]
@@ -400,6 +428,72 @@ def update_progress(
     return updated
 
 
+def merge_work_state(
+    session: Session,
+    job_id: int,
+    token: UUID,
+    patch: dict[str, Any],
+    *,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    """以**單一語句**把 patch 淺層合併進 `work_state` 並回傳合併後的整份（令牌柵欄）。
+
+    給「每個檔案一次」的毒藥單位標記使用（切片 6）：`update_progress` 要先鎖列、讀、再寫，
+    三個往返；這裡是一個 `UPDATE ... RETURNING`，數萬個檔案時差別明顯。不延長租約、不改進度。
+    令牌不符拋 `JobLeaseLostError`。
+    """
+    job_rules.assert_no_secret_keys(patch, where="work_state")
+    row = session.execute(
+        update(Job)
+        .where(*_fence(job_id, token))
+        .values(
+            work_state=Job.work_state.op("||")(cast(patch, JSONB)),
+            updated_at=db_now(now),
+        )
+        .returning(Job.work_state)
+        .execution_options(synchronize_session=False)
+    ).first()
+    session.commit()
+    if row is None:
+        raise JobLeaseLostError("The job lease is no longer held by this worker.")
+    return dict(row[0])
+
+
+def publish_step(
+    session: Session,
+    job_id: int,
+    token: UUID,
+    *,
+    snapshot_id: int,
+    before_publish: Callable[[Session], Any],
+    now: datetime | None = None,
+) -> Job:
+    """發布「中間成果」但 job 繼續執行（切片 6：快照完成後還要建立索引）。
+
+    與 `complete_job` 同樣在單一交易內鎖定 job 列、比對令牌、檢查取消旗標：已有取消請求 → 同一交易
+    內把 job 設為 `cancelled` 並回傳（**不**呼叫 `before_publish`，呼叫端據此中止並回復自己的
+    未完成資料）；否則在同一交易內執行 `before_publish`（完成快照）並把 `snapshot_id` 記到 job，
+    job 仍是 `running`。取消與發布的先後由列鎖決定，所以**已發布的快照不會被改回失敗**。
+    """
+    job = _lock_fenced(session, job_id, token)
+    now_expr = db_now(now)
+    try:
+        if job.cancel_requested_at is not None:
+            result = finish_locked(session, job, "cancelled", now_expr)
+        else:
+            before_publish(session)
+            result = _update_locked(session, job_id, now_expr, snapshot_id=snapshot_id)
+        session.commit()
+    except IntegrityError as exc:
+        session.rollback()
+        _raise_for_foreign_key(exc)
+        raise
+    except BaseException:
+        session.rollback()
+        raise
+    return result
+
+
 # --- 結束狀態 ---
 
 
@@ -491,7 +585,7 @@ def complete_job(
     result: dict[str, Any] | None = None,
     snapshot_id: int | None = None,
     repository_id: int | None = None,
-    before_publish: Callable[[Session], None] | None = None,
+    before_publish: Callable[[Session], Mapping[str, Any] | None] | None = None,
     now: datetime | None = None,
 ) -> Job:
     """發布結果：單一交易內鎖定 job 列、比對令牌、檢查取消旗標，再設為 `succeeded`。
@@ -503,6 +597,9 @@ def complete_job(
       快照／索引的完成寫入放進同一交易（規格 5.8 的「提交前檢查點」）。它拋出例外則整個交易回復。
       這段期間列鎖被持有，所以並行的取消會等到本交易結束；結束後它會看到 `succeeded`，
       回 409 `job_not_cancellable`——**已發布成功的 job 不會被改成 cancelled**。
+    - 回呼可以回傳 `repository_id`／`snapshot_id`／`result` 三個鍵（切片 5，D44）：GitHub 註冊在
+      同一交易內才 INSERT repo 資料列，id 要到那時才知道，所以回呼提供要寫入 job 的值
+      （取代呼叫端傳入的同名參數）。其他鍵是程式錯誤（`ValueError`）。
     """
     if result is not None:
         job_rules.assert_no_secret_keys(result, where="result")
@@ -512,15 +609,23 @@ def complete_job(
         if job.cancel_requested_at is not None:
             finished = finish_locked(session, job, "cancelled", now_expr)
         else:
+            overrides: dict[str, Any] = {}
             if before_publish is not None:
-                before_publish(session)
+                overrides = dict(before_publish(session) or {})
+                unknown = overrides.keys() - _PUBLISH_OVERRIDES
+                if unknown:
+                    raise ValueError(f"before_publish returned unsupported keys: {sorted(unknown)}")
+                if "result" in overrides:
+                    job_rules.assert_no_secret_keys(overrides["result"], where="result")
             values: dict[str, Any] = {
                 "phase": "completed",
                 "phase_started_at": now_expr,
-                "result": result,
+                "result": overrides.get("result", result),
                 "error_code": None,
                 "error_summary": None,
             }
+            snapshot_id = overrides.get("snapshot_id", snapshot_id)
+            repository_id = overrides.get("repository_id", repository_id)
             if snapshot_id is not None:
                 values["snapshot_id"] = snapshot_id
             if repository_id is not None:
@@ -724,6 +829,7 @@ def resubmit_job(
     *,
     request_id: str | None = None,
     params: dict[str, Any] | None = None,
+    index_profile_hash: str | None = None,
     now: datetime | None = None,
 ) -> Job | None:
     """使用者再次提交同一份工作，而最近的 job 是 `failed` 或 `cancelled`：重新排入**同一個 job**
@@ -750,6 +856,8 @@ def resubmit_job(
         extra: dict[str, Any] = {}
         if request_id is not None:
             extra["request_id"] = request_id
+        if index_profile_hash is not None:
+            extra["index_profile_hash"] = index_profile_hash
         if params is not None:
             job_rules.assert_no_secret_keys(params, where="params")
             extra["params"] = params

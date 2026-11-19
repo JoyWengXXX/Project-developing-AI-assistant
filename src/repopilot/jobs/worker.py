@@ -25,7 +25,7 @@ from repopilot.config import Settings, get_settings
 from repopilot.db.session import create_db_engine, create_session_factory
 from repopilot.jobs.celery_app import TASK_NAME, create_celery_app
 from repopilot.logging_config import APP_LOGGER_NAME, configure_logging
-from repopilot.services import job_runner, service_heartbeats
+from repopilot.services import github_job_runner, job_runner, service_heartbeats
 
 logger = logging.getLogger(f"{APP_LOGGER_NAME}.jobs.worker")
 
@@ -79,6 +79,14 @@ def _start_service_heartbeat(**_: Any) -> None:
         info={"queue": _worker_settings.celery_queue_name},
     )
     _service_heartbeat.start()
+    # 規格 5.12：被 SIGKILL 的 worker 可能留下 `.tmp/<hex>`；啟動時清理逾時且沒有進行中 job 記錄者。
+    # 背景執行緒（掃描目錄可能在掛載上較慢），失敗只記日誌
+    threading.Thread(
+        target=github_job_runner.sweep_orphans,
+        args=(_service_engine, _worker_settings),
+        name="temp-orphan-sweep",
+        daemon=True,
+    ).start()
     logger.info("worker_ready", extra={"queue": _worker_settings.celery_queue_name})
 
 

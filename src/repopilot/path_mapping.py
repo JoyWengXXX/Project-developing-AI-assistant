@@ -149,3 +149,38 @@ def map_host_path(host_path: str, mappings: Sequence[PathMapping]) -> MappedPath
 def to_container_path(host_path: str, mappings: Sequence[PathMapping]) -> PurePosixPath:
     """`map_host_path` 的簡寫：只要容器路徑。"""
     return map_host_path(host_path, mappings).container_path
+
+
+def _pure_path(value: str) -> PurePosixPath | PureWindowsPath:
+    """含磁碟機代號的視為 Windows 路徑（測試把「容器根」指到本機目錄），其餘為 POSIX。"""
+    windows = PureWindowsPath(value)
+    return windows if windows.drive else PurePosixPath(value)
+
+
+def to_host_path(container_path: str, mappings: Sequence[PathMapping]) -> str:
+    """`to_container_path` 的反向（純字串運算）：worker 建立的路徑在寫入資料庫前換回**主機路徑**。
+
+    資料庫的 `repositories.canonical_local_path` 一律是主機路徑（D18；API、`resolve_registered_path`
+    與 `to_container_path` 都以它為準），所以 worker 在容器內 clone 出來的目錄
+    （`/mnt/managed/github/<owner>/<name>`）必須換成 `<host>\\github\\<owner>\\<name>` 才能存入。
+    取**最長**的符合 `container` 前綴；對不上或含 `..` 一律拋 `PathNotMappedError`。
+    """
+    candidate = _pure_path(container_path)
+    best: tuple[PathMapping, PurePosixPath | PureWindowsPath] | None = None
+    for mapping in mappings:
+        base = _pure_path(mapping.container)
+        if type(base) is not type(candidate) or not (
+            candidate == base or candidate.is_relative_to(base)
+        ):
+            continue
+        if best is None or len(base.parts) > len(best[1].parts):
+            best = (mapping, base)
+    if best is None:
+        raise PathNotMappedError(
+            "The container path is not covered by any WORKER_PATH_MAPPINGS entry."
+        )
+    mapping, base = best
+    relative = candidate.relative_to(base).parts
+    if any(_segment_problem(part) is not None for part in relative):
+        raise PathNotMappedError("The container path has a segment that is not a valid name.")
+    return str(PureWindowsPath(mapping.host).joinpath(*relative))

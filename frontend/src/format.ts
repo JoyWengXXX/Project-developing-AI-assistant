@@ -8,10 +8,11 @@ export function toApiError(e: unknown): ApiError {
   return new ApiError(null, 'unexpected_error', String(e), null)
 }
 
-/** 背景工作 failed／cancelled → 與請求錯誤相同的 ApiError，讓同一個 ErrorBox 顯示（request_id 取自 job）。 */
+/** 背景工作 failed（或 cancelled）→ 與請求錯誤相同的 ApiError，讓同一個 ErrorBox 顯示（request_id 取自 job）。 */
 export function jobFailure(job: Job): ApiError {
   if (job.error !== null) return new ApiError(null, job.error.code, job.error.message, job.request_id)
-  return new ApiError(null, 'job_cancelled', '背景工作已被取消。', job.request_id)
+  if (job.status === 'cancelled') return new ApiError(null, 'job_cancelled', '背景工作已被取消。', job.request_id)
+  return new ApiError(null, 'job_failed', '背景工作失敗，但後端沒有回報原因。', job.request_id)
 }
 
 /** 參考版本所屬 repo 的顯示名稱：GitHub 來源用 owner/name，本機來源用註冊名稱。 */
@@ -118,28 +119,31 @@ export const ERROR_HINT: Record<string, string> = {
   database_unavailable: '後端連不到資料庫（請確認 docker compose 的 db 是否啟動）。',
   git_command_failed: 'Git 指令執行失敗（後端內部問題或 repo 損毀），請用 request_id 查後端日誌。',
   git_timeout:
-    'Git 讀取逾時（歷史很大、磁碟忙碌，或掛載目錄上 loose 物件特別多）。後端會先自動重試幾次；仍失敗時，可在該 repo 自行執行 git gc 後重試（系統不會代為執行）。',
-  // GitHub token（切片 5c-1）
+    'Git 讀取、clone 或 fetch 逾時（歷史很大、網路慢、磁碟忙碌，或掛載目錄上 loose 物件特別多）。背景工作會先自動退避重試幾次；仍失敗時，大型 repo 可調高 GITHUB_CLONE_TIMEOUT_SECONDS，或在該 repo 自行執行 git gc 後重試（系統不會代為執行）。',
+  // GitHub token（切片 5c-1）與 worker 的 token 解密（切片 5）：同一個 code，兩種情境
   token_encryption_not_configured:
-    '後端未設定 TOKEN_ENCRYPTION_KEY，無法保存 token（token 沒有被送去 GitHub，也沒有被保存）。',
-  github_token_invalid: 'GitHub 拒絕這個 token（無效、過期或已被撤銷），token 沒有被保存。請重新建立並貼上有效的 token。',
+    '部署設定問題：缺少 TOKEN_ENCRYPTION_KEY。註冊或更新 GitHub repo 的背景工作是 worker 缺少，請檢查 .env.worker（見 README）；儲存 token 時是後端缺少（.env），token 不會被保存，也不會送去 GitHub。',
+  github_token_invalid:
+    'GitHub 拒絕這個 token（無效、過期或已被撤銷）。請在「GitHub 連線」重新貼上有效的 token（無效的 token 不會被保存）；背景工作修正後可再按「重試」。',
   // GitHub repo 註冊與 fetch（切片 5c-2）
   invalid_github_repo:
     '格式不合法。請輸入 owner/repo，或 https://github.com/owner/repo；只接受 github.com，不接受空白、分號等特殊字元或 SSH 位址。',
   github_registration_disabled:
     '後端未設定 MANAGED_REPOS_DIR，GitHub 註冊與 fetch 已停用。請在 .env 設定受管目錄的絕對路徑後重啟後端。',
   github_repo_not_found_or_private:
-    '找不到，或 token 沒有此 repo 的權限；私有 repo 請先在上方儲存 token（fine-grained token 須涵蓋該 repo，組織可能還需要核准）。',
-  github_clone_failed: 'git clone 失敗；詳細原因只記在後端日誌，請用 request_id 對照。後端已清理暫存目錄，可重試。',
-  github_clone_timeout: 'clone 逾時，repo 可能太大（上限由後端 GITHUB_CLONE_TIMEOUT_SECONDS 決定）。後端已清理暫存目錄。',
-  github_unreachable: '後端連不到 GitHub，請確認網路後重試。',
+    '找不到，或 token 沒有這個 repo 的權限；私有 repo 請先在「GitHub 連線」儲存 token（fine-grained token 須涵蓋該 repo，組織可能還需要核准）。',
+  github_clone_failed: 'git clone 失敗；詳細原因只記在後端（worker）日誌，請用 request_id 對照。暫存目錄已清理，可重試。',
+  github_clone_timeout: 'clone 逾時，repo 可能太大（上限由後端 GITHUB_CLONE_TIMEOUT_SECONDS 決定）。暫存目錄已清理。',
+  github_unreachable: '連不上 GitHub（網路問題）。背景工作會自動退避重試；同步請求或已失敗的工作，請確認網路後再試。',
   github_api_error: 'GitHub API 回應非預期（可能是速率限制、權限禁止或 GitHub 暫時故障），請稍後重試。',
-  github_timeout: '呼叫 GitHub API 逾時，請稍後重試。',
+  github_timeout: '呼叫 GitHub API 逾時。背景工作會自動退避重試；同步請求或已失敗的工作，請稍後再試。',
+  github_server_error: 'GitHub 暫時發生伺服器錯誤（5xx）。背景工作會自動退避重試；已失敗的工作請稍後再試。',
   repository_not_github: '這個 repo 是本機來源，只有 GitHub 來源的 repo 才能 fetch。',
-  github_fetch_failed: 'git fetch 失敗（網路、token 已過期或權限不足）；詳細原因看後端日誌。',
+  github_fetch_failed: 'git fetch 失敗（網路、token 已過期或權限不足）；詳細原因看後端（worker）日誌，確認後可重試。',
   github_fetch_timeout: 'fetch 逾時，請稍後重試。',
-  managed_storage_error: '受管目錄的檔案系統發生問題（例如目的目錄已存在但沒有對應的資料列），請用 request_id 查後端日誌。',
-  repository_busy: '這個 repo 正在匯入或 clone／fetch，暫時不能操作，請稍後再試。',
+  managed_storage_error:
+    '受管目錄的檔案系統發生問題（例如目的目錄已存在但沒有對應的資料列，需要手動處理），請用 request_id 查後端日誌。',
+  repository_busy: '這個 repo 正在匯入、clone／fetch，或有背景工作進行中，暫時不能操作（含移除）；請先取消或等它完成。',
   internal_error: '後端未預期的例外，請用 request_id 查後端日誌。',
   // 背景工作（第二階段切片 2）
   request_timeout: '請求逾時，沒有收到後端回應；輪詢會自動退避並重試。',
@@ -147,12 +151,16 @@ export const ERROR_HINT: Record<string, string> = {
   job_not_cancellable: '這個工作目前無法取消（可能已結束）。',
   job_not_retryable: '只有失敗的工作可以重試，或同一個目標已有進行中的工作。',
   job_lease_lost: '執行這個工作的 worker 已失去它的租約（工作已被其他程序接手或已結束），請重新整理列表。',
-  worker_lost: 'worker 中斷或租約過期；若尚有重試額度會自動重新排隊，已達上限則標為失敗，可手動重試。',
-  profile_mismatch: 'API 與 worker 的設定雜湊不一致（兩邊的匯入或索引設定不同），請對齊設定後再重試。',
+  worker_lost: '執行背景工作的程序中途中斷，系統已自動重試；重試額度用完後才會失敗。',
+  profile_mismatch: 'API 與 worker 的設定雜湊不一致（兩邊的匯入或索引設定、或 Python 版本不同），請對齊設定後再重試。',
+  // 程式結構索引（第二階段切片 6）
+  snapshot_index_not_ready: '這個版本還沒有建立完成的程式結構索引（尚未建立、建立中或失敗）；按「建立索引」後等它完成。',
+  symbol_not_found: '這個符號不存在，或不屬於這個版本目前的索引（索引可能已重建）。',
   path_not_mapped: 'repo 路徑無法映射到 worker 容器內的路徑，這是部署設定問題，請檢查 WORKER_PATH_MAPPINGS（見 README）。',
   worker_path_not_mapped:
     'repo 的主機路徑沒有對應到 worker 容器內的路徑，這是部署設定問題，請檢查 WORKER_PATH_MAPPINGS（見 README）；工作沒有被排入。',
-  job_cancelled: '這個背景工作已被取消；按「重試匯入」會重新排入。',
+  job_cancelled: '這個背景工作已被取消，可以重新提交（匯入按「重新匯入」、註冊按「重新註冊」、更新再按一次「更新」）。',
+  job_failed: '背景工作失敗，但後端沒有回報原因；請用 request_id 查後端日誌。',
   unsupported_job_kind: 'worker 不支援這種工作（版本不一致），請確認 worker 映像與後端是同一版本。',
   invalid_response: '後端回應的內容不符合預期，請用 request_id 查後端日誌。',
   parser_crash: '某個檔案的解析器當機；該檔案以部分解析處理，不影響其他檔案。',
@@ -162,7 +170,7 @@ export const ERROR_HINT: Record<string, string> = {
 // github_registration_disabled），所以移除時優先用這張表，沒有的 code 再退回 ERROR_HINT。
 export const REMOVE_ERROR_HINT: Record<string, string> = {
   repository_not_found: '這個 repo 已不存在（可能已被移除），列表會重新整理。',
-  repository_busy: '正在匯入或更新中，請稍後再試。',
+  repository_busy: '有背景工作（匯入或更新）進行中，請先取消或等它完成後再移除。',
   managed_storage_error: '無法刪除本機 clone，請關閉占用該資料夾的程式後重試。',
   invalid_repository_path: '路徑與紀錄不符，為安全起見未刪除任何檔案。',
   github_registration_disabled: '請先設定 MANAGED_REPOS_DIR。',

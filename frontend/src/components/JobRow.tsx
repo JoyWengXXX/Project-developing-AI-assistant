@@ -2,11 +2,13 @@ import { useEffect, useId, useRef, useState } from 'react'
 import {
   canCancel,
   canRetry,
+  cancelExplain,
+  isCancelling,
   JOB_ACTION_LABEL,
   jobOutcome,
+  jobPercent,
   jobTitle,
   failureReason,
-  progressPercent,
   retriedText,
   type JobAction,
 } from '../jobFormat'
@@ -75,14 +77,14 @@ export function JobRow({ job, repoShort, repoFull, workerOffline, acting, onActi
   const title = jobTitle(job, repoShort)
   const retried = retriedText(job)
   const outcome = jobOutcome(job, { workerOffline })
-  const showBar = job.status === 'running' && progressPercent(job.progress) !== null // 有總數才畫進度條
+  const showBar = job.status === 'running' && jobPercent(job) !== null // 有總數才畫進度條
   const timeIso = job.finished_at ?? job.created_at
   const timeLabel = job.finished_at !== null ? '結束於' : '建立於'
 
   return (
     <li className={`job-item job-${job.status}${compact ? ' job-compact' : ''}`}>
       <div className="job-line">
-        <JobStatusBadge status={job.status} />
+        <JobStatusBadge status={job.status} cancelling={isCancelling(job)} />
         {dismissal?.dismissed === true && job.status === 'failed' && (
           <span className="badge badge-neutral" title="已忽略：不計入頂端的「失敗」數量與 repo 卡片的提示">
             已忽略
@@ -132,7 +134,7 @@ export function JobRow({ job, repoShort, repoFull, workerOffline, acting, onActi
             disabled={acting !== null || job.cancel_requested}
             onClick={() => setConfirming('cancel')}
           >
-            {job.cancel_requested ? '已要求取消，等待工作停止' : '取消'}
+            {isCancelling(job) ? '取消中…' : '取消'}
           </button>
         )}
         {retryable && (
@@ -181,11 +183,7 @@ export function JobRow({ job, repoShort, repoFull, workerOffline, acting, onActi
             <strong>
               確定要{actionLabel}「{title}」嗎？
             </strong>{' '}
-            {confirming === 'cancel'
-              ? job.status === 'queued'
-                ? '排隊中的工作會立即取消。'
-                : '執行中的工作會先記錄取消請求，等工作在下一個檢查點才會真正停止。'
-              : '會重新排入背景執行器，再做一次。'}
+            {confirming === 'cancel' ? cancelExplain(job) : '會重新排入背景執行器，再做一次。'}
           </p>
           <div className="action-row">
             <button

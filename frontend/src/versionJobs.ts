@@ -28,19 +28,21 @@ export interface StatusSnapshot {
  * 決定這次載入要用背景工作還是同步回退：只有 worker 與 dispatcher「都」在線才用背景工作。
  * 取不到狀態（請求失敗）時也回退：沒有證據顯示 worker 可用，同步路徑一定能做事（只是會佔住請求）。
  * 失敗時 usePolling 會保留舊資料，但舊資料已不可信，所以有 error 就當成取不到。
+ * action：回退說明裡的動作（「匯入」、GitHub 的「註冊」「更新」）：「…，改用同步註冊」。
  */
-export function chooseLoadMode(status: StatusSnapshot): LoadModeDecision {
-  const unknown = '無法取得背景工作執行器（worker）的狀態，改用同步匯入'
+export function chooseLoadMode(status: StatusSnapshot, action = '匯入'): LoadModeDecision {
+  const fallback = `改用同步${action}`
+  const unknown = `無法取得背景工作執行器（worker）的狀態，${fallback}`
   if (status.error !== null) return { mode: 'sync', reason: unknown }
   if (status.data === null) return status.loading ? { mode: 'wait' } : { mode: 'sync', reason: unknown }
   const { worker, dispatcher } = status.data
   if (worker.status !== 'online') {
     const why = worker.status === 'stale' ? '心跳已逾時' : '未啟動'
-    return { mode: 'sync', reason: `背景工作執行器（worker）${why}，改用同步匯入` }
+    return { mode: 'sync', reason: `背景工作執行器（worker）${why}，${fallback}` }
   }
   if (dispatcher.status !== 'online') {
     const why = dispatcher.status === 'stale' ? '心跳已逾時' : '未啟動'
-    return { mode: 'sync', reason: `派送器（dispatcher）${why}，改用同步匯入` }
+    return { mode: 'sync', reason: `派送器（dispatcher）${why}，${fallback}` }
   }
   return { mode: 'job' }
 }

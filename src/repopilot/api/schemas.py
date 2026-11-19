@@ -2,7 +2,7 @@ from datetime import datetime
 from typing import Annotated, Any, Literal
 
 from fastapi import Path, Query
-from pydantic import BaseModel, ConfigDict, Field, StringConstraints
+from pydantic import AfterValidator, BaseModel, ConfigDict, Field, StringConstraints
 
 RepositoryName = Annotated[
     str, StringConstraints(strip_whitespace=True, min_length=1, max_length=200)
@@ -430,6 +430,29 @@ class JobErrorResponse(BaseModel):
     message: str
 
 
+class JobUnitResponse(BaseModel):
+    """worker 目前處理的單位（只在 running 時有值）：種類與第幾個，沒有識別、路徑或內容。"""
+
+    kind: str
+    index: int | None
+    count: int | None
+
+
+class JobPoisonResponse(BaseModel):
+    """毒藥單位的計數（D43）：同一單位連續讓 worker 崩潰的次數、被略過的單位數、總崩潰次數。"""
+
+    suspect_crashes: int
+    skipped_units: int
+    total_crashes: int
+
+
+class JobDiagnosticsResponse(BaseModel):
+    """失敗追查用的 `work_state` 安全摘要（第二階段切片 4）；`work_state` 本身不外露。"""
+
+    current_unit: JobUnitResponse | None
+    poison: JobPoisonResponse
+
+
 class JobResponse(BaseModel):
     """背景工作。刻意**不含**租約令牌與 `work_state`（worker 內部資料）。"""
 
@@ -444,7 +467,10 @@ class JobResponse(BaseModel):
     max_attempts: int
     next_attempt_at: datetime | None
     cancel_requested: bool
+    # 使用者要求取消的時間（切片 4 新增）；null＝沒有要求。cancel_requested 是它的布林版本
+    cancel_requested_at: datetime | None
     progress: JobProgressResponse
+    diagnostics: JobDiagnosticsResponse
     error: JobErrorResponse | None
     result: dict[str, Any] | None
     request_id: str | None
@@ -468,11 +494,14 @@ class JobSubmitResponse(BaseModel):
     - 202：`job` 為新建、重新排入或既有的進行中 job（`reused=false`）。
     - 200：相同快照已 `completed`，不需要 job：`snapshot_id` 有值、`reused=true`；`job` 是
       產生該快照的最近一次成功 job，若快照來自第一階段的同步匯入（沒有 job）則為 `null`。
+    - 切片 5（GitHub 註冊）：`registration-jobs` 回 202 時 `repository_id` 為 `null`（資料列要到
+      worker 成功後才存在，之後讀 `job.result.repository_id`）；repo 已註冊則 200、`job` 為 `null`、
+      `reused=true`、`repository_id` 有值。
     """
 
     job: JobResponse | None
     snapshot_id: int | None
-    repository_id: int
+    repository_id: int | None
     reused: bool
 
 
@@ -492,3 +521,224 @@ class JobsStatusResponse(BaseModel):
     running: int
     # 心跳超過此秒數未更新視為離線（SERVICE_HEARTBEAT_SECONDS 的 3 倍）
     heartbeat_timeout_seconds: int
+
+
+# --- 結構索引（第二階段切片 6，規格 4.7）---
+IndexStatus = Literal["none", "building", "completed", "failed"]
+IndexLanguage = Literal["python", "csharp"]
+ParseStatusValue = Literal["parsed", "parsed_with_errors", "failed"]
+SymbolIdPath = Annotated[int, Path(ge=1, le=_INT64_MAX)]
+IndexedFileIdQuery = Annotated[int, Query(ge=1, le=_INT64_MAX, description="只看此快照檔案的符號")]
+ParentIdQuery = Annotated[int, Query(ge=1, le=_INT64_MAX, description="只看此符號的直接子符號")]
+SymbolKindFilter = Literal[
+    "module",
+    "namespace",
+    "class",
+    "struct",
+    "record",
+    "interface",
+    "enum",
+    "enum_member",
+    "delegate",
+    "function",
+    "method",
+    "constructor",
+    "property",
+    "field",
+]
+
+
+class IndexCountsResponse(BaseModel):
+    files_by_language: dict[str, int]
+    files_by_parse_status: dict[str, int]
+    symbols: int
+    symbols_by_kind: dict[str, int]
+    # 符號數超過單檔上限而被截斷的檔案數
+    truncated_files: int
+
+
+class SnapshotIndexResponse(BaseModel):
+    """快照在**目前設定**下的結構索引狀態；沒有索引時 200＋`status="none"`（不是錯誤）。
+
+    只有 `completed` 才有 `counts`。`analyzers` 是抽取器與版本（Python 主次版本、演算法版本），
+    不含秘密；`error_summary` 是固定的安全摘要。
+    """
+
+    snapshot_id: int
+    status: IndexStatus
+    index_id: int | None
+    started_at: datetime | None
+    completed_at: datetime | None
+    analyzers: dict[str, Any]
+    counts: IndexCountsResponse | None
+    error_summary: str | None
+
+
+class FirstErrorResponse(BaseModel):
+    line: int
+    # 0-based UTF-8 位元組位移（規格 7.1）
+    column: int
+
+
+class IndexedFileResponse(BaseModel):
+    """被索引的檔案與解析狀態；**不含任何原始程式碼片段或語法錯誤訊息**。"""
+
+    indexed_file_id: int
+    file_id: int
+    path: str
+    language: IndexLanguage
+    parse_status: ParseStatusValue
+    error_count: int
+    first_error: FirstErrorResponse | None
+    symbol_count: int
+    symbols_truncated: bool
+
+
+class IndexedFileListResponse(PageResponse):
+    items: list[IndexedFileResponse]
+
+
+class SymbolSummaryResponse(BaseModel):
+    symbol_id: int
+    kind: str
+    language: IndexLanguage
+    name: str
+    qualified_name: str
+    file_id: int
+    path: str
+    start_line: int
+    end_line: int
+    parent_id: int | None
+    modifiers: str | None
+    is_async: bool
+    has_errors: bool
+    conditional: bool
+    # 是否有直接子符號（符號樹逐層載入用）
+    has_children: bool
+
+
+class SymbolListResponse(PageResponse):
+    items: list[SymbolSummaryResponse]
+
+
+class ImportReferenceResponse(BaseModel):
+    kind: str
+    target: str
+    imported_name: str | None
+    alias: str | None
+    relative_level: int | None
+    line: int
+
+
+class SymbolRelationResponse(BaseModel):
+    relation_type: str
+    target_name: str
+    # 只有 resolved_same_file 才有值；ambiguous 與 unresolved 一律為 null（不猜測）
+    target_symbol_id: int | None
+    resolution: str
+    line: int
+
+
+class SymbolDetailResponse(SymbolSummaryResponse):
+    # 0-based UTF-8 位元組位移
+    start_column: int
+    end_column: int
+    # Python 裝飾器的起始行（沒有則 null）
+    leading_start_line: int | None
+    type_parameter_count: int
+    # 同一檔案的 import（最多 200 筆，依行號排序）
+    imports: list[ImportReferenceResponse]
+    relations: list[SymbolRelationResponse]
+
+
+# --- 搜尋（第二階段切片 8，規格 8）---
+SEARCH_DEFAULT_LIMIT = 20
+SEARCH_MAX_LIMIT = 100
+SEARCH_MAX_OFFSET = 10_000
+
+
+def _validate_search_text(value: str) -> str:
+    # 不 strip：字面比對時前後空白有意義；但全空白、換行與 NUL 沒有搜尋意義（或無法比對）
+    if not value.strip():
+        raise ValueError("q must not be blank.")
+    if any(char in value for char in ("\n", "\r", "\x00")):
+        raise ValueError("q must not contain line breaks or NUL.")
+    return value
+
+
+SearchTextQuery = Annotated[
+    str,
+    Query(min_length=1, max_length=200, description="字面子字串（區分大小寫），1～200 字元"),
+    AfterValidator(_validate_search_text),
+]
+SearchLimitQuery = Annotated[
+    int, Query(ge=1, le=SEARCH_MAX_LIMIT, description="每頁筆數，最多 100")
+]
+SearchOffsetQuery = Annotated[int, Query(ge=0, le=SEARCH_MAX_OFFSET, description="略過筆數")]
+SearchPathPrefixQuery = Annotated[
+    str | None, Query(max_length=1024, description="路徑前綴（區分大小寫，不是萬用字元）")
+]
+
+
+class SearchResponse(BaseModel):
+    """搜尋回應外框：URL 已釘住同一個快照，所以 repo 與完整 commit SHA 放在外框而不是每筆命中。
+
+    `total` 在內容搜尋為 null（精確總數需要掃完所有命中）；任何端點都可用 `has_more` 分頁。
+    """
+
+    snapshot_id: int
+    repository_id: int
+    commit_sha: str
+    total: int | None
+    limit: int
+    offset: int
+    has_more: bool
+
+
+class FileMatchResponse(BaseModel):
+    file_id: int
+    path: str
+    byte_size: int | None
+
+
+class FileSearchResponse(SearchResponse):
+    items: list[FileMatchResponse]
+
+
+class SymbolMatchResponse(BaseModel):
+    symbol_id: int
+    kind: str
+    language: IndexLanguage
+    name: str
+    qualified_name: str
+    file_id: int
+    path: str
+    start_line: int
+    end_line: int
+    has_errors: bool
+
+
+class SymbolSearchResponse(SearchResponse):
+    items: list[SymbolMatchResponse]
+
+
+class TextMatchResponse(BaseModel):
+    """一個命中行；`snippet` 是 repo 內容（不可信資料），消費端須當純文字處理。
+
+    `snippet_offset`、`match_offset` 以 Unicode 碼點計（不是 UTF-16 或位元組）。
+    """
+
+    file_id: int
+    path: str
+    # 1-based
+    line: int
+    snippet: str
+    snippet_truncated: bool
+    # 片段在該行中的字元位移
+    snippet_offset: int
+    # 第一個命中在片段中的字元位移
+    match_offset: int
+
+
+class TextSearchResponse(SearchResponse):
+    items: list[TextMatchResponse]

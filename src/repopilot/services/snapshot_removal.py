@@ -41,8 +41,9 @@ from repopilot.db.locks import engine_of, snapshot_lock_key, try_advisory_lock
 from repopilot.db.models import Job, RepositoryReference, Snapshot, SnapshotFile
 from repopilot.errors import SnapshotBusyError, SnapshotNotFoundError, SnapshotReferencedError
 from repopilot.logging_config import APP_LOGGER_NAME
-from repopilot.services import job_rules
+from repopilot.services import job_rules, snapshot_indexing
 from repopilot.services.import_jobs import import_dedupe_key
+from repopilot.services.snapshot_indexing import PURGE_THRESHOLD_SYMBOLS
 
 logger = logging.getLogger(f"{APP_LOGGER_NAME}.services.snapshot_removal")
 
@@ -77,6 +78,13 @@ def remove_snapshot(
                 "The snapshot is being imported or used by another operation; retry later."
             )
         try:
+            # 大型結構索引先分批清掉（每批各自一個短交易，不持有快照列鎖）；小型索引沒有動作。
+            # 先檢查再清，所以「被擋下」時什麼都不刪
+            _lock_and_check(session, snapshot_id, settings, force=force)
+            if snapshot_indexing.count_symbols(session, [snapshot_id]) >= PURGE_THRESHOLD_SYMBOLS:
+                snapshot_indexing.purge_index_data(session, [snapshot_id])
+            else:
+                session.rollback()
             result = _remove_in_transaction(session, snapshot_id, settings, force=force)
         except BaseException:
             session.rollback()  # 任何失敗都放掉列鎖；快照、檔案與參考原封不動
@@ -95,9 +103,10 @@ def remove_snapshot(
     return result
 
 
-def _remove_in_transaction(
+def _lock_and_check(
     session: Session, snapshot_id: int, settings: Settings, *, force: bool
-) -> SnapshotRemovalResult:
+) -> tuple[int, bool]:
+    """鎖住快照列並做「可以移除嗎」的檢查；回傳 (repository_id, 是否為參考版本)，不 commit。"""
     row = session.execute(
         select(
             Snapshot.repository_id,
@@ -140,9 +149,17 @@ def _remove_in_transaction(
             "The snapshot is the reference version of its repository; "
             "retry with force=true to remove it and clear the reference."
         )
+    return repository_id, referenced
 
-    # SQL 層級刪除：不載入任何 ORM 物件，與檔案數無關（20,000 檔也只是這三個語句）。
-    # snapshot_files、repository_references 的外鍵本來就是 ON DELETE CASCADE，但明確刪除才有筆數
+
+def _remove_in_transaction(
+    session: Session, snapshot_id: int, settings: Settings, *, force: bool
+) -> SnapshotRemovalResult:
+    repository_id, referenced = _lock_and_check(session, snapshot_id, settings, force=force)
+
+    # SQL 層級刪除：不載入任何 ORM 物件，與檔案數無關。大型結構索引已由 purge_index_data 分批清掉
+    # （見 remove_snapshot）；snapshot_files、repository_references 的外鍵本來就是
+    # ON DELETE CASCADE，但明確刪除才有筆數
     deleted_files = _rowcount(
         session.execute(delete(SnapshotFile).where(SnapshotFile.snapshot_id == snapshot_id))
     )

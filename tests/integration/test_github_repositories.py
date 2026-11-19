@@ -5,8 +5,10 @@ GitHub API 以 `httpx.MockTransport`（dependency override）模擬。token 一�
 """
 
 import base64
+import json
 import os
 import subprocess
+import sys
 import threading
 import time
 from collections.abc import Iterator
@@ -510,32 +512,47 @@ def test_concurrent_registration_of_same_repo_creates_one_row_and_one_clone(
     assert git(_clone_path(managed_dir), "rev-parse", "HEAD") == remote.head()
 
 
-def test_concurrent_registration_without_the_process_lock_is_still_safe(
-    client: TestClient,
+def test_concurrent_registration_from_separate_processes_has_exactly_one_winner(
     remote: RemoteRepo,
+    remotes: Path,
     managed_dir: Path,
+    test_database_url: str,
     db_engine: Engine,
-    monkeypatch: pytest.MonkeyPatch,
+    client: TestClient,
 ) -> None:
-    # 模擬多個 worker 程序：行程內的鎖不共用，只剩 rename 與資料庫唯一索引保護
-    monkeypatch.setattr(github_repositories, "_lock_for", lambda key: threading.Lock())
-    workers = 5
-    barrier = threading.Barrier(workers)
+    # 真的多程序（取代 D32 時代以 monkeypatch 關閉行程內鎖的模擬）：行程內鎖看不到彼此，
+    # 只有 PostgreSQL advisory lock 能序列化；輸家等到贏家完成，看到資料列後回傳既有資料
+    start_at = time.time() + 10  # 讓各程序都載入完成後再同時出發
+    env = {
+        **os.environ,
+        "HELPER_DATABASE_URL": test_database_url,
+        "HELPER_MANAGED_DIR": str(managed_dir),
+        "HELPER_REMOTES_URI": remotes.as_uri(),
+        "HELPER_CANONICAL": "octocat/Hello-World",
+        "HELPER_START_AT": str(start_at),
+    }
+    spellings = ["octocat/Hello-World", "OCTOCAT/hello-world"] * 2
+    processes = [
+        subprocess.Popen(  # noqa: S603
+            [sys.executable, "-m", "tests.process_helpers", "register", spelling],
+            cwd=Path(__file__).resolve().parents[2],
+            env=env,
+            stdout=subprocess.PIPE,
+            text=True,
+        )
+        for spelling in spellings
+    ]
+    results = []
+    for process in processes:
+        output, _ = process.communicate(timeout=180)
+        assert process.returncode == 0
+        results.append(json.loads(output.strip().splitlines()[-1]))
 
-    def attempt(_: int) -> tuple[int, str | None]:
-        barrier.wait()
-        response = _register(client)
-        error = response.json().get("error")
-        return int(response.status_code), error["code"] if error else None
-
-    with ThreadPoolExecutor(max_workers=workers) as pool:
-        results = list(pool.map(attempt, range(workers)))
-
-    statuses = [status for status, _ in results]
-    assert statuses.count(201) == 1
-    # 輸家只可能是 200（已看到資料列）或「目錄已存在但資料列尚未寫入」的 500，不會有其他結果
-    assert set(statuses) <= {200, 201, 500}
-    assert {code for status, code in results if status == 500} <= {"managed_storage_error"}
+    assert all(result["ok"] for result in results), results
+    assert [r["created"] for r in results].count(True) == 1
+    # 鎖有效時只有一個程序 clone（其餘等到它完成後看到資料列）；失效時多個程序會各自 clone
+    assert sum(r["clones"] for r in results) == 1, results
+    assert len({r["id"] for r in results}) == 1
     assert _count(db_engine) == 1
     assert _temp_children(managed_dir) == []
     assert [p.name for p in (managed_dir / "github" / "octocat").iterdir()] == ["Hello-World"]

@@ -28,10 +28,11 @@ from sqlalchemy.orm import Session
 
 from repopilot.api.routes.github import get_github_client
 from repopilot.config import Settings
+from repopilot.db.locks import acquire_advisory_lock, repo_lock_key
 from repopilot.db.models import Repository, Snapshot, SnapshotFile
 from repopilot.errors import GitCommandError
 from repopilot.main import create_app
-from repopilot.services import github_repositories, managed_repos
+from repopilot.services import managed_repos
 from tests.git_helpers import RemoteRepo, commit_files, init_repo, link_directory
 from tests.github_helpers import FAKE_TOKEN, FakeGitHub, capture_logs
 
@@ -524,12 +525,14 @@ def test_remove_github_repository_without_managed_dir_returns_503_and_keeps_ever
     assert _delete(client, github_id).status_code == 200
 
 
-def test_github_lock_held_by_a_fetch_or_clone_returns_409_then_succeeds_after_release(
+def test_repo_lock_held_by_a_fetch_or_clone_returns_409_then_succeeds_after_release(
     client: TestClient, remote: RemoteRepo, managed_dir: Path, db_engine: Engine
 ) -> None:
     repository_id = _register_github(client).json()["id"]
-    lock = github_repositories._lock_for("octocat/hello-world")
-    assert lock.acquire(blocking=False)
+    # 第二階段切片 5：D32 的行程內鎖已由 advisory lock 取代；clone／fetch（可能在別的程序）
+    # 持有的是同一把獨占鎖，鍵是不分大小寫的 owner/name
+    lock = acquire_advisory_lock(db_engine, repo_lock_key("github:octocat/hello-world"))
+    assert lock is not None
     try:
         response = _delete(client, repository_id)
     finally:
@@ -776,8 +779,10 @@ def test_remove_repository_with_max_size_snapshot_uses_a_few_sql_statements(
     assert response.status_code == 200
     assert response.json()["deleted_files"] == 20_000
     assert _totals(db_engine) == (0, 0, 0)
-    # 與檔案數無關：查詢 repo、鎖列、importing 檢查、三個 DELETE 與少量讀取
-    assert len(statements) <= 8
+    # 與檔案數無關：查詢 repo、鎖列、importing 檢查、進行中 job 檢查、三個 DELETE 與少量讀取；
+    # 另有切片 6 的索引大小檢查（先檢查再分批清除，所以「鎖列與檢查」多做一次，再加快照 id 與符號數
+    # 兩個 SELECT：9 → 14）
+    assert len(statements) <= 14
     # SQL 層級刪除：不載入 snapshot_files 的任何資料列
     assert not any(
         statement.lstrip().upper().startswith("SELECT") and "snapshot_files" in statement

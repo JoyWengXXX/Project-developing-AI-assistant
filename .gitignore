@@ -30,3 +30,4 @@ build/
 # 第二階段：測試用 repo 與受管目錄（掛載給容器；內容由腳本與測試產生）
 .test-repos/
 .test-managed/
+.test-remote/

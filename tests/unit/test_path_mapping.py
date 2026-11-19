@@ -6,7 +6,13 @@ import pytest
 from pydantic import ValidationError
 
 from repopilot.errors import PathNotMappedError
-from repopilot.path_mapping import PathMapping, map_host_path, parse_host_path, to_container_path
+from repopilot.path_mapping import (
+    PathMapping,
+    map_host_path,
+    parse_host_path,
+    to_container_path,
+    to_host_path,
+)
 
 REPOS = PathMapping(host="D:/repos", container="/mnt/repos", mode="ro")
 MANAGED = PathMapping(host=r"D:\repopilot-managed", container="/mnt/managed", mode="rw")
@@ -195,3 +201,58 @@ def test_invalid_mapping_entries_are_rejected_at_load_time(bad: dict[str, str]) 
 def test_parse_host_path_returns_an_uppercase_drive_and_segments() -> None:
     assert parse_host_path(r"d:\Repos\Demo") == ("D:", ("Repos", "Demo"))
     assert parse_host_path("D:\\") == ("D:", ())
+
+
+# --- 反向：容器路徑 → 主機路徑（worker 寫入資料庫前，切片 5，D44）---
+
+
+@pytest.mark.parametrize(
+    ("container_path", "expected"),
+    [
+        ("/mnt/managed/github/octo/hello", r"D:\repopilot-managed\github\octo\hello"),
+        ("/mnt/managed", r"D:\repopilot-managed"),
+        ("/mnt/repos/demo", r"D:\repos\demo"),
+        ("/mnt/repos/含 空白/專案", r"D:\repos\含 空白\專案"),
+    ],
+)
+def test_to_host_path_returns_the_windows_path_the_database_stores(
+    container_path: str, expected: str
+) -> None:
+    assert to_host_path(container_path, MAPPINGS) == expected
+
+
+@pytest.mark.parametrize(
+    "host_path",
+    [
+        r"D:\repopilot-managed\github\Octo\Hello-World",
+        r"D:\repos\demo",
+        r"D:\repos\a\b\c",
+    ],
+)
+def test_to_host_path_is_the_inverse_of_to_container_path(host_path: str) -> None:
+    container = str(to_container_path(host_path, MAPPINGS))
+
+    assert to_host_path(container, MAPPINGS) == host_path
+
+
+def test_to_host_path_prefers_the_longest_container_prefix() -> None:
+    nested = PathMapping(host=r"E:\special", container="/mnt/repos/special", mode="rw")
+
+    assert to_host_path("/mnt/repos/special/x", [REPOS, nested]) == r"E:\special\x"
+    assert to_host_path("/mnt/repos/other/x", [REPOS, nested]) == r"D:\repos\other\x"
+
+
+@pytest.mark.parametrize(
+    "container_path",
+    [
+        "/mnt/other/x",  # 沒有映射
+        "/mnt/managed-evil/x",  # 前綴要逐段比對
+        "/mnt/managed/../repos/x",  # `..` 區段
+        "/mnt/managed/con",  # Windows 保留名稱
+        "relative/path",
+        "",
+    ],
+)
+def test_to_host_path_rejects_unmapped_or_suspicious_paths(container_path: str) -> None:
+    with pytest.raises(PathNotMappedError):
+        to_host_path(container_path, MAPPINGS)

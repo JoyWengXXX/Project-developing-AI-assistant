@@ -56,6 +56,31 @@ class SnapshotNotCompletedError(RepoPilotError):
     code = "snapshot_not_completed"
 
 
+class SnapshotIndexNotReadyError(RepoPilotError):
+    """快照已完成，但沒有（目前設定下）`completed` 的結構索引（第二階段切片 6）。
+
+    `index_status` 是 `none`（尚未建立）、`building` 或 `failed`；API 把它放在錯誤的 `details`。
+    """
+
+    code = "snapshot_index_not_ready"
+
+    def __init__(self, message: str, *, index_status: str) -> None:
+        super().__init__(message)
+        self.index_status = index_status
+
+
+class SearchTimeoutError(RepoPilotError):
+    """搜尋超過 `SEARCH_STATEMENT_TIMEOUT_SECONDS`（第二階段切片 8）；不回成功的空列表。"""
+
+    code = "search_timeout"
+
+
+class SymbolNotFoundError(RepoPilotError):
+    """指定的符號不存在，或不屬於該快照目前的索引。"""
+
+    code = "symbol_not_found"
+
+
 class SnapshotBusyError(RepoPilotError):
     """快照正被使用（未逾時的匯入、進行中的 job，或快照鎖被持有），暫時不能移除。"""
 
@@ -99,9 +124,17 @@ class GitHubTimeoutError(GitHubUnreachableError):
 
 
 class GitHubApiError(RepoPilotError):
-    """GitHub 回了非預期的結果（403／速率限制、5xx、非 JSON 等）。"""
+    """GitHub 回了非預期的結果（403／速率限制、5xx、非 JSON 等）。
+
+    `status` 是 GitHub 回應的 HTTP 狀態碼（沒有時為 None）；worker 依它把 5xx 歸為暫時性（D44）。
+    HTTP 回應的錯誤碼不受影響，仍是 `github_api_error`。
+    """
 
     code = "github_api_error"
+
+    def __init__(self, message: str, *, status: int | None = None) -> None:
+        super().__init__(message)
+        self.status = status
 
 
 class InvalidGitHubRepoError(RepoPilotError):

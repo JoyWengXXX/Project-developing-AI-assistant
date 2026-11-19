@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { api, type ApiError } from '../api'
 import { repoLabel, repoTitle, toApiError } from '../format'
 import {
+  cancellingWait,
   JOB_ACTION_LABEL,
   JOB_KIND_LABEL,
   JOB_STATUS_FILTERS,
@@ -127,7 +128,7 @@ export function JobsDialog({ jobs, repos, onClose }: Props) {
       if (action === 'retry') {
         text = `${what}已重新排入，等待背景執行器處理。`
         jobs.restore(job.id) // 重新排入後若再失敗，要重新提醒
-      } else if (res.status === 202) text = `已記錄${what}的取消請求；工作仍在執行，會在下一個檢查點停止。`
+      } else if (res.status === 202) text = `已記錄${what}的取消請求（取消中…）；工作仍在執行，${cancellingWait(job.kind)}。`
       else text = `${what}已取消。`
       setNotice({ kind: 'success', text })
       refresh()
@@ -156,8 +157,8 @@ export function JobsDialog({ jobs, repos, onClose }: Props) {
       </div>
 
       <p className="note jobs-intro">
-        這裡列出系統在背景幫你做的事（目前只有「匯入版本」）。匯入的進度與結果平常已直接顯示在 repo 卡片與詳情的版本區，
-        不需要來這裡；匯入卡住、想確認有沒有在跑，或想回頭看已忽略的失敗時再打開。
+        這裡列出系統在背景幫你做的事（匯入版本、註冊 GitHub repo、更新 GitHub repo）。進度與結果平常已直接顯示在 repo
+        卡片、詳情的版本區與「GitHub 註冊工作」區，不需要來這裡；工作卡住、想確認有沒有在跑，或想回頭看已忽略的失敗時再打開。
       </p>
       <p className="note">
         頂端與這裡的「失敗」＝<strong>尚未忽略</strong>的失敗工作；已忽略的（目前
@@ -225,7 +226,12 @@ export function JobsDialog({ jobs, repos, onClose }: Props) {
             <ErrorBox error={notice.error} />
           </div>
         )}
-        <ApiHint apis={['POST /api/v1/jobs/{id}/cancel（取消）', 'POST /api/v1/jobs/{id}/retry（重試失敗的工作）']} />
+        <ApiHint
+          apis={[
+            'POST /api/v1/jobs/{id}/cancel（取消：排隊中立即取消 200；執行中回 202、cancel_requested＝true，status 仍是 running，worker 在批次之間停止；409＝已結束，404＝不存在）',
+            'POST /api/v1/jobs/{id}/retry（重試失敗的工作）',
+          ]}
+        />
 
         {loading && <p role="status">載入中…</p>}
         {attention ? (
@@ -248,7 +254,7 @@ export function JobsDialog({ jobs, repos, onClose }: Props) {
             ) : hasFilter ? (
               '沒有符合篩選條件的工作。'
             ) : (
-              '目前沒有背景工作；之後匯入、GitHub 註冊與更新將以背景工作執行。'
+              '目前沒有背景工作；匯入、GitHub 註冊與更新會以背景工作執行（背景執行器在線時）。'
             )}
           </p>
         )}

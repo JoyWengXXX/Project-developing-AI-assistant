@@ -79,7 +79,7 @@ def get_jobs_status(session: SessionDep, settings: SettingsDep) -> JobsStatusRes
 
 @router.get("/{job_id}", response_model=JobResponse, responses=_NOT_FOUND)
 def get_job(job_id: JobIdPath, session: SessionDep) -> JobResponse:
-    """單一工作（階段、進度、時間、安全的錯誤碼與結果）；不含令牌與 work_state。"""
+    """單一工作（階段、進度、錯誤碼、結果與 `diagnostics` 追查摘要）；不含令牌與 work_state。"""
     return to_job_response(job_queries.get_job(session, job_id))
 
 

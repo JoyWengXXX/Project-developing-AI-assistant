@@ -33,7 +33,9 @@ JOB_FIELDS = {
     "max_attempts",
     "next_attempt_at",
     "cancel_requested",
+    "cancel_requested_at",
     "progress",
+    "diagnostics",
     "error",
     "result",
     "request_id",
@@ -475,3 +477,125 @@ def test_openapi_lists_the_job_endpoints(client: TestClient) -> None:
     } <= set(paths)
     # 本切片不新增建立 job 的公開端點
     assert "post" not in paths[JOBS]
+
+
+# --- 失敗追查欄位（第二階段切片 4）：cancel_requested_at 與 work_state 的安全摘要 ---
+
+ZERO_DIAGNOSTICS = {
+    "current_unit": None,
+    "poison": {"suspect_crashes": 0, "skipped_units": 0, "total_crashes": 0},
+}
+
+
+def test_a_fresh_job_has_zero_diagnostics_and_no_cancel_timestamp(
+    client: TestClient, session: Session, job_settings: Settings
+) -> None:
+    job_id = _make(session, job_settings, "k")
+
+    body = client.get(f"{JOBS}/{job_id}").json()
+
+    assert body["diagnostics"] == ZERO_DIAGNOSTICS
+    assert body["cancel_requested"] is False and body["cancel_requested_at"] is None
+
+
+def test_cancel_requested_at_is_reported_once_and_does_not_move_on_repeated_requests(
+    client: TestClient, session: Session, job_settings: Settings
+) -> None:
+    job, _ = running_job(session, job_settings)
+
+    first = client.post(f"{JOBS}/{job.id}/cancel").json()
+    second = client.post(f"{JOBS}/{job.id}/cancel").json()
+
+    assert re.fullmatch(r"\d{4}-\d\d-\d\dT[\d:.]+Z", first["cancel_requested_at"])
+    assert first["cancel_requested"] is True
+    assert second["cancel_requested_at"] == first["cancel_requested_at"]  # 冪等：時間不變
+    assert (
+        client.get(f"{JOBS}/{job.id}").json()["cancel_requested_at"]
+        == (first["cancel_requested_at"])
+    )
+
+
+def test_diagnostics_summarize_the_work_state_without_leaking_identifiers(
+    client: TestClient, session: Session, job_settings: Settings
+) -> None:
+    job, token = running_job(session, job_settings)
+    job_service.update_progress(
+        session,
+        job.id,
+        token,
+        work_state={
+            "current_unit": {
+                "id": "blobs-SECRET-UNIT-ID",
+                "kind": "blob_batch",
+                "crash_kind": "worker_crash",
+                "index": 3,
+                "count": 9,
+            },
+            "poison": {
+                "suspect": {
+                    "unit": "blobs-SECRET-UNIT-ID",
+                    "kind": "blob_batch",
+                    "crash_kind": "worker_crash",
+                    "crashes": 2,
+                },
+                "skipped": [
+                    {"unit": "file-SECRET-PATH", "crash_kind": "parser_crash", "crashes": 2}
+                ],
+                "total_crashes": 5,
+            },
+            "temp_dir": "internal-only",
+        },
+    )
+
+    response = client.get(f"{JOBS}/{job.id}")
+
+    assert response.json()["diagnostics"] == {
+        "current_unit": {"kind": "blob_batch", "index": 3, "count": 9},
+        "poison": {"suspect_crashes": 2, "skipped_units": 1, "total_crashes": 5},
+    }
+    for leaked in ("SECRET-UNIT-ID", "SECRET-PATH", "internal-only", "work_state", str(token)):
+        assert leaked not in response.text
+        assert leaked not in client.get(JOBS).text
+
+
+def test_the_current_unit_is_only_shown_while_the_job_is_running(
+    client: TestClient, session: Session, job_settings: Settings
+) -> None:
+    job, token = running_job(session, job_settings)
+    job_service.update_progress(
+        session,
+        job.id,
+        token,
+        work_state={
+            "current_unit": {"id": "u", "kind": "blob_batch", "crash_kind": "worker_crash"},
+        },
+    )
+    assert client.get(f"{JOBS}/{job.id}").json()["diagnostics"]["current_unit"] is not None
+
+    job_service.fail_job(
+        session, job.id, token, job_settings, error_code="git_timeout", now=at(1), rand=lambda: 0.5
+    )
+
+    body = client.get(f"{JOBS}/{job.id}").json()
+    assert body["status"] == "queued"  # 重新排隊：留在 work_state 的指標已過時，不顯示
+    assert body["diagnostics"]["current_unit"] is None
+
+
+@pytest.mark.parametrize(
+    "garbage",
+    ['"text"', "[]", '{"poison": 5, "current_unit": []}', '{"poison": {"suspect": "x"}}'],
+)
+def test_a_work_state_with_an_unexpected_shape_never_breaks_the_endpoint(
+    client: TestClient, session: Session, job_settings: Settings, db_engine: Engine, garbage: str
+) -> None:
+    job_id = _make(session, job_settings, "k")
+    with db_engine.begin() as connection:
+        connection.execute(
+            text("UPDATE jobs SET work_state = CAST(:w AS jsonb) WHERE id = :i"),
+            {"w": garbage, "i": job_id},
+        )
+
+    for url in (f"{JOBS}/{job_id}", JOBS):
+        response = client.get(url)
+        assert response.status_code == 200
+    assert client.get(f"{JOBS}/{job_id}").json()["diagnostics"] == ZERO_DIAGNOSTICS

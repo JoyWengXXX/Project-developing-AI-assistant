@@ -115,15 +115,21 @@ def resolve_worker_path(repository: Repository, settings: Settings) -> Path:
     return resolved
 
 
+def github_repo_key(owner: str, name: str) -> str:
+    """GitHub repo 的鎖鍵與 job 的 `repo_key`：不分大小寫的 `github:owner/name`。
+
+    註冊前資料列不存在，所以不能用 id。
+    """
+    return f"github:{owner.lower()}/{name.lower()}"
+
+
 def repository_key(repository: Repository) -> str:
     """repo 級鎖與 job 的 `repo_key`。
 
     GitHub 來源用小寫 `owner/name`（註冊前資料列不存在，所以不能用 id），local 來源用 repo id。
     """
     if repository.source_type == "github":
-        owner = (repository.github_owner or "").lower()
-        name = (repository.github_name or "").lower()
-        return f"github:{owner}/{name}"
+        return github_repo_key(repository.github_owner or "", repository.github_name or "")
     return f"local:{repository.id}"
 
 

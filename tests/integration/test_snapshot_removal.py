@@ -716,8 +716,9 @@ def test_removing_a_max_size_snapshot_uses_a_few_sql_statements_and_finishes_qui
     assert response.status_code == 200
     assert response.json()["deleted_files"] == 20_000
     assert _totals(db_engine) == (0, 0, 0)
-    # 與檔案數無關：查詢身分、鎖列、job／參考檢查、三個 DELETE，加上取鎖與解鎖（另一條連線）
-    assert len(statements) <= 12
+    # 與檔案數無關：查詢身分、鎖列、job／參考檢查、三個 DELETE，加上取鎖與解鎖（另一條連線）；
+    # 切片 6 另有索引大小檢查（先檢查再分批清除，鎖列與檢查多做一次，再加符號數 SELECT：12 → 13）
+    assert len(statements) <= 13
     # SQL 層級刪除：不載入 snapshot_files 的任何資料列
     assert not any(
         statement.lstrip().upper().startswith("SELECT") and "snapshot_files" in statement

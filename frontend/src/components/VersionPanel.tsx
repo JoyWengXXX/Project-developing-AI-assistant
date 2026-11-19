@@ -132,6 +132,8 @@ export function VersionPanel({ repo, jobs, reloadKey, snapshotKey, onSnapshotsCh
           `POST /api/v1/repositories/${repo.id}/import-jobs（按「匯入此版本」時提交；已匯入的版本回 200 直接使用）`,
           'GET /api/v1/jobs/{id}（輪詢進度）',
           'GET /api/v1/snapshots/{id}（完成後取得快照）',
+          'POST /api/v1/jobs/{id}/cancel（「取消匯入」：排隊中立即取消 200；執行中回 202，在下一批之間停止；409 job_not_cancellable＝已結束，改為重新讀取結果）',
+          `POST /api/v1/repositories/${repo.id}/import-jobs（取消後的「重新匯入此版本」：同一個 job id 重新排入）`,
         ]
 
   function chooseScope(value: string) {
@@ -218,6 +220,10 @@ export function VersionPanel({ repo, jobs, reloadKey, snapshotKey, onSnapshotsCh
                   imported={isImported}
                   snapshot={snapshot}
                   externalJob={externalJob}
+                  onCancelResult={(job) => {
+                    version.applyJob(job)
+                    jobs.reload() // 共用輪詢也立刻更新（頂端的「進行中」數量、其他提示）
+                  }}
                   focusImportButton={removedNotice?.sha === selectedSha}
                 >
                   <VersionActions
@@ -288,6 +294,7 @@ export function VersionPanel({ repo, jobs, reloadKey, snapshotKey, onSnapshotsCh
             'GET /api/v1/jobs?status=active、GET /api/v1/jobs?status=failed（同上的共用輪詢：此 repo 進行中的匯入與最近失敗的提示；重新整理頁面後仍看得到）',
             ...loadApis,
             'POST /api/v1/jobs/{id}/retry（失敗提示的「重試」）',
+            'POST /api/v1/jobs/{id}/cancel（提示上的「取消」，其他版本的進行中匯入；先確認）',
             `PUT /api/v1/repositories/${repo.id}/reference（設為參考版本；body {"snapshot_id"}）`,
             `DELETE /api/v1/repositories/${repo.id}/reference（取消參考）`,
             'DELETE /api/v1/snapshots/{id}?force=（移除版本，含批次：逐一呼叫；參考版本需 force=true）',

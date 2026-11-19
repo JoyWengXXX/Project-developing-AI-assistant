@@ -287,7 +287,7 @@ def test_deleting_a_repository_cascades_to_its_jobs_and_dispatches_only(
 def test_removing_a_repository_through_the_api_works_with_existing_jobs(
     client: TestClient, roots: Path, db_engine: Engine, settings: Settings
 ) -> None:
-    """D33 的刪除順序沒有改動：有 job（含進行中、連到快照者）的 repo 仍可移除，不衝突、不留孤兒。"""
+    """D33 的刪除順序沒有改動：有 job（連到快照者）的 repo 在 job 結束後仍可移除，不留孤兒。"""
     repo_dir = init_repo(roots / "demo", files={"a.txt": "a\n"})
     repository_id = client.post("/api/v1/repositories", json={"path": str(repo_dir)}).json()["id"]
     snapshot_id = client.post(f"/api/v1/repositories/{repository_id}/imports", json={}).json()["id"]
@@ -301,7 +301,8 @@ def test_removing_a_repository_through_the_api_works_with_existing_jobs(
             repository_id=repository_id,
             snapshot_id=snapshot_id,
         ).job
-        assert job_service.acquire_lease(session, running.id, settings) is not None
+        acquired = job_service.acquire_lease(session, running.id, settings)
+        assert acquired is not None and acquired.lease_token is not None
         queued = job_service.create_job(
             session,
             kind="snapshot_index",
@@ -314,6 +315,15 @@ def test_removing_a_repository_through_the_api_works_with_existing_jobs(
             session, kind="github_register", dedupe_key="register:o/r", settings=settings
         ).job
         ids = (running.id, queued.id, unrelated.id)
+
+    # 第二階段切片 5（規格 5.11）：進行中的 job 會擋住移除；這個測試原本期待它們被連帶刪除，
+    # 現在改為先確認被擋下（409），再讓它們結束，驗證刪除順序與外鍵（CASCADE）仍然正確
+    blocked = client.delete(f"/api/v1/repositories/{repository_id}")
+    assert blocked.status_code == 409
+    assert blocked.json()["error"]["code"] == "repository_busy"
+    with Session(db_engine) as session:
+        job_service.complete_job(session, running.id, acquired.lease_token, snapshot_id=snapshot_id)
+        job_service.cancel_job(session, queued.id)
 
     response = client.delete(f"/api/v1/repositories/{repository_id}")
 

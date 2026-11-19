@@ -17,9 +17,16 @@ import os
 import subprocess
 from pathlib import Path
 
+from cryptography.fernet import Fernet
+
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 TEST_REPOS_DIR = PROJECT_ROOT / ".test-repos"
 TEST_MANAGED_DIR = PROJECT_ROOT / ".test-managed"
+# 假 GitHub 的資料目錄（第二階段切片 5）：bare repo、api.json、control.json、requests.log
+TEST_REMOTE_DIR = PROJECT_ROOT / ".test-remote"
+# worker-test 解密 token 用的金鑰：每次 pytest 執行隨機產生（不入版控、不寫入檔案）；API 端的
+# 測試設定使用同一把。手動操作測試堆疊時沒有它，worker 就不能解密已保存的 token（預期行為）
+TEST_TOKEN_KEY = Fernet.generate_key().decode()
 JOB_SERVICES = ("worker-test", "dispatcher-test")
 COMPOSE_BASE = ["docker", "compose", "--profile", "jobs-test"]
 
@@ -28,6 +35,8 @@ def stack_env() -> dict[str, str]:
     env = dict(os.environ)
     env["WORKER_TEST_REPOS_HOST_DIR"] = TEST_REPOS_DIR.as_posix()
     env["WORKER_TEST_MANAGED_HOST_DIR"] = TEST_MANAGED_DIR.as_posix()
+    env["WORKER_TEST_REMOTE_HOST_DIR"] = TEST_REMOTE_DIR.as_posix()
+    env["WORKER_TEST_TOKEN_KEY"] = TEST_TOKEN_KEY
     return env
 
 

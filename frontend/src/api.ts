@@ -116,7 +116,14 @@ export async function api<T>(
 
   if (isErrorBody(parsed)) {
     const e = parsed.error
-    throw new ApiError(response.status, e.code, e.message, e.request_id ?? requestId, e.details)
+    throw new ApiError(
+      response.status,
+      e.code,
+      e.message,
+      e.request_id ?? requestId,
+      // snapshot_index_not_ready 的 details 是物件（{ index_status }），介面不需要它：只保留 422 的陣列形式
+      Array.isArray(e.details) ? e.details : undefined,
+    )
   }
   // 不是統一錯誤格式：常見於後端沒啟動時，Vite proxy 自己回 502／500 且沒有統一格式的 body
   throw new ApiError(

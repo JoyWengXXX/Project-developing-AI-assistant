@@ -71,8 +71,10 @@ class GitHubClient:
         if status != 200:
             logger.warning("github_unexpected_status", extra={"github_status": status})
             if status in (403, 429):
-                raise GitHubApiError("GitHub denied the request (forbidden or rate limited).")
-            raise GitHubApiError(f"GitHub returned an unexpected status ({status}).")
+                raise GitHubApiError(
+                    "GitHub denied the request (forbidden or rate limited).", status=status
+                )
+            raise GitHubApiError(f"GitHub returned an unexpected status ({status}).", status=status)
         return _parse_user(response)
 
     def get_repository(self, owner: str, name: str, token: str | None) -> GitHubRepo:
@@ -100,8 +102,10 @@ class GitHubClient:
         if status != 200:
             logger.warning("github_unexpected_status", extra={"github_status": status})
             if status in (403, 429):
-                raise GitHubApiError("GitHub denied the request (forbidden or rate limited).")
-            raise GitHubApiError(f"GitHub returned an unexpected status ({status}).")
+                raise GitHubApiError(
+                    "GitHub denied the request (forbidden or rate limited).", status=status
+                )
+            raise GitHubApiError(f"GitHub returned an unexpected status ({status}).", status=status)
         return _parse_repository(response, owner, name)
 
     def _get(self, path: str, token: str | None) -> httpx.Response:

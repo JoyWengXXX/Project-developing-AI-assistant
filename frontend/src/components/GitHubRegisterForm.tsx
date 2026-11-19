@@ -1,52 +1,66 @@
 import { useState, type FormEvent } from 'react'
-import { api, type ApiError } from '../api'
+import { type ApiError } from '../api'
 import { toApiError } from '../format'
-import type { Repository } from '../types'
+import type { RegisterSubmit } from '../githubActions'
 import { ErrorBox } from '../ui'
 
 interface Props {
-  /** 註冊成功（201 新建或 200 已存在）後通知父元件：重新載入列表；created 為 true（201）時由 App 自動匯入一次。 */
-  onRegistered: (repo: Repository, created: boolean) => void
+  /** 送出註冊（useGitHubJobs.register）：worker 在線送背景工作，否則回退同步端點；失敗會拋出 ApiError。 */
+  register: (input: string, onFallback: (reason: string) => void) => Promise<RegisterSubmit>
 }
 
-/** 「從 GitHub 註冊」表單。註冊是同步 clone：後端 clone 完成才會回應，所以要顯示載入狀態並避免重複送出。 */
-export function GitHubRegisterForm({ onRegistered }: Props) {
+/** 送出結果的說明（留在表單下方）。 */
+function resultMessage(submit: RegisterSubmit): string {
+  switch (submit.kind) {
+    case 'job':
+      return `已排入背景註冊（工作 #${submit.job.id}）：查詢 GitHub、複製（clone）與寫入資料庫都在背景執行，進度與取消在上方的「GitHub 註冊工作」；完成後新卡片會出現在總覽，並自動匯入預設分支最新版本（只此一次）。可以離開或重新整理頁面，進度不會消失。`
+    case 'existing':
+      return `200 OK：這個 GitHub repo 先前已註冊過（repo #${submit.repositoryId}），沒有建立背景工作、沒有重新複製，也不會匯入。`
+    case 'sync': {
+      const repo = submit.repository
+      return submit.created
+        ? `201 Created：已從 GitHub clone 並註冊新 repo（id ${repo.id}，${repo.github_owner}/${repo.github_name}），並自動匯入預設分支最新版本（只此一次，進度顯示在卡片上）。`
+        : `200 OK：這個 GitHub repo 先前已註冊過，回傳既有的 repo（id ${repo.id}），沒有重新 clone，也不會匯入。`
+    }
+  }
+}
+
+/**
+ * 「從 GitHub 註冊」表單。背景執行器（worker 與 dispatcher）在線時送出背景工作：立刻回應，之後的進度顯示在上方的
+ * 「GitHub 註冊工作」；否則回退到已 deprecated 的同步端點（請求會一直等到 clone 完成，所以要顯示等待狀態並避免重複送出）。
+ */
+export function GitHubRegisterForm({ register }: Props) {
   const [input, setInput] = useState('')
   const [submitting, setSubmitting] = useState(false)
+  const [syncReason, setSyncReason] = useState<string | null>(null) // 回退同步的原因（只有同步等待期間顯示）
   const [error, setError] = useState<ApiError | null>(null)
   const [message, setMessage] = useState<string | null>(null)
 
-  async function register(e: FormEvent) {
+  async function submit(e: FormEvent) {
     e.preventDefault()
     if (submitting) return
     setSubmitting(true)
+    setSyncReason(null)
     setError(null)
     setMessage(null)
     try {
-      const result = await api<Repository>('POST', '/api/v1/repositories/github', {
-        body: { repo: input.trim() },
-      })
-      const repo = result.data
-      const created = result.status === 201
-      setMessage(
-        created
-          ? `201 Created：已從 GitHub clone 並註冊新 repo（id ${repo.id}，${repo.github_owner}/${repo.github_name}），並自動匯入預設分支最新版本（只此一次，進度顯示在卡片上）。`
-          : `200 OK：這個 GitHub repo 先前已註冊過，回傳既有的 repo（id ${repo.id}），沒有重新 clone，也不會匯入。`,
-      )
-      onRegistered(repo, created)
+      const result = await register(input.trim(), (reason) => setSyncReason(reason))
+      setMessage(resultMessage(result))
     } catch (err) {
       setError(toApiError(err))
     } finally {
       setSubmitting(false)
+      setSyncReason(null)
     }
   }
 
   return (
     <div>
       <p className="api-hint">
-        對應 API：<code>POST /api/v1/repositories/github</code>
+        對應 API：<code>POST /api/v1/github/registration-jobs</code>
+        <code>POST /api/v1/repositories/github（deprecated，worker 不可用時的同步回退）</code>
       </p>
-      <form onSubmit={register} className="form">
+      <form onSubmit={(e) => void submit(e)} className="form">
         <label>
           owner/repo 或 GitHub URL
           <input
@@ -60,16 +74,18 @@ export function GitHubRegisterForm({ onRegistered }: Props) {
           />
         </label>
         <p className="note">
-          後端會把 repo clone 到受管目錄 <code>MANAGED_REPOS_DIR</code>（需先在 .env 設定）。公開 repo 不需要
-          token；私有 repo 請先在「GitHub 連線」摺疊區儲存 token。
+          背景執行器會把 repo clone 到受管目錄 <code>MANAGED_REPOS_DIR</code>（需先在 .env 設定）。公開 repo 不需要
+          token；私有 repo 請先在「GitHub 連線」摺疊區儲存 token。git clone 不提供百分比，進度只顯示階段、已耗時與已接收量。
         </p>
         <button type="submit" disabled={submitting || input.trim() === ''}>
-          {submitting ? 'clone 中…' : '從 GitHub 註冊'}
+          {submitting ? '送出中…' : '從 GitHub 註冊'}
         </button>
       </form>
       {submitting && (
         <p role="status" aria-busy="true">
-          clone 中，可能需要數十秒到數分鐘…這是同步請求，請等待後端回應，不要重複送出。
+          {syncReason === null
+            ? '送出中…'
+            : `${syncReason}（同步端點已 deprecated）：clone 中，可能需要數十秒到數分鐘…請求會一直等到後端完成，不要重複送出。`}
         </p>
       )}
       {message && (

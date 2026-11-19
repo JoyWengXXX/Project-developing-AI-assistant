@@ -1,7 +1,9 @@
 import { useEffect, useRef, useState, type MouseEvent } from 'react'
 import { commitShortSha, formatBytes, formatCommitTime, repoTitle, shortRefName } from '../format'
-import type { ReferenceItem, Repository, RepositoryOverview } from '../types'
+import { splitFetchJobs } from '../githubJobs'
+import type { Job, ReferenceItem, Repository, RepositoryOverview } from '../types'
 import { ErrorBox } from '../ui'
+import type { GitHubJobs } from '../useGitHubJobs'
 import { useOnFalling, type JobsOverview } from '../useJobsOverview'
 import { useOverview, type OverviewState } from '../useOverview'
 import type { RepoImports } from '../useRepoImports'
@@ -20,6 +22,8 @@ interface Props {
   imports: RepoImports
   /** 頁面共用的背景工作輪詢（App 持有）：卡片只取自己這個 repo 的進行中與失敗工作，不另外發請求。 */
   jobs: JobsOverview
+  /** GitHub 更新（fetch）：送出、最近一次的 refs 變更清單、完成次數（App 持有，換頁不會中斷）。 */
+  github: GitHubJobs
   /** 這個 repo 的參考版本（GET /references）；沒有為 null。 */
   reference: ReferenceItem | null
   /** 設定／取消參考、或重新整理後：通知總覽頁重新讀取參考清單。 */
@@ -28,7 +32,6 @@ interface Props {
   removing: boolean
   removeLocked: boolean
   onRemove: (repo: Repository) => void
-  onFetched: (repoId: number) => void
   /** 概況回 404（repo 已不存在）：通知總覽頁同步列表。 */
   onMissing: (repoId: number) => void
 }
@@ -46,10 +49,12 @@ function branchText(repo: Repository, overview: RepositoryOverview | null): stri
  * 卡片**不會自動匯入**：預設分支最新版本還沒匯入時，顯示「尚未匯入」與「匯入」按鈕，由使用者決定。
  */
 export function RepoCard(props: Props) {
-  const { repo, imports, jobs, reference, onReferenceChanged, onOpen, removing, removeLocked } = props
+  const { repo, imports, jobs, github, reference, onReferenceChanged, onOpen, removing, removeLocked } = props
   const run = imports.runs[repo.id]
   const doneTicks = imports.doneTicks[repo.id] ?? 0
-  const state = useOverview(repo.id, doneTicks)
+  // 更新（fetch）完成：預設分支的 head 可能改變，重新讀取概況（有較新版本的提示會出現；不會自動匯入）
+  const fetchTick = github.fetchTicks[repo.id] ?? 0
+  const state = useOverview(repo.id, doneTicks + fetchTick)
   const [listTick, setListTick] = useState(0)
   const snapshots = useSnapshotList(repo.id, 'completed', doneTicks + listTick)
   const { overview } = state
@@ -59,10 +64,12 @@ export function RepoCard(props: Props) {
   const missing = state.loadError?.code === 'repository_not_found'
   const repoJobs = jobs.forRepo(repo.id)
   const jobActive = repoJobs.active.length > 0
+  // 更新的提示顯示在操作區（RepoActions），其他工作（匯入）顯示在卡片上方
+  const { fetch: fetchJobs, other: otherJobs } = splitFetchJobs(repoJobs)
 
-  // 這個 repo 的背景工作全部結束（例如重新整理頁面前就開始的匯入，或在這裡按「重試」）：重新讀取概況與已匯入版本。
-  // 這次操作自己的匯入（run）結束時，已由 doneTicks 重新讀取，不重複
-  useOnFalling(jobActive && run === undefined, refresh)
+  // 這個 repo 的匯入工作全部結束（例如重新整理頁面前就開始的匯入，或在這裡按「重試」）：重新讀取概況與已匯入版本。
+  // 這次操作自己的匯入（run）結束時，已由 doneTicks 重新讀取，不重複；更新（fetch）完成由 fetchTick 處理
+  useOnFalling(otherJobs.active.length > 0 && run === undefined, refresh)
 
   // 匯入完成後概況重新讀取完畢：結果已經顯示在卡片上，清掉這次的紀錄；
   // 若概況仍說「尚未匯入」（例如匯入設定不一致），改成失敗狀態並提醒，避免使用者以為沒反應、也不會自動重送
@@ -84,7 +91,7 @@ export function RepoCard(props: Props) {
 
   // 點卡片主體進入詳情；按鈕、連結、輸入控制項、展開鈕與「正在選取文字」不算
   function handleBodyClick(e: MouseEvent<HTMLDivElement>) {
-    if ((e.target as HTMLElement).closest('button, a, input, select, label, summary, .repo-job-notice')) return
+    if ((e.target as HTMLElement).closest('button, a, input, select, label, summary, .repo-job-notice, .remove-confirm')) return
     if ((window.getSelection()?.toString() ?? '') !== '') return
     if (!removing && !removeLocked) onOpen(repo)
   }
@@ -129,11 +136,11 @@ export function RepoCard(props: Props) {
         {/* 這個 repo 的背景工作：進行中（含重新整理頁面前就開始的）與最近的失敗＋重試／忽略。這次操作自己的進度（ImportRunStatus）不重複顯示 */}
         <RepoJobNotice
           repoName={title}
-          jobs={repoJobs}
+          jobs={otherJobs}
           snapshots={snapshots.items}
           workerOffline={jobs.workerOffline}
           controls={jobs}
-          hideActive={(job) => run?.status === 'running' && (run.job === null || run.job.id === job.id)}
+          hideActive={(job) => (run?.status === 'running' || run?.status === 'cancelled') && (run.job === null || run.job.id === job.id)}
           hideFailedId={run !== undefined && run.status !== 'done' ? (run.job?.id ?? null) : null}
         />
 
@@ -144,6 +151,10 @@ export function RepoCard(props: Props) {
           repoId={repo.id}
           jobActive={jobActive}
           onImport={() => startImport()}
+          onCancelResult={(job) => {
+            imports.applyJob(repo.id, job)
+            jobs.reload() // 共用輪詢也立刻更新（頂端的「進行中」數量）
+          }}
         />
       </div>
 
@@ -180,10 +191,12 @@ export function RepoCard(props: Props) {
           removing={removing}
           removeLocked={removeLocked}
           onRemove={props.onRemove}
-          onFetched={(id) => {
-            refresh() // head 可能改變：重新載入概況（有較新版本的提示會出現；不會自動匯入）
-            props.onFetched(id)
-          }}
+          jobActive={jobActive}
+          fetchJobs={fetchJobs}
+          fetchResult={github.fetchResults[repo.id] ?? null}
+          onFetch={github.fetchRepo}
+          workerOffline={jobs.workerOffline}
+          controls={jobs}
         />
       </div>
     </li>
@@ -198,6 +211,7 @@ function PhaseContent({
   repoId,
   jobActive,
   onImport,
+  onCancelResult,
 }: {
   state: OverviewState
   overview: RepositoryOverview | null
@@ -206,6 +220,8 @@ function PhaseContent({
   /** 這個 repo 已有進行中的背景工作（上方的提示正在顯示進度）：停用「匯入」，避免重複送出。 */
   jobActive: boolean
   onImport: () => void
+  /** 這次匯入的「取消」成功後（最新的 job）。 */
+  onCancelResult: (job: Job) => void
 }) {
   const { phase } = state
   const run = imports.runs[repoId]
@@ -233,6 +249,7 @@ function PhaseContent({
           locked={imports.busy}
           onRetry={() => imports.start(repoId, run.revision, { thenReference: run.thenReference })}
           onDismiss={() => imports.dismiss(repoId)}
+          onCancelResult={onCancelResult}
         />
       )}
       {finishing && (
@@ -250,7 +267,7 @@ function PhaseContent({
             匯入
           </button>
           {imports.busy && <p className="note">另一個 repo 正在匯入，完成後再按（一次只匯入一個）。</p>}
-          {jobActive && <p className="note">這個 repo 已有背景工作進行中（見上方），完成後再按。</p>}
+          {jobActive && <p className="note">這個 repo 已有背景工作進行中（見卡片上的提示），完成後再按。</p>}
         </div>
       )}
       {phase === 'ready' && overview !== null && <ReadyContent overview={overview} />}

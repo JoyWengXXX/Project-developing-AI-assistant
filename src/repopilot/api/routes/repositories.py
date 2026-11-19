@@ -95,7 +95,8 @@ def remove_repository(
     """移除 repo 與其所有快照、檔案。
 
     local 來源只刪資料庫紀錄，不碰磁碟上的 repo 目錄；github 來源另外刪除受管目錄內的 clone
-    （不影響 GitHub 遠端）。有未逾時的匯入或 clone／fetch 進行中回 409。
+    （不影響 GitHub 遠端）。有未逾時的匯入、clone／fetch 進行中，或有 queued／running 的背景工作時
+    回 409 `repository_busy`。
     """
     result = removal_service.remove_repository(session, repository_id, settings)
     return RepositoryRemovedResponse(

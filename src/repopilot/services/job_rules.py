@@ -28,6 +28,8 @@ TRANSIENT_ERROR_CODES = frozenset(
         "database_unavailable",
         "github_unreachable",
         "github_timeout",
+        # GitHub API 回 5xx（只在 worker 的錯誤分類出現；同步端點的回應碼仍是 github_api_error）
+        "github_server_error",
         "github_clone_timeout",
         "github_fetch_timeout",
         "git_timeout",

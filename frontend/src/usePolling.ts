@@ -56,6 +56,10 @@ export function usePolling<T>(path: string | null, options: PollOptions<T>): Pol
   useEffect(() => {
     intervalRef.current = intervalMs
   })
+  const settledRef = useRef(settled)
+  useEffect(() => {
+    settledRef.current = settled
+  }, [settled])
 
   useEffect(() => {
     if (path === null || key === null) return
@@ -63,7 +67,7 @@ export function usePolling<T>(path: string | null, options: PollOptions<T>): Pol
     let stopped = false
     let generation = 0
     let failures = 0
-    let lastData: T | null = null
+    let lastData: T | null = settledRef.current?.key === key ? settledRef.current.data : null
     let timer: ReturnType<typeof setTimeout> | undefined
     let controller: AbortController | null = null
 

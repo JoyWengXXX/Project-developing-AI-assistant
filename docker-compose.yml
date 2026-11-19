@@ -203,16 +203,16 @@ services:
   worker-test:
     <<: *job-service
     profiles: ["jobs-test"]
+    # 第二階段切片 5：同一個容器內另外啟動假 GitHub（tests/fake_remote/server.py，只用標準函式庫，綁定
+    # 127.0.0.1），所以 GITHUB_*_BASE_URL 是迴圈位址而通過設定驗證，不需要放寬任何正式設定。`exec`
+    # 讓 celery 成為 PID 1（SIGTERM 與 docker stop 的行為與其他 worker 相同）；容器被殺時假伺服器一起消失
     command:
-      - celery
-      - -A
-      - repopilot.jobs.worker
-      - worker
-      - --loglevel=INFO
-      - --concurrency=2
-      - --without-gossip
-      - --without-mingle
-      - --hostname=worker@%h
+      - sh
+      - -c
+      - >-
+        python /opt/fake_remote/server.py &
+        exec celery -A repopilot.jobs.worker worker --loglevel=INFO --concurrency=2
+        --without-gossip --without-mingle --hostname=worker@%h
     depends_on:
       db-test: { condition: service_healthy }
       redis-test: { condition: service_healthy }
@@ -228,6 +228,17 @@ services:
       JOB_RETRY_BASE_SECONDS: "1"
       JOB_RETRY_MAX_SECONDS: "4"
       SERVICE_HEARTBEAT_SECONDS: "3"
+      # GitHub（切片 5）：假 GitHub 在本容器的 127.0.0.1；token 解密金鑰由測試每次執行時隨機產生
+      # （WORKER_TEST_TOKEN_KEY，不入版控；沒設定時為空＝worker 不能解密 token）
+      TOKEN_ENCRYPTION_KEY: ${WORKER_TEST_TOKEN_KEY:-}
+      GITHUB_API_BASE_URL: http://127.0.0.1:18765
+      GITHUB_CLONE_BASE_URL: http://127.0.0.1:18765
+      FAKE_REMOTE_DIR: /mnt/remote
+      GITHUB_CLONE_TIMEOUT_SECONDS: "60"
+      # 取消與進度輪詢調短（只在測試堆疊，皆未實測）；孤兒暫存目錄門檻 90 秒（須大於 clone 逾時）
+      GIT_POLL_SECONDS: "0.5"
+      CLONE_PROGRESS_SECONDS: "1"
+      MANAGED_TEMP_ORPHAN_SECONDS: "90"
     volumes:
       - type: bind
         source: ${WORKER_TEST_REPOS_HOST_DIR:-./.test-repos}
@@ -236,6 +247,14 @@ services:
       - type: bind
         source: ${WORKER_TEST_MANAGED_HOST_DIR:-./.test-managed}
         target: /mnt/managed
+      # 假 GitHub 的資料目錄（bare repo、api.json、control.json、requests.log）：測試在主機端寫入
+      - type: bind
+        source: ${WORKER_TEST_REMOTE_HOST_DIR:-./.test-remote}
+        target: /mnt/remote
+      - type: bind
+        source: ./tests/fake_remote
+        target: /opt/fake_remote
+        read_only: true
     stop_grace_period: 10s
     healthcheck:
       test: ["CMD", "python", "-m", "repopilot.jobs.healthcheck", "worker"]

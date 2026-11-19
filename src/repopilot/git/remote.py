@@ -13,10 +13,10 @@
 import base64
 import logging
 import os
-from collections.abc import Collection, Mapping
+from collections.abc import Callable, Collection, Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 from urllib.parse import urlsplit
 
 from repopilot.errors import (
@@ -111,12 +111,17 @@ def clone_repository(
     name: str,
     token: str | None,
     timeout: float,
+    poll: Callable[[], None] | None = None,
+    poll_interval: float = 1.0,
 ) -> None:
     """完整 clone（非 shallow、非 partial）到 `destination`，不 checkout 工作樹。
 
     `--no-checkout`：不產生工作目錄檔案，避免 checkout 階段的檔名與符號連結風險；仍是非 bare
     repo，符合 D19 的 repo 根目錄檢查。`--template=`：不複製範本（含範例 hook）。
     `destination` 須不存在，或為空目錄（Git 自行建立內容）。
+
+    `poll`／`poll_interval`（D44）：worker 用來在 clone 期間每隔幾秒檢查取消旗標、租約並回報
+    進度；`poll` 拋出的例外會終止 git 程序樹並原樣往外拋（不轉成領域例外）。
     """
     command = _remote_command(base_url, token)
     url = build_clone_url(base_url, owner, name)
@@ -138,6 +143,7 @@ def clone_repository(
             env=command.env,
             kill_process_tree=True,
             secrets=command.secrets,
+            **_polling(poll, poll_interval),
         )
     except GitTimeoutError:
         raise GitHubCloneTimeoutError("git clone timed out.") from None
@@ -146,6 +152,11 @@ def clone_repository(
         raise GitHubCloneError(
             "git clone failed (the repository may be unreachable, or the token may lack access)."
         )
+
+
+def _polling(poll: Callable[[], None] | None, interval: float) -> dict[str, Any]:
+    """只有需要輪詢時才帶 poll 參數（既有測試以固定簽章的函式取代 run_git 的底層）。"""
+    return {} if poll is None else {"poll": poll, "poll_interval": interval}
 
 
 @dataclass(frozen=True)
@@ -160,12 +171,18 @@ class RefChange:
 
 
 def fetch_origin(
-    repo_path: Path, *, base_url: str, token: str | None, timeout: float
+    repo_path: Path,
+    *,
+    base_url: str,
+    token: str | None,
+    timeout: float,
+    poll: Callable[[], None] | None = None,
+    poll_interval: float = 1.0,
 ) -> list[RefChange]:
     """對 `origin` 執行 `git fetch --prune`，回傳新增／更新／移除的 ref（依名稱排序）。
 
     只能對受管目錄內的 repo 呼叫（呼叫端已驗證路徑）。ref 差異由 fetch 前後的
-    `for-each-ref` 比較得出。
+    `for-each-ref` 比較得出。`poll`／`poll_interval` 同 `clone_repository`。
     """
     command = _remote_command(base_url, token)
     before = _list_refs(repo_path, timeout)
@@ -185,6 +202,7 @@ def fetch_origin(
             env=command.env,
             kill_process_tree=True,
             secrets=command.secrets,
+            **_polling(poll, poll_interval),
         )
     except GitTimeoutError:
         raise GitHubFetchTimeoutError("git fetch timed out.") from None

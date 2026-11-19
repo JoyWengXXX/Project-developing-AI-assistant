@@ -314,7 +314,7 @@ def _execute(
 
     jobs.update_progress(session, job_id, token, phase="retrieving")
     heartbeat_checkpoint()
-    retrieval = _retrieve_context(session, settings, snapshot_ids, question_text)
+    retrieval = retrieve_context(session, settings, snapshot_ids, question_text)
     context = retrieval.context
     _save_context_chunks(session, question_id, retrieval)
     session.commit()  # 同時結束檢索的讀取交易（SET LOCAL statement_timeout）
@@ -443,24 +443,35 @@ def _load_question(session: Session, question_id: int) -> QaQuestion:
 
 
 @dataclass(frozen=True)
-class _Retrieval:
+class Retrieval:
     context: ContextResult
     # chunk_id → repository_id、檢索排名（1 起算，相關度由高到低）
     repository_ids: dict[int, int]
     ranks: dict[int, int]
 
 
-def _retrieve_context(
-    session: Session, settings: Settings, snapshot_ids: list[int], question: str
-) -> _Retrieval:
-    """混合檢索 → `build_context`。"""
-    if settings.embedding_socket_path is None:
-        raise EmbeddingNotConfiguredError("The isolated embedding socket is not configured.")
-    client = SocketEmbeddingClient(
-        socket_path=settings.embedding_socket_path,
-        profile=EmbeddingProfile.from_settings(settings),
-    )
-    client.verify_identity()
+def retrieve_context(
+    session: Session,
+    settings: Settings,
+    snapshot_ids: list[int],
+    question: str,
+    *,
+    embed: Callable[[str], list[float]] | None = None,
+) -> Retrieval:
+    """混合檢索 → `build_context`（問答 worker 與評估腳本共用，輸入因此完全相同）。
+
+    `embed` 省略＝worker 路徑（隔離 runtime 的 socket）；評估腳本在主機上執行，傳入經本機 gateway
+    的查詢向量函式（與 API 的搜尋相同的路徑）。
+    """
+    if embed is None:
+        if settings.embedding_socket_path is None:
+            raise EmbeddingNotConfiguredError("The isolated embedding socket is not configured.")
+        client = SocketEmbeddingClient(
+            socket_path=settings.embedding_socket_path,
+            profile=EmbeddingProfile.from_settings(settings),
+        )
+        client.verify_identity()
+        embed = client.embed
     items = retrieval_search.search(
         session,
         settings,
@@ -468,7 +479,7 @@ def _retrieve_context(
         query=retrieval_query(question),
         mode="hybrid",
         limit=RETRIEVAL_CANDIDATES,
-        embed=client.embed,
+        embed=embed,
     )
     names = dict(
         session.execute(
@@ -492,10 +503,10 @@ def _retrieve_context(
     ]
     repository_ids = {item.chunk_id: item.repository_id for item in items}
     ranks = {item.chunk_id: rank for rank, item in enumerate(items, 1)}
-    return _Retrieval(build_context(chunks, ContextLimits()), repository_ids, ranks)
+    return Retrieval(build_context(chunks, ContextLimits()), repository_ids, ranks)
 
 
-def _save_context_chunks(session: Session, question_id: int, retrieval: _Retrieval) -> None:
+def _save_context_chunks(session: Session, question_id: int, retrieval: Retrieval) -> None:
     """保存送出（與未送出）的片段與當下的來源位置；之後快照被移除也能解釋引用。"""
     context = retrieval.context
 

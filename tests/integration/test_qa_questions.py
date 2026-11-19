@@ -28,6 +28,7 @@ from repopilot.config import Settings
 from repopilot.embedding.profile import EmbeddingProfile
 from repopilot.main import create_app
 from repopilot.qa import usage_ledger
+from repopilot.qa.evaluation import EvalConfigError, load_dataset
 from repopilot.qa.fake_provider import FakeProvider
 from repopilot.qa.pricing import DEFAULT_PRICES
 from repopilot.qa.prompts import PROMPT_VERSION, SYSTEM_PROMPT
@@ -35,6 +36,7 @@ from repopilot.qa.provider import QAProvider, Usage
 from repopilot.qa.question_rules import DEFAULT_MAX_TOKENS, input_tokens_upper_bound
 from repopilot.qa.usage_ledger import UsageLimits, token_cost_usd
 from repopilot.services import job_runner, qa_question_runner, retrieval_job_runner, retrieval_jobs
+from repopilot.services.qa_eval_cli import DbEvalBackend, resolve_snapshot_ids
 from tests.github_helpers import capture_logs
 from tests.integration.conftest import alembic_config
 from tests.integration.snapshot_helpers import add_snapshot
@@ -1263,3 +1265,58 @@ def test_qa_questions_database_rejects_inconsistent_rows(db_engine: Engine) -> N
     for bad in bad_updates:
         with pytest.raises(IntegrityError):
             bad()
+
+
+# --- 4-5 評估腳本的資料庫後端 ---
+
+
+@pytest.fixture
+def eval_backend(env: Env) -> Iterator[Any]:
+    with Session(env.engine, expire_on_commit=False) as session:
+        yield DbEvalBackend(
+            session, env.settings, env.snapshot_ids, lambda query: [1.0] + [0.0] * 767
+        )
+
+
+def test_eval_backend_reports_repositories_without_consent(env: Env, eval_backend: Any) -> None:
+    backend = eval_backend
+    assert backend.unconsented_repositories() == []
+
+    with env.engine.begin() as connection:
+        connection.execute(
+            text("DELETE FROM repository_qa_consent WHERE repository_id = :id"),
+            {"id": env.repos[1].repository_id},
+        )
+
+    assert backend.unconsented_repositories() == ["beta"]
+
+
+def test_eval_backend_retrieval_matches_the_question_worker(env: Env, eval_backend: Any) -> None:
+    context = eval_backend.retrieve(QUESTION)
+
+    with Session(env.engine, expire_on_commit=False) as session:
+        expected = qa_question_runner.retrieve_context(
+            session, env.settings, env.snapshot_ids, QUESTION
+        ).context
+    assert context.included
+    assert context.data_block == expected.data_block
+    assert CHUNK_MARKER in context.data_block
+
+
+def test_eval_dataset_repositories_resolve_to_latest_completed_snapshots(env: Env) -> None:
+    def dataset(**scope: object) -> Any:
+        item = {"id": "u", "question": "q?", "answerable": False, "expected": []}
+        return load_dataset(json.dumps({"dataset_version": "v", "items": [item], **scope}))
+
+    with Session(env.engine) as session:
+        assert resolve_snapshot_ids(session, dataset(repositories=["alpha", "beta"])) == [
+            env.repos[2].snapshot_id,
+            env.repos[1].snapshot_id,
+        ]
+        assert resolve_snapshot_ids(session, dataset(snapshot_ids=env.snapshot_ids)) == (
+            env.snapshot_ids
+        )
+        with pytest.raises(EvalConfigError):
+            resolve_snapshot_ids(session, dataset(repositories=["missing"]))
+        with pytest.raises(EvalConfigError):
+            resolve_snapshot_ids(session, dataset(snapshot_ids=[999_999]))

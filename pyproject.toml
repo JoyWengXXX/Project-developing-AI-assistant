@@ -17,6 +17,8 @@ dependencies = [
     "fastapi>=0.159.1,<0.160",
     # 第一階段切片 5c：呼叫 GitHub API（原為開發依賴，測試仍用 TestClient／MockTransport）
     "httpx>=0.28.1,<0.29",
+    # 第四階段 4-5：第二個供應商（OpenAI）轉接層，只供評估腳本對照，不接入設定與問答流程
+    "openai>=2.0,<3",
     # 第三階段：PostgreSQL pgvector 的 SQLAlchemy 型別
     "pgvector==0.5.1",
     "psycopg[binary]>=3.3.6,<4",

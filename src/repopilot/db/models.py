@@ -22,7 +22,7 @@ from sqlalchemy import (
     func,
     text,
 )
-from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from repopilot.db.base import Base
@@ -327,7 +327,7 @@ class Job(Base):
     __table_args__ = (
         CheckConstraint(
             "kind IN ('snapshot_import', 'snapshot_index', 'github_register', 'github_fetch', "
-            "'snapshot_retrieval')",
+            "'snapshot_retrieval', 'qa_question')",
             name="kind_valid",
         ),
         CheckConstraint(
@@ -336,7 +336,7 @@ class Job(Base):
         ),
         CheckConstraint(
             "phase IN ('pending', 'importing', 'indexing', 'resolving', 'cloning', "
-            "'registering', 'fetching', 'embedding', 'completed')",
+            "'registering', 'fetching', 'embedding', 'retrieving', 'generating', 'completed')",
             name="phase_valid",
         ),
         # running 若且唯若持有令牌與租約期限：不會有「沒有期限、永遠無法復原」的 running 工作
@@ -864,3 +864,167 @@ class RepositoryQaConsent(Base):
         ForeignKey("repositories.id", ondelete="CASCADE"), primary_key=True, autoincrement=False
     )
     consented_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class QaQuestion(Base):
+    """一次問答的完整追蹤記錄（第四階段 4-3a，migration 0021；規格 D8 保存問題全文）。
+
+    `snapshot_ids`、`reservation_id`（帳本，無外鍵）都是純值：快照、repo 被移除後記錄照舊可讀。
+    `job_id` 為 ON DELETE SET NULL（job 歷史被清除不影響問答）。`input_tokens`／`output_tokens`
+    是供應商回報的實際用量（輸出含思考）；`usage_unknown` 表示沒有回報，帳本沿用預留量。
+    `estimated_*` 一開始是提問時的上限估計，worker 預留額度時改為實際預留的值。
+    狀態機與 job 一致（queued／running／succeeded／failed／cancelled）；`answer_status` 只在
+    `succeeded` 時有值。
+    """
+
+    __tablename__ = "qa_questions"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('queued', 'running', 'succeeded', 'failed', 'cancelled')",
+            name="status_valid",
+        ),
+        CheckConstraint(
+            "answer_status IN ('answered', 'insufficient_evidence')", name="answer_status_valid"
+        ),
+        CheckConstraint(
+            "(status = 'succeeded') = (answer_status IS NOT NULL)", name="answer_matches_status"
+        ),
+        CheckConstraint(
+            "(status IN ('succeeded', 'failed', 'cancelled')) = (finished_at IS NOT NULL)",
+            name="finished_matches_status",
+        ),
+        CheckConstraint("status <> 'failed' OR error_code IS NOT NULL", name="failed_has_error"),
+        CheckConstraint("cardinality(snapshot_ids) >= 1", name="snapshot_ids_nonempty"),
+        CheckConstraint("max_tokens >= 1", name="max_tokens_positive"),
+        CheckConstraint(
+            "(input_tokens IS NULL OR input_tokens >= 0)"
+            " AND (output_tokens IS NULL OR output_tokens >= 0)"
+            " AND (cost_usd IS NULL OR cost_usd >= 0)"
+            " AND estimated_input_tokens >= 0 AND estimated_cost_usd >= 0",
+            name="amounts_nonnegative",
+        ),
+        Index("ix_qa_questions_status_id", "status", "id"),
+        Index("ix_qa_questions_job_id", "job_id"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    question: Mapped[str] = mapped_column(Text)
+    snapshot_ids: Mapped[list[int]] = mapped_column(ARRAY(Integer))
+    status: Mapped[str] = mapped_column(String(20), default="queued", server_default="queued")
+    answer_status: Mapped[str | None] = mapped_column(String(25))
+    error_code: Mapped[str | None] = mapped_column(String(100))
+    error_summary: Mapped[str | None] = mapped_column(Text)
+    provider: Mapped[str] = mapped_column(String(20))
+    model: Mapped[str] = mapped_column(String(100))
+    prompt_version: Mapped[str] = mapped_column(String(20))
+    max_tokens: Mapped[int] = mapped_column(Integer)
+    reservation_id: Mapped[UUID | None] = mapped_column(Uuid)
+    estimated_input_tokens: Mapped[int] = mapped_column(BigInteger)
+    estimated_cost_usd: Mapped[Decimal] = mapped_column(Numeric(18, 8))
+    input_tokens: Mapped[int | None] = mapped_column(BigInteger)
+    output_tokens: Mapped[int | None] = mapped_column(BigInteger)
+    cost_usd: Mapped[Decimal | None] = mapped_column(Numeric(18, 8))
+    usage_unknown: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default=text("false")
+    )
+    provider_request_id: Mapped[str | None] = mapped_column(String(100))
+    duration_ms: Mapped[int | None] = mapped_column(Integer)
+    job_id: Mapped[int | None] = mapped_column(ForeignKey("jobs.id", ondelete="SET NULL"))
+    request_id: Mapped[str | None] = mapped_column(String(64))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class QaContextChunk(Base):
+    """檢索到的片段與送出當下的來源位置。`code` 為 NULL 表示沒有送出（`skip_reason` 說明原因）。
+
+    `repository_id`、`snapshot_id`、`chunk_id` 是純整數（沒有外鍵）：快照被移除後仍能從這裡的
+    repo 名稱、完整 SHA、路徑與行號解釋引用。
+    """
+
+    __tablename__ = "qa_context_chunks"
+    __table_args__ = (
+        UniqueConstraint("question_id", "rank"),
+        UniqueConstraint("question_id", "code"),
+        CheckConstraint("(code IS NULL) = (skip_reason IS NOT NULL)", name="code_matches_skip"),
+        CheckConstraint(
+            "skip_reason IN ('count_cap', 'budget_exhausted', 'empty_text')",
+            name="skip_reason_valid",
+        ),
+        CheckConstraint("start_line >= 1 AND end_line >= start_line", name="lines_valid"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    question_id: Mapped[int] = mapped_column(ForeignKey("qa_questions.id", ondelete="CASCADE"))
+    rank: Mapped[int] = mapped_column(Integer)
+    code: Mapped[str | None] = mapped_column(String(10))
+    skip_reason: Mapped[str | None] = mapped_column(String(20))
+    repository_id: Mapped[int] = mapped_column(Integer)
+    repo_name: Mapped[str] = mapped_column(String(200))
+    snapshot_id: Mapped[int] = mapped_column(Integer)
+    commit_sha: Mapped[str] = mapped_column(String(40))
+    path: Mapped[str] = mapped_column(Text)
+    start_line: Mapped[int] = mapped_column(Integer)
+    end_line: Mapped[int] = mapped_column(Integer)
+    chunk_id: Mapped[int] = mapped_column(BigInteger)
+    truncated: Mapped[bool] = mapped_column(Boolean, default=False, server_default=text("false"))
+
+
+class QaStatement(Base):
+    """模型回答的一個陳述；`status=invalid` 的不屬於已驗證答案，`rejection_reasons` 說明原因。"""
+
+    __tablename__ = "qa_statements"
+    __table_args__ = (
+        UniqueConstraint("question_id", "position"),
+        CheckConstraint("kind IN ('fact', 'inference', 'open_question')", name="kind_valid"),
+        CheckConstraint("status IN ('valid', 'invalid')", name="status_valid"),
+        CheckConstraint(
+            "status = 'valid' OR jsonb_array_length(rejection_reasons) > 0",
+            name="invalid_has_reasons",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    question_id: Mapped[int] = mapped_column(ForeignKey("qa_questions.id", ondelete="CASCADE"))
+    position: Mapped[int] = mapped_column(Integer)
+    kind: Mapped[str] = mapped_column(String(15))
+    # 欄位名稱是 text；屬性不能同名，否則會遮蔽類別本體中使用的 sqlalchemy `text()`
+    body: Mapped[str] = mapped_column("text", Text)
+    status: Mapped[str] = mapped_column(String(10))
+    # [{"reason": ..., "citation_index": int | null}]
+    rejection_reasons: Mapped[list[dict[str, Any]]] = mapped_column(
+        JSONB, default=list, server_default=text("'[]'::jsonb")
+    )
+
+
+class QaCitation(Base):
+    """陳述的一個引用。
+
+    `claimed_*` 是模型的說法；`resolved_*` 只在陳述通過驗證時有值（取自送出的片段）。
+    """
+
+    __tablename__ = "qa_citations"
+    __table_args__ = (
+        UniqueConstraint("statement_id", "position"),
+        CheckConstraint("valid = (cardinality(reasons) = 0)", name="valid_matches_reasons"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    statement_id: Mapped[int] = mapped_column(ForeignKey("qa_statements.id", ondelete="CASCADE"))
+    position: Mapped[int] = mapped_column(Integer)
+    claimed_chunk: Mapped[str] = mapped_column(String(50))
+    claimed_start_line: Mapped[int] = mapped_column(BigInteger)
+    claimed_end_line: Mapped[int] = mapped_column(BigInteger)
+    valid: Mapped[bool] = mapped_column(Boolean)
+    reasons: Mapped[list[str]] = mapped_column(
+        ARRAY(String(40)), default=list, server_default=text("'{}'")
+    )
+    resolved_chunk_id: Mapped[int | None] = mapped_column(BigInteger)
+    resolved_repository_id: Mapped[int | None] = mapped_column(Integer)
+    resolved_repo_name: Mapped[str | None] = mapped_column(String(200))
+    resolved_snapshot_id: Mapped[int | None] = mapped_column(Integer)
+    resolved_commit_sha: Mapped[str | None] = mapped_column(String(40))
+    resolved_path: Mapped[str | None] = mapped_column(Text)
+    resolved_start_line: Mapped[int | None] = mapped_column(Integer)
+    resolved_end_line: Mapped[int | None] = mapped_column(Integer)

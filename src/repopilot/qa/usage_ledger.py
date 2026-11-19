@@ -121,8 +121,12 @@ def reserve(
     limits: UsageLimits,
     now: datetime,
     tz: tzinfo,
+    reservation_id: UUID | None = None,
 ) -> Reservation:
-    """預留 `estimated_input_tokens + max_tokens`；超限拋 `TokenBudgetExceededError` 且不寫事件。"""
+    """預留 `estimated_input_tokens + max_tokens`；超限拋 `TokenBudgetExceededError` 且不寫事件。
+
+    `reservation_id` 可由呼叫端先決定並先記錄（問答先把它寫進追蹤記錄再預留，崩潰後仍找得到）。
+    """
     if estimated_input_tokens < 0 or max_tokens < 0:
         raise ValueError("Token counts must not be negative.")
     requested = estimated_input_tokens + max_tokens
@@ -149,7 +153,7 @@ def reserve(
                 requested=str(cost),
                 used=str(today.cost_usd),
             )
-        reservation_id = uuid4()
+        reservation_id = reservation_id or uuid4()
         _append(session, "reserve", reservation_id, estimated_input_tokens, max_tokens, cost, now)
         session.commit()
     except BaseException:
@@ -165,10 +169,12 @@ def settle(
     *,
     price: ModelPrice,
     now: datetime,
+    commit: bool = True,
 ) -> UsageTotals:
     """以實際用量結算（取代預留量，差額自動歸還）；`usage` 為 None 或未知時沿用預留量並標記。
 
-    回傳這個預留結算後的有效用量。
+    回傳這個預留結算後的有效用量。`commit=False` 時只 flush，由呼叫端在同一交易內寫完自己的資料後
+    提交（問答把結算與答案保存放在同一交易）；帳本鎖會持有到該交易結束。
     """
     try:
         _lock(session)
@@ -190,7 +196,8 @@ def settle(
             now,
             usage_unknown=unknown,
         )
-        session.commit()
+        if commit:
+            session.commit()
     except BaseException:
         session.rollback()
         raise

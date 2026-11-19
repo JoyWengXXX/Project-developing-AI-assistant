@@ -119,6 +119,22 @@ def get_limits(session: Session) -> UsageLimits:
     return _limits_of(session.get(QaSettings, _SINGLE_ROW_ID))
 
 
+def decrypt_provider_key(session: Session, settings: Settings) -> str | None:
+    """解密保存的 API key，只給組供應商客戶端用；未設定或無法解密時回 None（不記錄內容）。"""
+    row = session.get(QaSettings, _SINGLE_ROW_ID)
+    if row is None or row.encrypted_provider_key is None:
+        return None
+    try:
+        return (
+            build_fernet(settings)
+            .decrypt(row.encrypted_provider_key.encode("ascii"))
+            .decode("utf-8")
+        )
+    except (TokenEncryptionNotConfiguredError, InvalidToken, ValueError):
+        logger.warning("qa_provider_key_unusable")
+        return None
+
+
 def get_prices(session: Session) -> dict[str, ModelPrice]:
     """目前的單價表（使用者更新後的值，沒有設定列時為預設值）。"""
     return _prices_of(session.get(QaSettings, _SINGLE_ROW_ID))

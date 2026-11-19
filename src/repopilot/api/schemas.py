@@ -16,6 +16,12 @@ from pydantic import (
 )
 
 from repopilot.qa.pricing import MODEL_TIERS
+from repopilot.qa.question_rules import (
+    MAX_QUESTION_CHARS,
+    MAX_SNAPSHOTS,
+    MAX_TOKENS_CEILING,
+    retrieval_query,
+)
 from repopilot.search_query import keyword_terms
 
 RepositoryName = Annotated[
@@ -412,7 +418,12 @@ class GitHubAuthResponse(BaseModel):
 
 # --- 背景工作（第二階段切片 2，D39）---
 JobKind = Literal[
-    "snapshot_import", "snapshot_index", "github_register", "github_fetch", "snapshot_retrieval"
+    "snapshot_import",
+    "snapshot_index",
+    "github_register",
+    "github_fetch",
+    "snapshot_retrieval",
+    "qa_question",
 ]
 JobStatus = Literal["queued", "running", "succeeded", "failed", "cancelled"]
 # `active` ＝ queued＋running（供進行中面板輪詢）
@@ -426,6 +437,8 @@ JobPhase = Literal[
     "registering",
     "fetching",
     "embedding",
+    "retrieving",
+    "generating",
     "completed",
 ]
 
@@ -764,6 +777,181 @@ class QaConsentItem(BaseModel):
 
 class QaConsentListResponse(BaseModel):
     items: list[QaConsentItem]
+
+
+# --- 問答（第四階段 4-3a） ---
+QaQuestionStatus = Literal["queued", "running", "succeeded", "failed", "cancelled"]
+QaAnswerStatus = Literal["answered", "insufficient_evidence"]
+QaStatementKind = Literal["fact", "inference", "open_question"]
+QaContextSkipReason = Literal["count_cap", "budget_exhausted", "empty_text"]
+QaQuestionIdPath = Annotated[int, Path(ge=1, le=_INT64_MAX)]
+
+
+class QaQuestionCreate(BaseModel):
+    """提問。`max_tokens` 是這題的輸出上限（含思考）；省略用預設，且超過單次額度時 409。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    snapshot_ids: list[Annotated[int, Field(strict=True, ge=1, le=_INT32_MAX)]] = Field(
+        min_length=1, max_length=MAX_SNAPSHOTS
+    )
+    question: Annotated[
+        str, StringConstraints(strip_whitespace=True, min_length=1, max_length=MAX_QUESTION_CHARS)
+    ]
+    max_tokens: int | None = Field(default=None, strict=True, ge=1, le=MAX_TOKENS_CEILING)
+
+    @field_validator("snapshot_ids")
+    @classmethod
+    def _unique_snapshots(cls, value: list[int]) -> list[int]:
+        if len(set(value)) != len(value):
+            raise ValueError("Snapshot IDs must be unique.")
+        return value
+
+    @field_validator("question")
+    @classmethod
+    def _valid_question(cls, value: str) -> str:
+        if "\x00" in value:
+            raise ValueError("The question contains an invalid character.")
+        try:
+            value.encode("utf-8")
+        except UnicodeEncodeError:
+            raise ValueError("The question is not valid UTF-8.") from None
+        if not retrieval_query(value):
+            raise ValueError("The question must contain at least one word.")
+        return value
+
+
+class QaEstimateResponse(BaseModel):
+    """提問時的上限估計（假設值，不是實測）；實際用量以供應商回報為準。"""
+
+    input_tokens_upper_bound: int
+    max_output_tokens: int
+    total_tokens_upper_bound: int
+    cost_usd: UsdAmount
+
+
+class QaQuestionSubmitResponse(BaseModel):
+    id: int
+    status: QaQuestionStatus
+    model: str
+    job: JobResponse
+    estimate: QaEstimateResponse
+    status_url: str
+
+
+class QaCitationResponse(BaseModel):
+    """已驗證的引用：座標取自送出的片段，行號為 1-based 含頭尾。"""
+
+    chunk_code: str
+    repository_id: int
+    repository: str
+    snapshot_id: int
+    commit_sha: str
+    path: str
+    start_line: int
+    end_line: int
+
+
+class QaStatementResponse(BaseModel):
+    position: int
+    kind: QaStatementKind
+    text: str
+    citations: list[QaCitationResponse]
+
+
+class QaClaimedCitationResponse(BaseModel):
+    """模型宣稱的引用（未驗證資料）；`valid`／`reasons` 是系統驗證的結果。"""
+
+    chunk: str
+    start_line: int
+    end_line: int
+    valid: bool
+    reasons: list[str]
+
+
+class QaRejectionReasonResponse(BaseModel):
+    reason: str
+    # 引用層級的原因帶引用在該陳述中的 0 起算位置；陳述層級的原因為 null
+    citation_index: int | None
+
+
+class QaRejectedStatementResponse(BaseModel):
+    position: int
+    kind: QaStatementKind
+    text: str
+    reasons: list[QaRejectionReasonResponse]
+    claimed_citations: list[QaClaimedCitationResponse]
+
+
+class QaContextChunkResponse(BaseModel):
+    """檢索到的片段與送出當下的來源位置；`code` 為 null 表示沒有送出（`skipped_reason`）。"""
+
+    rank: int
+    code: str | None
+    skipped_reason: QaContextSkipReason | None
+    repository_id: int
+    repository: str
+    snapshot_id: int
+    commit_sha: str
+    path: str
+    start_line: int
+    end_line: int
+    chunk_id: int
+    truncated: bool
+
+
+class QaUsageDetailResponse(BaseModel):
+    # 供應商回報的實際用量（輸出含思考）；沒有結果前為 null
+    input_tokens: int | None
+    output_tokens: int | None
+    # true＝供應商沒有回報，帳本沿用預留量
+    usage_unknown: bool
+
+
+class QaCostResponse(BaseModel):
+    # 美元（字串）；預估是預留的值（worker 預留前是提問時的上限估計）
+    estimated_usd: UsdAmount
+    estimated_input_tokens: int
+    actual_usd: UsdAmount | None
+
+
+class QaQuestionListItem(BaseModel):
+    id: int
+    status: QaQuestionStatus
+    answer_status: QaAnswerStatus | None
+    question: str
+    snapshot_ids: list[int]
+    provider: str
+    model: str
+    error_code: str | None
+    usage: QaUsageDetailResponse
+    cost: QaCostResponse
+    job_id: int | None
+    created_at: datetime
+    finished_at: datetime | None
+
+
+class QaQuestionListResponse(PageResponse):
+    items: list[QaQuestionListItem]
+
+
+class QaQuestionResponse(QaQuestionListItem):
+    prompt_version: str
+    max_tokens: int
+    error: JobErrorResponse | None
+    provider_request_id: str | None
+    duration_ms: int | None
+    started_at: datetime | None
+    # 驗證後的答案：只含通過驗證的陳述；失敗或證據不足時為空
+    statements: list[QaStatementResponse]
+    rejected_statements: list[QaRejectedStatementResponse]
+    context_chunks: list[QaContextChunkResponse]
+
+
+class QaQuestionsDeletedResponse(BaseModel):
+    deleted: int
+    # 排隊或執行中、因此保留的問答數
+    skipped_active: int
 
 
 class ServiceStateResponse(BaseModel):

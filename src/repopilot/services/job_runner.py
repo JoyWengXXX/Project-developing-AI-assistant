@@ -78,6 +78,7 @@ from repopilot.request_context import request_id_var
 from repopilot.services import (
     github_job_runner,
     job_poison,
+    qa_question_runner,
     retrieval_job_runner,
     snapshot_indexing,
     snapshots,
@@ -264,6 +265,16 @@ def _run_leased(
         elif job.kind == "snapshot_retrieval":
             retrieval_job_runner.run_retrieval(
                 session, job, token, engine, settings, heartbeat.checkpoint, finished
+            )
+        elif job.kind == "qa_question":
+            qa_question_runner.run_question(
+                session,
+                job.id,
+                token,
+                dict(job.params),
+                settings,
+                heartbeat.checkpoint,
+                finished,
             )
         elif job.kind == "github_register":
             client = github_client or GitHubClient(

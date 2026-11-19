@@ -36,6 +36,12 @@ from repopilot.errors import (
     JobNotRetryableError,
     ManagedStorageError,
     PathNotMappedError,
+    QaEgressNotConsentedError,
+    QaModelNotSelectedError,
+    QaProviderNotConfiguredError,
+    QaQuestionActiveError,
+    QaQuestionFailedError,
+    QaQuestionNotFoundError,
     QaReservationFinalizedError,
     QaReservationNotFoundError,
     RepoPilotError,
@@ -129,6 +135,15 @@ ERROR_STATUS: dict[type[RepoPilotError], int] = {
     TokenBudgetExceededError: 409,
     QaReservationNotFoundError: 404,
     QaReservationFinalizedError: 409,
+    # 問答（第四階段 4-3a）：供應商未設定是服務端設定（503，同 token_encryption_not_configured）；
+    # 未選模型、問答還在進行是目前狀態不允許（409）；未同意資料外送是授權問題（403）
+    QaProviderNotConfiguredError: 503,
+    QaModelNotSelectedError: 409,
+    QaEgressNotConsentedError: 403,
+    QaQuestionNotFoundError: 404,
+    QaQuestionActiveError: 409,
+    # 只在 worker 內部使用（成為 job 的 error.code），沒有 HTTP 端點會拋出
+    QaQuestionFailedError: 500,
 }
 
 _HTTP_ERROR_CODES = {
@@ -179,6 +194,12 @@ def _details_of(exc: RepoPilotError) -> dict[str, Any] | None:
         return {"chunk_count": exc.chunk_count, "max_chunks": exc.max_chunks}
     if isinstance(exc, SnapshotIndexNotReadyError):
         return {"index_status": exc.index_status}
+    if isinstance(exc, QaEgressNotConsentedError):
+        return {
+            "repositories": [
+                {"repository_id": repo_id, "name": name} for repo_id, name in exc.repositories
+            ]
+        }
     if isinstance(exc, TokenBudgetExceededError):
         details: dict[str, Any] = {
             "reason": exc.reason,

@@ -101,6 +101,24 @@ def test_phase_order_follows_the_spec_per_kind() -> None:
     )
 
 
+def test_qa_question_jobs_have_their_own_phases_and_are_a_known_kind() -> None:
+    assert "qa_question" in job_rules.JOB_KINDS
+    assert job_rules.PHASES_BY_KIND["qa_question"] == (
+        "pending",
+        "retrieving",
+        "generating",
+        "completed",
+    )
+    assert job_rules.phase_rank("qa_question", "retrieving") < job_rules.phase_rank(
+        "qa_question", "generating"
+    )
+    with pytest.raises(ValueError, match="not valid"):
+        job_rules.phase_rank("qa_question", "embedding")
+    # 沒有暫時性錯誤碼會讓問答自動重試：重試矩陣是 #6，現在一律失敗後由使用者決定
+    assert job_rules.classify_failure("provider_timeout") == "permanent"
+    assert job_rules.classify_failure("token_budget_exceeded") == "permanent"
+
+
 def test_phase_rank_rejects_a_phase_that_belongs_to_another_kind() -> None:
     with pytest.raises(ValueError, match="not valid"):
         job_rules.phase_rank("github_fetch", "cloning")

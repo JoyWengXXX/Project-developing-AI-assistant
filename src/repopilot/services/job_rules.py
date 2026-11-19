@@ -15,6 +15,7 @@ JOB_KINDS = (
     "github_register",
     "github_fetch",
     "snapshot_retrieval",
+    "qa_question",
 )
 ACTIVE_STATUSES = ("queued", "running")
 TERMINAL_STATUSES = ("succeeded", "failed", "cancelled")
@@ -24,6 +25,7 @@ PHASES_BY_KIND: dict[str, tuple[str, ...]] = {
     "snapshot_import": ("pending", "importing", "indexing", "completed"),
     "snapshot_index": ("pending", "indexing", "completed"),
     "snapshot_retrieval": ("pending", "embedding", "completed"),
+    "qa_question": ("pending", "retrieving", "generating", "completed"),
     "github_register": ("pending", "resolving", "cloning", "registering", "completed"),
     "github_fetch": ("pending", "fetching", "completed"),
 }

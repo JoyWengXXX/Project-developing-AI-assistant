@@ -1,5 +1,6 @@
 """在指定快照的相容已完成索引中搜尋片段。"""
 
+from collections.abc import Callable
 from dataclasses import dataclass, replace
 from typing import Literal
 
@@ -232,6 +233,17 @@ def _semantic_candidates(
     ]
 
 
+def ensure_searchable(session: Session, settings: Settings, snapshot_ids: list[int]) -> None:
+    """快照都存在、已完成且有相容的完成索引，且範圍不超過上限；問答在提問前用同一套檢查。
+
+    與 `search` 的前置條件相同（含混合搜尋的關鍵字範圍上限），不呼叫 embedding 模型。
+    """
+    with _timeout_as_domain_error():
+        _set_statement_timeout(session, settings.search_statement_timeout_seconds)
+        _ensure_keyword_scope(session, settings, _index_ids(session, settings, snapshot_ids))
+    session.rollback()
+
+
 def search(
     session: Session,
     settings: Settings,
@@ -240,7 +252,10 @@ def search(
     query: str,
     mode: Literal["keyword", "semantic", "hybrid"],
     limit: int,
+    embed: Callable[[str], list[float]] | None = None,
 ) -> list[KeywordMatch]:
+    """`embed` 省略時經本機 gateway 取得查詢向量（API 的路徑）；worker 沒有 gateway，傳入自己的
+    隔離 runtime 客戶端。"""
     if mode == "keyword":
         return keyword_search(
             session, settings, snapshot_ids=snapshot_ids, query=query, limit=limit
@@ -250,7 +265,11 @@ def search(
         index_ids = _index_ids(session, settings, snapshot_ids)
         if mode == "hybrid":
             _ensure_keyword_scope(session, settings, index_ids)
-        vector = embed_query(settings, EmbeddingProfile.from_settings(settings), query)
+        vector = (
+            embed(query)
+            if embed is not None
+            else embed_query(settings, EmbeddingProfile.from_settings(settings), query)
+        )
         semantic = _semantic_candidates(
             session, index_ids, vector, limit if mode == "semantic" else _CANDIDATE_LIMIT
         )

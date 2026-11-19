@@ -134,11 +134,14 @@ def create_job(
     index_profile_hash: str | None = None,
     request_id: str | None = None,
     now: datetime | None = None,
+    on_created: Callable[[Session, Job], None] | None = None,
 ) -> CreatedJob:
     """建立 job 與第一筆待派送事件（同一交易）；同 `dedupe_key` 已有進行中 job 時回傳既有者。
 
     transactional outbox：job 與事件要嘛一起提交、要嘛都不存在，所以不會有「job 排入了卻沒有人
     會派送它」。回傳的 `created` 標明是否新建（供 API 決定回應內容）。
+    `on_created(session, job)` 只在新建時、commit 之前呼叫：呼叫端可在同一交易內寫入與 job 綁定的
+    資料（問答把 `qa_questions.job_id` 連到 job）；它拋出例外則 job 與事件一併回復。
     """
     if kind not in job_rules.JOB_KINDS:
         raise ValueError(f"Unknown job kind: {kind!r}.")
@@ -177,6 +180,8 @@ def create_job(
             ).scalar_one_or_none()
             if job is not None:
                 schedule_dispatch(session, job.id, attempt_target=1, not_before=now_expr)
+                if on_created is not None:
+                    on_created(session, job)
                 session.commit()
                 _log("job_created", job)
                 return CreatedJob(job, True)

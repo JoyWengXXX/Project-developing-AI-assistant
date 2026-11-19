@@ -180,6 +180,46 @@ class QaReservationFinalizedError(RepoPilotError):
     code = "qa_reservation_finalized"
 
 
+class QaProviderNotConfiguredError(RepoPilotError):
+    """沒有可用的供應商 API key（未設定，或已保存但無法解密）；提問在任何外部呼叫前被拒絕。"""
+
+    code = "qa_provider_not_configured"
+
+
+class QaModelNotSelectedError(RepoPilotError):
+    """尚未在問答設定中選擇模型（沒有預設模型）。"""
+
+    code = "qa_model_not_selected"
+
+
+class QaEgressNotConsentedError(RepoPilotError):
+    """被選快照所屬的 repo 沒有同意把片段送往供應商；`repositories` 為 (id, 名稱)。"""
+
+    code = "qa_egress_not_consented"
+
+    def __init__(self, repositories: list[tuple[int, str]]) -> None:
+        super().__init__("Some repositories have not consented to sending code to the provider.")
+        self.repositories = repositories
+
+
+class QaQuestionNotFoundError(RepoPilotError):
+    code = "qa_question_not_found"
+
+
+class QaQuestionActiveError(RepoPilotError):
+    """問答還在排隊或執行中，不能刪除（完整的取消流程由 #6 處理）。"""
+
+    code = "qa_question_active"
+
+
+class QaQuestionFailedError(RepoPilotError):
+    """worker 內部用：問答已記錄為失敗，讓 job 以同一個穩定錯誤碼結束；訊息為固定文字。"""
+
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(message)
+        self.code = code
+
+
 class EmbeddingDeviceUnavailableError(RepoPilotError):
     """選取的 embedding 運算裝置（目前只有 `gpu` 可能不可用）沒有設定或沒有回應。
 

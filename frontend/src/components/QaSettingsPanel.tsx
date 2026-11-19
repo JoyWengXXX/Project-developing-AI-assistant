@@ -3,7 +3,7 @@ import { formatTime } from '../format'
 import type { QaSettings, Repository } from '../types'
 import { ApiHint, ErrorBox } from '../ui'
 import type { QaConsents } from '../useQaConsents'
-import { useQaSettings } from '../useQaSettings'
+import type { QaSettingsState } from '../useQaSettings'
 import { QaConsentList } from './QaConsentList'
 import { QaLimitsForm } from './QaLimitsForm'
 import { QaModelChooser } from './QaModelChooser'
@@ -54,13 +54,13 @@ function SummaryStatus({ settings, loading, failed }: { settings: QaSettings | n
  * 問答設定面板：模型選擇（含單價與每題預估）、額度與今日用量、單價表、供應商 API key、逐 repo 資料外送同意。
  * 這一版只負責「設定」：不呼叫供應商，也沒有問答流程。
  * 設定資料來自 GET /qa/settings（永遠不含 API key）；各區塊儲存後直接採用 PUT 回傳的完整設定。
+ * 設定的狀態由 App 持有（useQaSettings），「問答」面板共用同一份（改了模型或 key，問答面板立刻跟著變）。
  */
-export function QaSettingsPanel({ repos, consents }: { repos: Repository[] | null; consents: QaConsents }) {
-  const state = useQaSettings()
+export function QaSettingsPanel({ repos, consents, state }: { repos: Repository[] | null; consents: QaConsents; state: QaSettingsState }) {
   const { settings } = state
 
   return (
-    <details className="panel advanced">
+    <details className="panel advanced" id="qa-settings">
       <summary className="summary-status">
         <span>問答設定</span>
         <SummaryStatus settings={settings} loading={state.loading} failed={state.error !== null} />

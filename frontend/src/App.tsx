@@ -3,6 +3,7 @@ import { AddRepoPanel } from './components/AddRepoPanel'
 import { GitHubPanel } from './components/GitHubPanel'
 import { GitHubRegistrations } from './components/GitHubRegistrations'
 import { JobsSummaryBar } from './components/JobsSummaryBar'
+import { QaPanel } from './components/QaPanel'
 import { QaSettingsPanel } from './components/QaSettingsPanel'
 import { RepoDetailHeader } from './components/RepoDetailHeader'
 import { RepoOverviewGrid } from './components/RepoOverviewGrid'
@@ -13,6 +14,7 @@ import type { Repository } from './types'
 import { useGitHubJobs } from './useGitHubJobs'
 import { useJobsOverview } from './useJobsOverview'
 import { useQaConsents } from './useQaConsents'
+import { useQaSettings } from './useQaSettings'
 import { useRepoImports } from './useRepoImports'
 import { useRepoList } from './useRepoList'
 
@@ -25,6 +27,8 @@ import { useRepoList } from './useRepoList'
 // GitHub 註冊與更新（fetch）也是背景工作，由這裡的 useGitHubJobs 送出並偵測完成（成功後重新載入列表、自動匯入一次、保存 refs 變更清單）。
 // 面板上的 key={...} 讓「換 repo」時，版本區的分支選擇、commit 圖、檔案樹等內部狀態與進行中的請求自動重置。
 // 問答的「資料外送同意」（逐 repo）也由這裡持有一份（useQaConsents，一次請求讀全部），repo 卡片與「問答設定」面板共用。
+// 問答設定（useQaSettings）同樣由這裡持有：「問答設定」面板與「問答」面板共用同一份（改了模型或 key，提問面板立刻跟著變）。
+// 「問答」面板放在首頁面板區（進入 repo 詳情時只是隱藏、不卸載），進行中的問答不會因為換頁而遺失。
 export default function App() {
   const [repo, setRepo] = useState<Repository | null>(null)
   const [returnedFromDetail, setReturnedFromDetail] = useState(false) // 回到總覽時把焦點移到標題
@@ -33,6 +37,7 @@ export default function App() {
   const imports = useRepoImports()
   const jobs = useJobsOverview(imports.busy)
   const consents = useQaConsents()
+  const qaSettings = useQaSettings()
   // repo 已註冊（本機註冊、GitHub 註冊的各種結果）：重新載入列表。只有新建的才自動匯入一次預設分支最新版本；
   // 已存在的不匯入。revision 用 HEAD：後端在提交時解析成完整 SHA。失敗時卡片會顯示錯誤與「重試匯入」，不會自動再試。
   function handleRegistered(repoId: number, created: boolean) {
@@ -85,7 +90,14 @@ export default function App() {
           <GitHubRegistrations github={github} jobs={jobs} />
           <AddRepoPanel github={github} onRegistered={handleRegistered} />
           <GitHubPanel />
-          <QaSettingsPanel repos={list.items} consents={consents} />
+          <QaSettingsPanel repos={list.items} consents={consents} state={qaSettings} />
+          <QaPanel
+            repos={list.items ?? []}
+            consents={consents}
+            settings={qaSettings}
+            jobs={jobs}
+            snapshotKey={snapshotRefreshKey}
+          />
         </div>
 
         {repo === null ? (

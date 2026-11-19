@@ -1,6 +1,7 @@
 // 顯示用的小工具與對照表（只負責「怎麼顯示」，不含業務規則）。
 
 import { ApiError } from './api'
+import { QA_ERROR_HINT } from './qaErrors'
 import type { Job, ReferenceItem, Repository } from './types'
 
 export function toApiError(e: unknown): ApiError {
@@ -100,6 +101,7 @@ export const SKIP_REASON_LABEL: Record<string, string> = {
 
 // 錯誤 code 的白話說明，幫助對照後端的領域例外（src/repopilot/errors.py）
 export const ERROR_HINT: Record<string, string> = {
+  ...QA_ERROR_HINT, // 問答（提問錯誤與問答失敗的錯誤碼；背景工作列表也用它）
   network_error: '瀏覽器連不到 Vite dev server。',
   non_standard_error: '回應不是統一錯誤格式；後端未啟動時，Vite proxy 會回 502／500。',
   validation_error: '請求參數不合法（FastAPI／Pydantic 驗證失敗），詳見下方 details。',

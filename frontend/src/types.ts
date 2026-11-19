@@ -263,7 +263,13 @@ export interface RepositoryOverview {
 
 // ---------- 背景工作（第二階段切片 2：/api/v1/jobs，對應 schemas.py 的 Job* 模型） ----------
 
-export type JobKind = 'snapshot_import' | 'snapshot_index' | 'github_register' | 'github_fetch' | 'snapshot_retrieval'
+export type JobKind =
+  | 'snapshot_import'
+  | 'snapshot_index'
+  | 'github_register'
+  | 'github_fetch'
+  | 'snapshot_retrieval'
+  | 'qa_question'
 export type JobStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled'
 // 列表篩選多一個 active（＝queued＋running）
 export type JobStatusFilter = JobStatus | 'active'
@@ -276,6 +282,8 @@ export type JobPhase =
   | 'cloning'
   | 'registering'
   | 'fetching'
+  | 'retrieving' // 問答（qa_question）：檢索相關片段、組上下文
+  | 'generating' // 問答（qa_question）：等待模型回答並驗證引用
   | 'completed'
 
 export interface JobProgress {
@@ -478,6 +486,144 @@ export interface QaConsent {
   consented_at: string | null
 }
 
+// ---------- 問答（第四階段 4-4，對應 schemas.py 的 QaQuestion* 模型） ----------
+// 美元一律是字串；問題、陳述、路徑都是不可信內容：只能當文字節點顯示。
+
+export type QaQuestionStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled'
+export type QaAnswerStatus = 'answered' | 'insufficient_evidence'
+export type QaStatementKind = 'fact' | 'inference' | 'open_question'
+export type QaContextSkipReason = 'count_cap' | 'budget_exhausted' | 'empty_text'
+
+// POST /qa/questions 的 body。刻意沒有 file_kinds／path_prefix：本分支的後端會對這兩個欄位回 422。
+export interface QaQuestionCreate {
+  snapshot_ids: number[]
+  question: string
+  max_tokens?: number
+}
+
+export interface QaEstimate {
+  input_tokens_upper_bound: number
+  max_output_tokens: number
+  total_tokens_upper_bound: number
+  cost_usd: string // 假設值（上限估計），不是實測
+}
+
+// POST /qa/questions 的 202 回應
+export interface QaQuestionSubmitResponse {
+  id: number
+  status: QaQuestionStatus
+  model: string
+  job: Job
+  estimate: QaEstimate
+  status_url: string
+}
+
+// 已驗證的引用：座標取自送出的片段（行號 1 起算、含頭尾）；commit_sha 是完整 40 碼
+export interface QaCitation {
+  chunk_code: string
+  repository_id: number
+  repository: string
+  snapshot_id: number
+  commit_sha: string
+  path: string
+  start_line: number
+  end_line: number
+}
+
+export interface QaStatement {
+  position: number
+  kind: QaStatementKind
+  text: string
+  citations: QaCitation[]
+}
+
+// 模型宣稱的引用（未驗證）；valid／reasons 是系統驗證的結果
+export interface QaClaimedCitation {
+  chunk: string
+  start_line: number
+  end_line: number
+  valid: boolean
+  reasons: string[]
+}
+
+export interface QaRejectionReason {
+  reason: string
+  citation_index: number | null // 引用層級的原因帶引用在該陳述中的 0 起算位置；陳述層級為 null
+}
+
+export interface QaRejectedStatement {
+  position: number
+  kind: QaStatementKind
+  text: string
+  reasons: QaRejectionReason[]
+  claimed_citations: QaClaimedCitation[]
+}
+
+// code 為 null 表示這個檢索到的片段沒有送出（skipped_reason 說明原因）
+export interface QaContextChunk {
+  rank: number
+  code: string | null
+  skipped_reason: QaContextSkipReason | null
+  repository_id: number
+  repository: string
+  snapshot_id: number
+  commit_sha: string
+  path: string
+  start_line: number
+  end_line: number
+  chunk_id: number
+  truncated: boolean
+}
+
+export interface QaUsageDetail {
+  input_tokens: number | null // 沒有結果前為 null
+  output_tokens: number | null
+  usage_unknown: boolean // true＝供應商沒有回報，帳本沿用預留量
+}
+
+export interface QaCost {
+  estimated_usd: string
+  estimated_input_tokens: number
+  actual_usd: string | null
+}
+
+export interface QaQuestionListItem {
+  id: number
+  status: QaQuestionStatus
+  answer_status: QaAnswerStatus | null
+  question: string
+  snapshot_ids: number[]
+  provider: string
+  model: string
+  error_code: string | null
+  attempts: number // 實際呼叫供應商的次數（含重試）
+  usage: QaUsageDetail
+  cost: QaCost
+  job_id: number | null
+  created_at: string
+  finished_at: string | null
+}
+
+export type QaQuestionList = Page<QaQuestionListItem>
+
+export interface QaQuestion extends QaQuestionListItem {
+  prompt_version: string
+  max_tokens: number
+  error: JobError | null
+  provider_request_id: string | null
+  duration_ms: number | null
+  started_at: string | null
+  statements: QaStatement[] // 只含通過驗證的陳述
+  rejected_statements: QaRejectedStatement[]
+  context_chunks: QaContextChunk[]
+}
+
+// DELETE /qa/questions 的 200 回應
+export interface QaQuestionsDeleted {
+  deleted: number
+  skipped_active: number // 排隊或執行中、因此保留的問答數
+}
+
 // online：至少一個實例的心跳未過期；stale：有紀錄但都過期；absent：從來沒有紀錄
 export type ServiceStatus = 'online' | 'stale' | 'absent'
 
@@ -512,7 +658,23 @@ export interface ValidationDetail {
   type: string
 }
 
-export type ErrorDetails = ValidationDetail[] | { index_status?: string; snapshot_id?: number }
+// 非 422 的錯誤可附 details 物件（內容不可信，使用前須檢查型別）：
+//   索引／快照錯誤：snapshot_id、index_status；search_scope_too_large：chunk_count、max_chunks；
+//   token_budget_exceeded：reason（per_request_tokens／daily_tokens／daily_cost_usd）、limit、requested、used（token 為數字、美元為字串）；
+//   qa_egress_not_consented：repositories（沒有同意的 repo）。
+export interface ErrorDetailsObject {
+  index_status?: string
+  snapshot_id?: number
+  chunk_count?: number
+  max_chunks?: number
+  reason?: string
+  limit?: number | string
+  requested?: number | string
+  used?: number | string
+  repositories?: { repository_id: number; name: string }[]
+}
+
+export type ErrorDetails = ValidationDetail[] | ErrorDetailsObject
 
 export interface ErrorBody {
   error: {

@@ -10,6 +10,7 @@ export const JOB_KIND_LABEL: Record<JobKind, string> = {
   snapshot_retrieval: '建立檢索索引',
   github_register: '註冊 GitHub repo',
   github_fetch: '更新 GitHub repo',
+  qa_question: '問答',
 }
 
 /** 卡片與詳情提示的用語：「背景匯入進行中」「上次背景更新失敗」。 */
@@ -19,6 +20,7 @@ export const JOB_BACKGROUND_LABEL: Record<JobKind, string> = {
   snapshot_retrieval: '背景檢索索引',
   github_register: '背景註冊',
   github_fetch: '背景更新',
+  qa_question: '背景問答',
 }
 
 // 取消的說明：名詞、取消後的狀況、取消生效前的等待（依工作種類，三處共用：取消按鈕、工作列表、卡片提示）
@@ -28,6 +30,7 @@ const CANCEL_NOUN: Record<JobKind, string> = {
   snapshot_retrieval: '檢索索引',
   github_register: '註冊',
   github_fetch: '更新',
+  qa_question: '問答',
 }
 const AFTER_CANCEL: Record<JobKind, string> = {
   snapshot_import: '之後可以重新匯入。',
@@ -35,6 +38,7 @@ const AFTER_CANCEL: Record<JobKind, string> = {
   snapshot_retrieval: '之後可以重新執行。',
   github_register: '之後可以重新註冊。',
   github_fetch: '之後可以再更新。',
+  qa_question: '之後可以重新提問。',
 }
 const CANCEL_CONSEQUENCE: Record<JobKind, string> = {
   snapshot_import: '會停止這次匯入；已讀取的內容不會保留，之後可以重新匯入。',
@@ -42,6 +46,7 @@ const CANCEL_CONSEQUENCE: Record<JobKind, string> = {
   snapshot_retrieval: '會停止建立檢索索引；未完成的結果不會公開，之後可以重新執行。',
   github_register: '會停止這次複製，已下載的暫存內容會被清除；之後可以重新註冊。',
   github_fetch: '會停止這次更新（fetch）；本機的 clone 保持原狀，之後可以再更新。',
+  qa_question: '會停止這次問答；已經花掉的用量仍會計入、沒用到的預留會釋放，之後可以重新提問。',
 }
 
 /** 「確定要取消這次○○嗎？」的○○：匯入、註冊、更新；其他種類用「背景工作」。 */
@@ -65,7 +70,11 @@ export function cancelExplain(job: Job): string {
 
 /** 已要求取消、執行中的工作還沒停下來時的說明：匯入要等目前這一批，GitHub 工作約數秒內停止。 */
 export function cancellingWait(kind: JobKind): string {
-  return kind === 'github_register' || kind === 'github_fetch' ? '約數秒內就會停止' : '等目前這一批處理完就會停止'
+  return kind === 'github_register' || kind === 'github_fetch'
+    ? '約數秒內就會停止'
+    : kind === 'qa_question'
+      ? '等目前這一步（例如模型回應）結束就會停止'
+      : '等目前這一批處理完就會停止'
 }
 
 export const JOB_STATUS_LABEL: Record<JobStatus, string> = {
@@ -90,6 +99,8 @@ export const JOB_PHASE_LABEL: Record<JobPhase, string> = {
   importing: '匯入檔案',
   indexing: '建立索引',
   embedding: '建立檢索索引',
+  retrieving: '檢索相關程式片段',
+  generating: '等待模型回答並驗證引用',
   resolving: '連線 GitHub 並確認 repo',
   cloning: '複製 repo 中',
   registering: '寫入資料庫',
@@ -344,6 +355,10 @@ export function jobTitle(job: Job, repoName: string | null): string {
     }
     case 'github_fetch':
       return repoName !== null ? `更新 ${repoName} 的 GitHub 內容` : '更新 GitHub repo 的內容'
+    case 'qa_question': {
+      const id = job.params?.question_id
+      return typeof id === 'number' && Number.isSafeInteger(id) ? `問答 #${id}` : '問答'
+    }
   }
 }
 

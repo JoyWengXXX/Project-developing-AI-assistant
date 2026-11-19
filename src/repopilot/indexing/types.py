@@ -8,9 +8,17 @@
 from dataclasses import dataclass, field
 from typing import Literal
 
-Language = Literal["python", "csharp"]
+Language = Literal["python", "csharp", "typescript", "javascript", "java", "go", "rust", "sql"]
 ParseStatus = Literal["parsed", "parsed_with_errors", "failed"]
-ErrorKind = Literal["syntax_error", "tree_error", "too_deep", "parser_crash"]
+ErrorKind = Literal[
+    "syntax_error",
+    "tree_error",
+    "too_deep",
+    "parser_crash",
+    "dialect_unspecified",
+    "sql_too_large",
+    "sql_name_too_long",
+]
 SymbolKind = Literal[
     "module",
     "namespace",
@@ -18,6 +26,7 @@ SymbolKind = Literal[
     "struct",
     "record",
     "interface",
+    "type_alias",
     "enum",
     "enum_member",
     "delegate",
@@ -26,9 +35,22 @@ SymbolKind = Literal[
     "constructor",
     "property",
     "field",
+    "table",
+    "view",
+    "procedure",
 ]
 ImportKind = Literal[
-    "import", "from_import", "using", "using_static", "using_alias", "global_using"
+    "import",
+    "from_import",
+    "using",
+    "using_static",
+    "using_alias",
+    "global_using",
+    "script_import",
+    "java_import",
+    "java_static_import",
+    "go_import",
+    "rust_use",
 ]
 RelationType = Literal["base_class", "base_type", "decorator", "attribute"]
 Resolution = Literal["resolved_same_file", "ambiguous", "unresolved"]

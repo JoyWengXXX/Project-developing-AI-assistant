@@ -16,6 +16,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
+import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 
@@ -24,6 +25,8 @@ from tests.git_helpers import git
 from tests.github_helpers import FAKE_TOKEN, FakeGitHub
 from tests.integration.stack.conftest import Stack, wait_for_status, wait_until
 from tests.stack_control import compose
+
+pytestmark = pytest.mark.stack
 
 B64_TOKEN = base64.b64encode(f"x-access-token:{FAKE_TOKEN}".encode()).decode()
 REPO_FILES = {"README.md": "hello\n", "src/app.py": "x = 1\n"}

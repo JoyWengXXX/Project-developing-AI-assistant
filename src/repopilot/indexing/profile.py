@@ -24,6 +24,11 @@ PROFILE_SCHEMA = 1
 PYTHON_ALGORITHM = 1
 # C# 抽取規則改變時遞增
 CSHARP_ALGORITHM = 1
+SCRIPT_ALGORITHM = 1
+JAVA_ALGORITHM = 1
+GO_ALGORITHM = 1
+RUST_ALGORITHM = 1
+SQL_ALGORITHM = 1
 
 
 @dataclass(frozen=True)
@@ -33,6 +38,14 @@ class IndexProfile:
     tree_sitter: str
     csharp_grammar: str
     csharp_include_fields: bool
+    typescript_grammar: str
+    javascript_grammar: str
+    java_grammar: str
+    go_grammar: str
+    rust_grammar: str
+    sql_parser: str
+    sql_dialect: str | None
+    sql_max_file_bytes: int
 
     @classmethod
     def from_settings(cls, settings: Settings) -> "IndexProfile":
@@ -43,6 +56,14 @@ class IndexProfile:
             tree_sitter=version("tree-sitter"),
             csharp_grammar=version("tree-sitter-c-sharp"),
             csharp_include_fields=settings.index_csharp_include_fields,
+            typescript_grammar=version("tree-sitter-typescript"),
+            javascript_grammar=version("tree-sitter-javascript"),
+            java_grammar=version("tree-sitter-java"),
+            go_grammar=version("tree-sitter-go"),
+            rust_grammar=version("tree-sitter-rust"),
+            sql_parser=version("sqlfluff"),
+            sql_dialect=settings.index_sql_dialect,
+            sql_max_file_bytes=settings.index_sql_max_file_bytes,
         )
 
     def analyzers(self) -> dict[str, Any]:
@@ -59,6 +80,43 @@ class IndexProfile:
                 "grammar": self.csharp_grammar,
                 "algorithm": CSHARP_ALGORITHM,
                 "include_fields": self.csharp_include_fields,
+            },
+            "typescript": {
+                "enabled": True,
+                "tree_sitter": self.tree_sitter,
+                "grammar": self.typescript_grammar,
+                "algorithm": SCRIPT_ALGORITHM,
+            },
+            "javascript": {
+                "enabled": True,
+                "tree_sitter": self.tree_sitter,
+                "grammar": self.javascript_grammar,
+                "algorithm": SCRIPT_ALGORITHM,
+            },
+            "java": {
+                "enabled": True,
+                "tree_sitter": self.tree_sitter,
+                "grammar": self.java_grammar,
+                "algorithm": JAVA_ALGORITHM,
+            },
+            "go": {
+                "enabled": True,
+                "tree_sitter": self.tree_sitter,
+                "grammar": self.go_grammar,
+                "algorithm": GO_ALGORITHM,
+            },
+            "rust": {
+                "enabled": True,
+                "tree_sitter": self.tree_sitter,
+                "grammar": self.rust_grammar,
+                "algorithm": RUST_ALGORITHM,
+            },
+            "sql": {
+                "enabled": True,
+                "parser": self.sql_parser,
+                "algorithm": SQL_ALGORITHM,
+                "default_dialect": self.sql_dialect,
+                "max_file_bytes": self.sql_max_file_bytes,
             },
         }
 

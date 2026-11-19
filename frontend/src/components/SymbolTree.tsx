@@ -61,11 +61,11 @@ function Node({ ctx, symbol }: { ctx: TreeContext; symbol: SymbolSummary }) {
           aria-current={selected ? 'true' : undefined}
           onClick={() => ctx.onSelect(symbol.symbol_id)}
         >
-          <span className="muted">{kindLabel(symbol.kind)}</span> <code>{symbol.kind === 'module' ? symbol.path : symbol.name}</code>
+          <span className="muted">{kindLabel(symbol.kind)}</span> <code>{symbol.kind === 'module' && symbol.language === 'python' ? symbol.path : symbol.name}</code>
         </button>
         <span className="muted symbol-meta">
           第 {symbol.start_line} 行{flags.length > 0 && `・${flags.join('、')}`}
-          {symbol.parent_id === null && symbol.kind !== 'module' && `・${symbol.path}`}
+          {symbol.parent_id === null && !(symbol.kind === 'module' && symbol.language === 'python') && `・${symbol.path}`}
         </span>
       </div>
       {open && symbol.has_children && <Children ctx={ctx} parentId={symbol.symbol_id} />}
@@ -99,7 +99,7 @@ export function SymbolTree({
       {loading && <p role="status">載入中…</p>}
       <ErrorBox error={error} />
       {data && data.total === 0 && (
-        <p className="empty">{pathPrefix === '' ? '這個索引沒有符號（沒有可解析的 Python 檔案）。' : '這個路徑前綴底下沒有符號。'}</p>
+        <p className="empty">{pathPrefix === '' ? '這個索引沒有符號。' : '這個路徑前綴底下沒有符號。'}</p>
       )}
       {data && data.total > 0 && (
         <>

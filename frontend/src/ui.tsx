@@ -38,7 +38,7 @@ export function ErrorBox({ error, hints }: { error: ApiError | null; hints?: Rec
         <dd>{error.requestId ? <code>{error.requestId}</code> : '（無）'}</dd>
       </dl>
       {hint && <p className="error-hint">說明：{hint}</p>}
-      {error.details && error.details.length > 0 && (
+      {Array.isArray(error.details) && error.details.length > 0 && (
         <div>
           <div className="error-title">details（哪個欄位不合法）</div>
           <ul>
@@ -49,6 +49,12 @@ export function ErrorBox({ error, hints }: { error: ApiError | null; hints?: Rec
             ))}
           </ul>
         </div>
+      )}
+      {error.details && !Array.isArray(error.details) && (
+        <p>
+          {error.details.snapshot_id !== undefined && <>快照 #{error.details.snapshot_id} </>}
+          {error.details.index_status !== undefined && <>索引狀態：{error.details.index_status}</>}
+        </p>
       )}
     </div>
   )

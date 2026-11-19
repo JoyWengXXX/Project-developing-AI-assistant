@@ -71,3 +71,154 @@ def test_an_index_job_runs_in_the_container_without_reading_the_repository(
     assert job["status"] == "succeeded", job
     assert job["kind"] == "snapshot_index"
     assert client.get(f"/api/v1/snapshots/{snapshot_id}/index").json()["status"] == "completed"
+
+
+def test_worker_indexes_script_files_from_git_and_api_searches_them(
+    stack: Stack, client: TestClient
+) -> None:
+    repository_id = register(
+        client,
+        stack.new_repo(
+            "scripts",
+            {
+                "src/auth.ts": 'import { hash as h } from "crypto";\n'
+                "export type UserId = string;\n",
+                "src/Card.tsx": "export const Card = () => <div>Hello</div>;\n",
+                "src/view.jsx": "export function View() { return <div>OK</div>; }\n",
+                "src/broken.js": "function okay() {}\nfunction broken( {\n",
+            },
+        ),
+    )
+    accepted = submit(client, repository_id, revision="HEAD")
+    job = wait_for_status(client, accepted["job"]["id"], {"succeeded", "failed"}, timeout=120)
+    assert job["status"] == "succeeded", job
+    snapshot_id = job["snapshot_id"]
+
+    index = client.get(f"/api/v1/snapshots/{snapshot_id}/index").json()
+    assert index["counts"]["files_by_language"] == {"typescript": 2, "javascript": 2}
+    problems = client.get(
+        f"/api/v1/snapshots/{snapshot_id}/index/files", params={"has_problems": True}
+    ).json()
+    assert [(item["path"], item["parse_status"]) for item in problems["items"]] == [
+        ("src/broken.js", "parsed_with_errors")
+    ]
+    results = client.get(
+        f"/api/v1/snapshots/{snapshot_id}/search/symbols",
+        params={"q": "UserId", "language": "typescript", "kind": "type_alias"},
+    ).json()
+    assert [(item["name"], item["start_line"]) for item in results["items"]] == [("UserId", 2)]
+
+
+def test_worker_indexes_java_from_git_and_api_searches_it(stack: Stack, client: TestClient) -> None:
+    repository_id = register(
+        client,
+        stack.new_repo(
+            "java",
+            {
+                "src/Service.java": "package demo;\n"
+                "import static java.util.Collections.emptyList;\n"
+                "class Service { void run() {} }\n",
+                "src/other.py": "def helper(): pass\n",
+            },
+        ),
+    )
+    accepted = submit(client, repository_id, revision="HEAD")
+    job = wait_for_status(client, accepted["job"]["id"], {"succeeded", "failed"}, timeout=120)
+    assert job["status"] == "succeeded", job
+    snapshot_id = job["snapshot_id"]
+
+    index = client.get(f"/api/v1/snapshots/{snapshot_id}/index").json()
+    assert index["counts"]["files_by_language"] == {"java": 1, "python": 1}
+    results = client.get(
+        f"/api/v1/snapshots/{snapshot_id}/search/symbols",
+        params={"q": "Service", "language": "java", "kind": "class"},
+    ).json()
+    item = results["items"][0]
+    assert (item["name"], item["start_line"]) == ("Service", 3)
+    detail = client.get(f"/api/v1/snapshots/{snapshot_id}/symbols/{item['symbol_id']}").json()
+    assert [(ref["kind"], ref["target"]) for ref in detail["imports"]] == [
+        ("java_static_import", "java.util.Collections.emptyList")
+    ]
+
+
+def test_worker_indexes_go_from_git_and_api_searches_it(stack: Stack, client: TestClient) -> None:
+    repository_id = register(
+        client,
+        stack.new_repo(
+            "go",
+            {"src/main.go": 'package demo\nimport alias "net/http"\ntype Server struct {}\n'},
+        ),
+    )
+    accepted = submit(client, repository_id, revision="HEAD")
+    job = wait_for_status(client, accepted["job"]["id"], {"succeeded", "failed"}, timeout=120)
+    assert job["status"] == "succeeded", job
+    snapshot_id = job["snapshot_id"]
+    results = client.get(
+        f"/api/v1/snapshots/{snapshot_id}/search/symbols",
+        params={"q": "Server", "language": "go", "kind": "struct"},
+    ).json()
+    item = results["items"][0]
+    assert (item["name"], item["start_line"]) == ("Server", 3)
+    detail = client.get(f"/api/v1/snapshots/{snapshot_id}/symbols/{item['symbol_id']}").json()
+    assert [(ref["kind"], ref["target"], ref["alias"]) for ref in detail["imports"]] == [
+        ("go_import", "net/http", "alias")
+    ]
+
+
+def test_worker_indexes_rust_from_git_and_api_searches_it(stack: Stack, client: TestClient) -> None:
+    repository_id = register(
+        client,
+        stack.new_repo(
+            "rust",
+            {"src/lib.rs": "use std::io::Read;\nmod api { pub struct Server {} }\n"},
+        ),
+    )
+    accepted = submit(client, repository_id, revision="HEAD")
+    job = wait_for_status(client, accepted["job"]["id"], {"succeeded", "failed"}, timeout=120)
+    assert job["status"] == "succeeded", job
+    snapshot_id = job["snapshot_id"]
+    results = client.get(
+        f"/api/v1/snapshots/{snapshot_id}/search/symbols",
+        params={"q": "Server", "language": "rust", "kind": "struct"},
+    ).json()
+    item = results["items"][0]
+    assert (item["qualified_name"], item["start_line"]) == ("api.Server", 2)
+    detail = client.get(f"/api/v1/snapshots/{snapshot_id}/symbols/{item['symbol_id']}").json()
+    assert [(ref["kind"], ref["target"]) for ref in detail["imports"]] == [
+        ("rust_use", "std::io::Read")
+    ]
+
+
+def test_worker_indexes_sql_dialects_without_guessing(stack: Stack, client: TestClient) -> None:
+    repository_id = register(
+        client,
+        stack.new_repo(
+            "sql",
+            {
+                "schema.postgres.sql": "CREATE TABLE public.pg_items (id INTEGER);\n",
+                "schema.tsql.sql": (
+                    "CREATE PROCEDURE [dbo].[ts_proc] AS SELECT TOP (1) id FROM items;\nGO\n"
+                ),
+                "schema.mysql.sql": (
+                    "CREATE TABLE `mysql_items` (`id` INT AUTO_INCREMENT PRIMARY KEY);\n"
+                ),
+                "schema.sqlite.sql": "CREATE VIEW sqlite_view AS SELECT id FROM items;\n",
+                "unknown.sql": "CREATE TABLE unknown_items (id INTEGER);\n",
+            },
+        ),
+    )
+    accepted = submit(client, repository_id, revision="HEAD")
+    job = wait_for_status(client, accepted["job"]["id"], {"succeeded", "failed"}, timeout=120)
+    assert job["status"] == "succeeded", job
+    snapshot_id = job["snapshot_id"]
+    problems = client.get(
+        f"/api/v1/snapshots/{snapshot_id}/index/files", params={"has_problems": True}
+    ).json()
+    assert [(item["path"], item["error_kind"]) for item in problems["items"]] == [
+        ("unknown.sql", "dialect_unspecified")
+    ]
+    results = client.get(
+        f"/api/v1/snapshots/{snapshot_id}/search/symbols",
+        params={"q": "ts_proc", "language": "sql", "kind": "procedure"},
+    ).json()
+    assert [item["qualified_name"] for item in results["items"]] == ["dbo.ts_proc"]

@@ -209,6 +209,9 @@ def test_get_job_returns_the_documented_shape(
         "indexed_files": 0,
         "parse_error_count": 0,
         "bytes_received": None,
+        "vectors_written": None,
+        "estimated_remaining_seconds": None,
+        "chunks_reused": None,
     }
     assert body["cancel_requested"] is False and body["error"] is None and body["result"] is None
     assert body["request_id"] == "req-abc"

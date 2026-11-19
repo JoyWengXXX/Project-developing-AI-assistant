@@ -1,8 +1,18 @@
 from datetime import datetime
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, Literal, Self
 
 from fastapi import Path, Query
-from pydantic import AfterValidator, BaseModel, ConfigDict, Field, StringConstraints
+from pydantic import (
+    AfterValidator,
+    BaseModel,
+    ConfigDict,
+    Field,
+    StringConstraints,
+    field_validator,
+    model_validator,
+)
+
+from repopilot.search_query import keyword_terms
 
 RepositoryName = Annotated[
     str, StringConstraints(strip_whitespace=True, min_length=1, max_length=200)
@@ -397,7 +407,9 @@ class GitHubAuthResponse(BaseModel):
 
 
 # --- 背景工作（第二階段切片 2，D39）---
-JobKind = Literal["snapshot_import", "snapshot_index", "github_register", "github_fetch"]
+JobKind = Literal[
+    "snapshot_import", "snapshot_index", "github_register", "github_fetch", "snapshot_retrieval"
+]
 JobStatus = Literal["queued", "running", "succeeded", "failed", "cancelled"]
 # `active` ＝ queued＋running（供進行中面板輪詢）
 JobStatusFilter = Literal["queued", "running", "succeeded", "failed", "cancelled", "active"]
@@ -409,6 +421,7 @@ JobPhase = Literal[
     "cloning",
     "registering",
     "fetching",
+    "embedding",
     "completed",
 ]
 
@@ -421,6 +434,12 @@ class JobProgressResponse(BaseModel):
     parse_error_count: int
     # 暫存目錄大小（非百分比）；沒有量測時為 null
     bytes_received: int | None
+    # 檢索索引工作（snapshot_retrieval）：此時 processed_files／total_files 是片段數；
+    # 已計算的向量數與估計剩餘秒數（估計值，資料不足時為 null）。其他種類的工作恆為 null
+    vectors_written: int | None = None
+    estimated_remaining_seconds: int | None = None
+    # 本次執行以相同內容的既有向量複製完成的片段數（跨快照、跨 repo 重用）；其他種類為 null
+    chunks_reused: int | None = None
 
 
 class JobErrorResponse(BaseModel):
@@ -505,6 +524,91 @@ class JobSubmitResponse(BaseModel):
     reused: bool
 
 
+class RetrievalIndexResponse(BaseModel):
+    snapshot_id: int
+    repository_id: int
+    status: Literal["none", "building", "failed", "completed"]
+    index_id: int | None
+    profile_hash: str
+    chunk_count: int | None
+    segment_count: int | None
+    job: JobResponse | None
+
+
+class RetrievalJobRequest(BaseModel):
+    """建立檢索索引工作的選用請求本文；沒有本文等同 `{"device": "cpu"}`。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    device: Literal["cpu", "gpu"] = "cpu"
+
+
+class EmbeddingDeviceState(BaseModel):
+    configured: bool
+    available: bool
+
+
+class EmbeddingDevicesResponse(BaseModel):
+    cpu: EmbeddingDeviceState
+    gpu: EmbeddingDeviceState
+
+
+class RetrievalSearchRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    snapshot_ids: list[Annotated[int, Field(strict=True, ge=1, le=_INT32_MAX)]] = Field(
+        min_length=1, max_length=20
+    )
+    query: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=512)]
+    mode: Literal["keyword", "semantic", "hybrid"]
+    limit: int = Field(default=10, ge=1, le=50)
+
+    @field_validator("snapshot_ids")
+    @classmethod
+    def _unique_snapshots(cls, value: list[int]) -> list[int]:
+        if len(set(value)) != len(value):
+            raise ValueError("Snapshot IDs must be unique.")
+        return value
+
+    @field_validator("query")
+    @classmethod
+    def _valid_query(cls, value: str) -> str:
+        if "\x00" in value:
+            raise ValueError("The search query contains an invalid character.")
+        try:
+            value.encode("utf-8")
+        except UnicodeEncodeError:
+            raise ValueError("The search query is not valid UTF-8.") from None
+        return value
+
+    @model_validator(mode="after")
+    def _valid_keyword_query(self) -> Self:
+        if self.mode != "semantic":
+            keyword_terms(self.query)
+        return self
+
+
+class RetrievalSearchItem(BaseModel):
+    chunk_id: int
+    repository_id: int
+    snapshot_id: int
+    commit_sha: str
+    path: str
+    start_line: int
+    end_line: int
+    content: str
+    split_kind: Literal["structure", "paragraph", "text"]
+    support_level: Literal["structure", "text"]
+    keyword_score: int | None = None
+    semantic_score: float | None = None
+    hybrid_score: float | None = None
+
+
+class RetrievalSearchResponse(BaseModel):
+    mode: Literal["keyword", "semantic", "hybrid"]
+    items: list[RetrievalSearchItem]
+
+
 class ServiceStateResponse(BaseModel):
     # online：至少一個實例的心跳未過期；stale：有紀錄但都過期；absent：從來沒有紀錄
     status: Literal["online", "stale", "absent"]
@@ -525,7 +629,7 @@ class JobsStatusResponse(BaseModel):
 
 # --- 結構索引（第二階段切片 6，規格 4.7）---
 IndexStatus = Literal["none", "building", "completed", "failed"]
-IndexLanguage = Literal["python", "csharp"]
+IndexLanguage = Literal["python", "csharp", "typescript", "javascript", "java", "go", "rust", "sql"]
 ParseStatusValue = Literal["parsed", "parsed_with_errors", "failed"]
 SymbolIdPath = Annotated[int, Path(ge=1, le=_INT64_MAX)]
 IndexedFileIdQuery = Annotated[int, Query(ge=1, le=_INT64_MAX, description="只看此快照檔案的符號")]
@@ -537,6 +641,7 @@ SymbolKindFilter = Literal[
     "struct",
     "record",
     "interface",
+    "type_alias",
     "enum",
     "enum_member",
     "delegate",
@@ -545,6 +650,9 @@ SymbolKindFilter = Literal[
     "constructor",
     "property",
     "field",
+    "table",
+    "view",
+    "procedure",
 ]
 
 
@@ -588,6 +696,7 @@ class IndexedFileResponse(BaseModel):
     path: str
     language: IndexLanguage
     parse_status: ParseStatusValue
+    error_kind: str | None
     error_count: int
     first_error: FirstErrorResponse | None
     symbol_count: int

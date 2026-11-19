@@ -152,7 +152,13 @@ export const ERROR_HINT: Record<string, string> = {
   job_not_retryable: '只有失敗的工作可以重試，或同一個目標已有進行中的工作。',
   job_lease_lost: '執行這個工作的 worker 已失去它的租約（工作已被其他程序接手或已結束），請重新整理列表。',
   worker_lost: '執行背景工作的程序中途中斷，系統已自動重試；重試額度用完後才會失敗。',
+  search_scope_too_large:
+    '選取的版本片段總數超過關鍵字搜尋的上限（後端 SEARCH_MAX_CHUNKS，預設 5,000），關鍵字與混合搜尋預期會逾時所以沒有執行；語意搜尋不受影響。請減少選取的版本，或由部署者調高上限（可能變慢）。錯誤詳情有目前的片段總數與上限。',
+  job_time_limit_exceeded:
+    '背景工作超過 worker 的單一任務時限（WORKER_TASK_TIME_LIMIT_SECONDS，預設 3600 秒）而被中止，不會自動重試。大型 repo 的檢索索引（本機模型在 CPU 上約每秒處理不到 1 個向量）可能需要數小時。已完整寫入的片段會保留，按「重試」會從中斷處繼續（被打斷的那個片段會重算）；也可以暫時調高該時限。',
   profile_mismatch: 'API 與 worker 的設定雜湊不一致（兩邊的匯入或索引設定、或 Python 版本不同），請對齊設定後再重試。',
+  embedding_device_unavailable:
+    '選取的運算裝置（GPU）目前不可用：服務沒有啟動或沒有設定。系統不會自動改用 CPU；請啟動 embedding-gpu 服務（見 README），或改選 CPU 後再提交（已保存的片段會接續，不重算）。',
   // 程式結構索引（第二階段切片 6）
   snapshot_index_not_ready: '這個版本還沒有建立完成的程式結構索引（尚未建立、建立中或失敗）；按「建立索引」後等它完成。',
   symbol_not_found: '這個符號不存在，或不屬於這個版本目前的索引（索引可能已重建）。',

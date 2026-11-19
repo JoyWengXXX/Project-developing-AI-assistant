@@ -39,7 +39,12 @@ export function ProblemFiles({ snapshotId }: { snapshotId: number }) {
                     <code className="wrap">{f.path}</code>
                   </td>
                   <td>{LANGUAGE_LABEL[f.language] ?? f.language}</td>
-                  <td>{PARSE_STATUS_LABEL[f.parse_status]}</td>
+                  <td>
+                    {PARSE_STATUS_LABEL[f.parse_status]}
+                    {f.error_kind === 'dialect_unspecified' && '：未指定 SQL 方言'}
+                    {f.error_kind === 'sql_too_large' && '：超過 SQL 檔案解析上限'}
+                    {f.error_kind === 'sql_name_too_long' && '：SQL 宣告名稱過長'}
+                  </td>
                   <td className="muted">{errorPositionText(f.first_error)}</td>
                 </tr>
               ))}

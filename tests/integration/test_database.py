@@ -39,8 +39,57 @@ def test_migrations_upgrade_empty_database_to_head(
     assert current == [head]
 
 
+def test_pgvector_is_installed_and_can_calculate_distance(db_engine: Engine) -> None:
+    with db_engine.connect() as connection:
+        version = connection.scalar(
+            text("SELECT extversion FROM pg_extension WHERE extname = 'vector'")
+        )
+        distance = connection.scalar(text("SELECT '[1,0]'::vector <-> '[0,1]'::vector"))
+    assert version is not None
+    assert distance == pytest.approx(2**0.5)
+
+
+def test_downgrade_preserves_existing_pgvector_extension(
+    test_database_url: str, db_engine: Engine, clean_repositories: None
+) -> None:
+    config = alembic_config(test_database_url)
+    try:
+        command.downgrade(config, "0014")
+        with db_engine.connect() as connection:
+            assert (
+                connection.scalar(
+                    text("SELECT count(*) FROM pg_extension WHERE extname = 'vector'")
+                )
+                == 1
+            )
+            assert connection.scalar(text("SELECT '[1,0]'::vector <-> '[1,0]'::vector")) == 0
+    finally:
+        command.upgrade(config, "head")
+
+
+def test_upgrade_keeps_preexisting_vector_data(
+    test_database_url: str, db_engine: Engine, clean_repositories: None
+) -> None:
+    config = alembic_config(test_database_url)
+    try:
+        command.downgrade(config, "0014")
+        with db_engine.connect() as connection:
+            connection.execute(text("CREATE TEMP TABLE existing_vectors (embedding vector(2))"))
+            connection.execute(text("INSERT INTO existing_vectors VALUES ('[1,2]')"))
+            connection.commit()
+            command.upgrade(config, "head")
+            assert (
+                connection.scalar(
+                    text("SELECT embedding <-> '[1,2]'::vector FROM existing_vectors")
+                )
+                == 0
+            )
+    finally:
+        command.upgrade(config, "head")
+
+
 def test_migration_upgrade_is_repeatable_and_downgrade_to_base_works(
-    test_database_url: str, db_engine: Engine
+    test_database_url: str, db_engine: Engine, clean_repositories: None
 ) -> None:
     config = alembic_config(test_database_url)
 
@@ -63,7 +112,7 @@ def test_models_and_migrations_have_no_drift(test_database_url: str, db_engine: 
 
 
 def test_every_migration_step_upgrades_and_downgrades_one_revision_at_a_time(
-    test_database_url: str, db_engine: Engine
+    test_database_url: str, db_engine: Engine, clean_repositories: None
 ) -> None:
     config = alembic_config(test_database_url)
     script = ScriptDirectory.from_config(config)

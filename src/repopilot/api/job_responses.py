@@ -10,6 +10,7 @@ from repopilot.api.schemas import (
 )
 from repopilot.db.models import Job
 from repopilot.services import job_poison
+from repopilot.services.job_progress import embedding_summary, reused_chunks, saved_chunks
 
 
 def to_job_response(job: Job) -> JobResponse:
@@ -28,7 +29,18 @@ def to_job_response(job: Job) -> JobResponse:
         )
     # work_state 是 JSONB，理論上可能不是物件（人工改資料）；讀取端點不能因此回 500
     work_state: Any = job.work_state
-    summary = job_poison.summarize(work_state if isinstance(work_state, dict) else {})
+    state_dict: dict[str, Any] = work_state if isinstance(work_state, dict) else {}
+    summary = job_poison.summarize(state_dict)
+    vectors_written = estimated_remaining = chunks_reused = None
+    processed_files, total_files = job.processed_files, job.total_files
+    if job.kind == "snapshot_retrieval" and job.status == "running":
+        vectors_written, estimated_remaining = embedding_summary(state_dict)
+        chunks_reused = reused_chunks(state_dict)
+    elif job.kind == "snapshot_retrieval" and job.status == "queued":
+        # 排隊中的進度欄位已歸零；時間切片之間（或重試前）顯示已保存的片段進度
+        saved = saved_chunks(state_dict)
+        if saved is not None and saved[0] > 0:
+            processed_files, total_files = saved
     # 目前單位只在 running 時有意義；已結束或重新排隊的 job 留在 work_state 裡的是過時指標
     current_unit = (
         JobUnitResponse(
@@ -54,11 +66,14 @@ def to_job_response(job: Job) -> JobResponse:
             "cancel_requested": job.cancel_requested_at is not None,
             "cancel_requested_at": job.cancel_requested_at,
             "progress": JobProgressResponse(
-                processed_files=job.processed_files,
-                total_files=job.total_files,
+                processed_files=processed_files,
+                total_files=total_files,
                 indexed_files=job.indexed_files,
                 parse_error_count=job.parse_error_count,
                 bytes_received=job.bytes_received,
+                vectors_written=vectors_written,
+                estimated_remaining_seconds=estimated_remaining,
+                chunks_reused=chunks_reused,
             ),
             "diagnostics": JobDiagnosticsResponse(
                 current_unit=current_unit,

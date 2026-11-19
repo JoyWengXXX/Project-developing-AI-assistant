@@ -56,6 +56,27 @@ class SnapshotNotCompletedError(RepoPilotError):
     code = "snapshot_not_completed"
 
 
+class RetrievalSnapshotNotFoundError(SnapshotNotFoundError):
+    def __init__(self, snapshot_id: int) -> None:
+        super().__init__("A requested snapshot was not found.")
+        self.snapshot_id = snapshot_id
+
+
+class RetrievalSnapshotNotCompletedError(SnapshotNotCompletedError):
+    def __init__(self, snapshot_id: int) -> None:
+        super().__init__("A requested snapshot has not been imported completely.")
+        self.snapshot_id = snapshot_id
+
+
+class RetrievalIndexNotReadyError(RepoPilotError):
+    code = "retrieval_index_not_ready"
+
+    def __init__(self, snapshot_id: int, index_status: str) -> None:
+        super().__init__("A requested snapshot has no compatible completed retrieval index.")
+        self.snapshot_id = snapshot_id
+        self.index_status = index_status
+
+
 class SnapshotIndexNotReadyError(RepoPilotError):
     """快照已完成，但沒有（目前設定下）`completed` 的結構索引（第二階段切片 6）。
 
@@ -73,6 +94,23 @@ class SearchTimeoutError(RepoPilotError):
     """搜尋超過 `SEARCH_STATEMENT_TIMEOUT_SECONDS`（第二階段切片 8）；不回成功的空列表。"""
 
     code = "search_timeout"
+
+
+class SearchScopeTooLargeError(RepoPilotError):
+    """選取快照的片段總數超過 `SEARCH_MAX_CHUNKS`：關鍵字比對會掃描全部片段，預期會逾時。
+
+    在執行掃描之前就拒絕（不是等到 504）；`chunk_count`／`max_chunks` 放在錯誤的 `details`。
+    """
+
+    code = "search_scope_too_large"
+
+    def __init__(self, chunk_count: int, max_chunks: int) -> None:
+        super().__init__(
+            "The selected snapshots contain too many chunks for keyword search; "
+            "select fewer snapshots or raise SEARCH_MAX_CHUNKS."
+        )
+        self.chunk_count = chunk_count
+        self.max_chunks = max_chunks
 
 
 class SymbolNotFoundError(RepoPilotError):
@@ -103,6 +141,21 @@ class TokenEncryptionNotConfiguredError(RepoPilotError):
     """`TOKEN_ENCRYPTION_KEY` 未設定或不是有效的 Fernet 金鑰，無法保存 GitHub token。"""
 
     code = "token_encryption_not_configured"
+
+
+class EmbeddingNotConfiguredError(RepoPilotError):
+    """模型或執行器的可信識別尚未設定。"""
+
+    code = "embedding_not_configured"
+
+
+class EmbeddingDeviceUnavailableError(RepoPilotError):
+    """選取的 embedding 運算裝置（目前只有 `gpu` 可能不可用）沒有設定或沒有回應。
+
+    不會悄悄改用另一個裝置：使用者以為在用 GPU 卻實際跑 CPU（或反過來）會誤導耗時與資源預期。
+    """
+
+    code = "embedding_device_unavailable"
 
 
 class GitHubTokenInvalidError(RepoPilotError):

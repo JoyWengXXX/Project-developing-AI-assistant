@@ -56,8 +56,13 @@ from repopilot.errors import (
     SnapshotNotFoundError,
 )
 from repopilot.indexing.csharp_extractor import extract_csharp
+from repopilot.indexing.go_extractor import extract_go
+from repopilot.indexing.java_extractor import extract_java
 from repopilot.indexing.profile import IndexProfile
 from repopilot.indexing.python_extractor import extract_python
+from repopilot.indexing.rust_extractor import extract_rust
+from repopilot.indexing.script_extractor import extract_script
+from repopilot.indexing.sql_extractor import extract_sql
 from repopilot.indexing.types import FileExtraction, Language
 from repopilot.logging_config import APP_LOGGER_NAME
 from repopilot.services import job_poison
@@ -99,13 +104,24 @@ class IndexSummary:
         }
 
 
+_EXTENSIONS: dict[Language, tuple[str, ...]] = {
+    "python": (".py",),
+    "csharp": (".cs",),
+    "typescript": (".ts", ".tsx", ".mts", ".cts"),
+    "javascript": (".js", ".jsx", ".mjs", ".cjs"),
+    "java": (".java",),
+    "go": (".go",),
+    "rust": (".rs",),
+    "sql": (".sql",),
+}
+
+
 def language_of(path: str) -> Language | None:
     """副檔名（不分大小寫）決定語言；其他檔案不索引（規格 7.1）。`.pyi`、`.csx` 不在本階段。"""
     lowered = path.lower()
-    if lowered.endswith(".py"):
-        return "python"
-    if lowered.endswith(".cs"):
-        return "csharp"
+    for language, extensions in _EXTENSIONS.items():
+        if lowered.endswith(extensions):
+            return language
     return None
 
 
@@ -114,7 +130,13 @@ def _candidate_filter(snapshot_id: int) -> list[ColumnElement[bool]]:
     return [
         SnapshotFile.snapshot_id == snapshot_id,
         SnapshotFile.status == "imported",
-        or_(lowered.like("%.py"), lowered.like("%.cs")),
+        or_(
+            *(
+                lowered.like(f"%{extension}")
+                for extensions in _EXTENSIONS.values()
+                for extension in extensions
+            )
+        ),
     ]
 
 
@@ -367,6 +389,28 @@ def _extract(file_id: int, path: str, content: str, settings: Settings) -> FileE
                 content,
                 max_symbols=settings.index_max_symbols_per_file,
                 include_fields=settings.index_csharp_include_fields,
+            )
+        if language in {"typescript", "javascript"}:
+            return extract_script(path, content, max_symbols=settings.index_max_symbols_per_file)
+        if language == "java":
+            return extract_java(path, content, max_symbols=settings.index_max_symbols_per_file)
+        if language == "go":
+            return extract_go(path, content, max_symbols=settings.index_max_symbols_per_file)
+        if language == "rust":
+            return extract_rust(path, content, max_symbols=settings.index_max_symbols_per_file)
+        if language == "sql":
+            dialect = next(
+                (
+                    candidate
+                    for candidate in ("postgres", "tsql", "mysql", "sqlite")
+                    if path.lower().endswith(f".{candidate}.sql")
+                ),
+                settings.index_sql_dialect,
+            )
+            if len(content.encode("utf-8")) > settings.index_sql_max_file_bytes:
+                return FileExtraction("sql", "failed", "sql_too_large", 1)
+            return extract_sql(
+                path, content, dialect=dialect, max_symbols=settings.index_max_symbols_per_file
             )
         return extract_python(path, content, max_symbols=settings.index_max_symbols_per_file)
     except MemoryError:

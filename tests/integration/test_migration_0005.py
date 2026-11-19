@@ -21,7 +21,7 @@ def _columns(db_engine: Engine) -> set[str]:
 
 
 def test_existing_local_rows_survive_upgrade_and_downgrade_round_trip(
-    db_engine: Engine, test_database_url: str
+    db_engine: Engine, test_database_url: str, clean_repositories: None
 ) -> None:
     config = alembic_config(test_database_url)
     try:

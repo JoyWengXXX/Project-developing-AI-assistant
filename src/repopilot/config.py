@@ -1,5 +1,6 @@
 import json
 import os
+import re
 from functools import lru_cache
 from pathlib import Path
 from typing import Annotated, Any, Literal, Self
@@ -11,6 +12,7 @@ from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 from repopilot.path_mapping import PathMapping
 
 LogLevel = Literal["DEBUG", "INFO", "WARNING", "ERROR"]
+SqlDialect = Literal["postgres", "tsql", "mysql", "sqlite"]
 
 DEFAULT_EXCLUDED_PATTERNS: tuple[str, ...] = (
     ".env",
@@ -130,6 +132,11 @@ class Settings(BaseSettings):
     # 單一任務的硬性時間上限（超過即由 Celery 結束子行程→心跳停止→租約過期→復原掃描）；
     # 軟性上限為它減 60 秒。須大於 Git 逾時的總和，否則 Git 還沒逾時任務就先被殺
     worker_task_time_limit_seconds: int = Field(default=3_600, ge=120, le=86_400)
+    # 檢索索引（embedding）工作的單次執行時間（秒）：超過後，在完成目前片段時停止、保留已寫入的
+    # 向量，並把工作放回佇列（不消耗重試額度）接著做；所以大 repo 可以分成多段完成，每段都在
+    # 單一任務時限內。實際生效的值不超過 `worker_task_time_limit_seconds` 減 180 秒
+    # （軟性上限 60 秒＋處理單一片段與收尾的緩衝；未實測），見 `effective_retrieval_slice_seconds`
+    retrieval_time_slice_seconds: float = Field(default=1_200.0, gt=0, le=86_400)
 
     # --- GitHub 註冊與 fetch 的背景化（第二階段切片 5，D44；數值皆未實測）---
     # clone／fetch 子程序執行期間，worker 每隔這麼多秒檢查一次取消旗標與租約（一次單列查詢）。
@@ -148,6 +155,8 @@ class Settings(BaseSettings):
     # C# 的欄位（field_declaration，每個 variable_declarator 一個符號）預設不抽取：數量大、
     # 對「看結構」的價值低。納入 index_profile_hash，切換會得到另一份索引（切片 7）
     index_csharp_include_fields: bool = False
+    index_sql_dialect: SqlDialect | None = None
+    index_sql_max_file_bytes: int = Field(default=20_000, ge=1, le=1_048_576)
     # 索引階段以 snapshot_files.id 的 keyset 分頁讀取：每批最多這麼多檔、且（依 byte_size）合計最多
     # 這麼多位元組。只影響「怎麼切」，不影響索引結果，所以不納入 index_profile_hash
     index_batch_max_files: int = Field(default=200, ge=1, le=100_000)
@@ -156,6 +165,40 @@ class Settings(BaseSettings):
     # --- 搜尋（第二階段切片 8；預設值未實測）---
     # 每個搜尋請求的時間上限（PostgreSQL statement_timeout，內容搜尋另以整體期限限制多批次的總和）
     search_statement_timeout_seconds: float = Field(default=10.0, gt=0, le=600)
+    # 關鍵字與混合搜尋會掃描選取快照的全部片段，耗時隨片段數線性成長（第三階段收尾 H5 spike 的
+    # 現行查詢：20,000 片段時常見詞約 3.5 秒、7 詞自然語言查詢約 25 秒）。超過這個片段總數就在
+    # 掃描前拒絕（422 search_scope_too_large），不是等到逾時。預設值是依該量測保守訂的，未在其他
+    # 硬體驗證；語意搜尋不受限（80,000 片段約 4.5 秒）
+    search_max_chunks: int = Field(default=5_000, ge=1, le=100_000_000)
+
+    # 設定必須由部署者核對；空值代表尚未啟用檢索。
+    embedding_model_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    embedding_runtime_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    embedding_socket_path: Path | None = None
+    # 選用的 GPU runtime（另一個容器、另一個私有 socket；與 CPU runtime 的設定識別相同）。
+    # worker 依工作的 `params.device` 選用；gateway 用它回報 GPU 是否可用。沒設定＝沒有 GPU 選項
+    embedding_gpu_socket_path: Path | None = None
+    embedding_gateway_port: int = Field(default=18763, ge=1, le=65535)
+    embedding_gateway_token: SecretStr = SecretStr("")
+
+    @field_validator(
+        "embedding_model_sha256",
+        "embedding_runtime_sha256",
+        "embedding_socket_path",
+        "embedding_gpu_socket_path",
+        mode="before",
+    )
+    @classmethod
+    def _empty_embedding_setting(cls, value: Any) -> Any:
+        return None if value == "" else value
+
+    @field_validator("embedding_gateway_token")
+    @classmethod
+    def _valid_embedding_gateway_token(cls, value: SecretStr) -> SecretStr:
+        token = value.get_secret_value()
+        if token and re.fullmatch(r"[A-Za-z0-9_-]{32,128}", token) is None:
+            raise ValueError("EMBEDDING_GATEWAY_TOKEN must be 32 to 128 URL-safe characters.")
+        return value
 
     @model_validator(mode="after")
     def _job_settings_are_consistent(self) -> Self:
@@ -187,6 +230,13 @@ class Settings(BaseSettings):
                 "MANAGED_TEMP_ORPHAN_SECONDS must exceed GITHUB_CLONE_TIMEOUT_SECONDS."
             )
         return self
+
+    @property
+    def effective_retrieval_slice_seconds(self) -> float:
+        return max(
+            0.001,
+            min(self.retrieval_time_slice_seconds, self.worker_task_time_limit_seconds - 180),
+        )
 
     @field_validator("worker_path_mappings", mode="before")
     @classmethod

@@ -1,6 +1,7 @@
 """worker 的錯誤分類（規格 5.7）：錯誤碼穩定、摘要固定且不含內部資訊。"""
 
 import pytest
+from celery.exceptions import SoftTimeLimitExceeded
 from sqlalchemy.exc import InterfaceError, OperationalError
 
 from repopilot.config import Settings
@@ -32,6 +33,7 @@ from repopilot.services.job_runner import (
     GIT_TIMEOUT_SUMMARY,
     GITHUB_SERVER_ERROR_SUMMARY,
     NETWORK_TIMEOUT_SUMMARY,
+    TIME_LIMIT_SUMMARY,
     apply_worker_timeouts,
     classify_error,
 )
@@ -49,6 +51,15 @@ def test_git_timeout_is_transient_and_mentions_git_gc_and_the_worker_settings() 
 
 def test_clone_timeouts_also_map_to_git_timeout_with_the_hint() -> None:
     assert classify_error(GitHubCloneTimeoutError("x"))[0] == "git_timeout"
+
+
+def test_worker_time_limit_has_its_own_permanent_code_and_a_fixed_summary() -> None:
+    code, summary = classify_error(SoftTimeLimitExceeded())
+
+    assert code == "job_time_limit_exceeded"
+    assert job_rules.classify_failure(code) == "permanent"  # 重試只會從頭再撞同一個時限
+    assert summary == TIME_LIMIT_SUMMARY
+    assert "WORKER_TASK_TIME_LIMIT_SECONDS" in summary
 
 
 # --- GitHub 註冊與 fetch 的錯誤分類（第二階段切片 5，D44）---

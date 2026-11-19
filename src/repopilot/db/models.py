@@ -2,6 +2,7 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
+from pgvector.sqlalchemy import Vector
 from sqlalchemy import (
     BigInteger,
     Boolean,
@@ -137,6 +138,7 @@ class SnapshotFile(Base):
     __tablename__ = "snapshot_files"
     __table_args__ = (
         UniqueConstraint("snapshot_id", "path"),
+        UniqueConstraint("id", "snapshot_id"),
         CheckConstraint("status IN ('imported', 'skipped')", name="status_valid"),
         CheckConstraint(
             "(status = 'imported') = (content IS NOT NULL)", name="content_matches_status"
@@ -152,6 +154,140 @@ class SnapshotFile(Base):
     content: Mapped[str | None] = mapped_column(Text)
     status: Mapped[str] = mapped_column(String(20))
     skip_reason: Mapped[str | None] = mapped_column(String(30))
+
+
+class RetrievalChunkSet(Base):
+    """單一快照與切分設定下的完整片段集合，不代表 embedding 已完成。"""
+
+    __tablename__ = "retrieval_chunk_sets"
+    __table_args__ = (
+        UniqueConstraint("snapshot_id", "profile_hash"),
+        UniqueConstraint("id", "snapshot_id"),
+        CheckConstraint("max_bytes >= 4", name="max_bytes_valid"),
+        CheckConstraint("chunk_count >= 0", name="chunk_count_nonnegative"),
+        CheckConstraint(
+            "(structure_index_id IS NULL) = (structure_profile_hash IS NULL)",
+            name="structure_provenance_valid",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    snapshot_id: Mapped[int] = mapped_column(ForeignKey("snapshots.id", ondelete="CASCADE"))
+    profile_hash: Mapped[str] = mapped_column(String(64))
+    max_bytes: Mapped[int] = mapped_column(Integer)
+    structure_index_id: Mapped[int | None] = mapped_column(Integer)
+    structure_profile_hash: Mapped[str | None] = mapped_column(String(64))
+    chunk_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+
+
+class RetrievalChunk(Base):
+    """快照文字的半開字元區間，複合外鍵禁止跨快照引用。"""
+
+    __tablename__ = "retrieval_chunks"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["chunk_set_id", "snapshot_id"],
+            ["retrieval_chunk_sets.id", "retrieval_chunk_sets.snapshot_id"],
+            ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["snapshot_file_id", "snapshot_id"],
+            ["snapshot_files.id", "snapshot_files.snapshot_id"],
+            ondelete="CASCADE",
+        ),
+        UniqueConstraint("chunk_set_id", "snapshot_file_id", "ordinal"),
+        UniqueConstraint("id", "chunk_set_id"),
+        CheckConstraint("ordinal >= 0", name="ordinal_nonnegative"),
+        CheckConstraint("start_offset >= 0 AND end_offset > start_offset", name="offsets_valid"),
+        CheckConstraint("start_line >= 1 AND end_line >= start_line", name="lines_valid"),
+        CheckConstraint(
+            "split_kind IN ('structure', 'paragraph', 'text')", name="split_kind_valid"
+        ),
+        Index("ix_retrieval_chunks_snapshot_file_id", "snapshot_file_id"),
+        Index("ix_retrieval_chunks_content_hash", "content_hash"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    snapshot_id: Mapped[int] = mapped_column(Integer)
+    chunk_set_id: Mapped[int] = mapped_column(BigInteger)
+    snapshot_file_id: Mapped[int] = mapped_column(BigInteger)
+    ordinal: Mapped[int] = mapped_column(Integer)
+    start_offset: Mapped[int] = mapped_column(Integer)
+    end_offset: Mapped[int] = mapped_column(Integer)
+    start_line: Mapped[int] = mapped_column(Integer)
+    end_line: Mapped[int] = mapped_column(Integer)
+    split_kind: Mapped[str] = mapped_column(String(12))
+    content_hash: Mapped[str] = mapped_column(String(64))
+
+
+class RetrievalIndex(Base):
+    """單一片段集合與 embedding 設定下的索引；只有完成狀態可查詢。"""
+
+    __tablename__ = "retrieval_indexes"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["chunk_set_id", "snapshot_id"],
+            ["retrieval_chunk_sets.id", "retrieval_chunk_sets.snapshot_id"],
+            ondelete="CASCADE",
+        ),
+        UniqueConstraint("chunk_set_id", "profile_hash"),
+        UniqueConstraint("id", "chunk_set_id"),
+        CheckConstraint("profile_hash ~ '^[0-9a-f]{64}$'", name="profile_hash_valid"),
+        CheckConstraint("jsonb_typeof(profile) = 'object'", name="profile_object"),
+        CheckConstraint(
+            "(status = 'building' AND owner_token IS NOT NULL AND completed_at IS NULL) OR "
+            "(status = 'failed' AND owner_token IS NULL AND completed_at IS NULL) OR "
+            "(status = 'completed' AND owner_token IS NULL AND completed_at IS NOT NULL)",
+            name="state_valid",
+        ),
+        CheckConstraint("segment_count >= 0", name="segment_count_nonnegative"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    snapshot_id: Mapped[int] = mapped_column(Integer)
+    chunk_set_id: Mapped[int] = mapped_column(BigInteger)
+    profile_hash: Mapped[str] = mapped_column(String(64))
+    profile: Mapped[dict[str, Any]] = mapped_column(JSONB)
+    status: Mapped[str] = mapped_column(String(20))
+    owner_token: Mapped[UUID | None] = mapped_column(Uuid)
+    segment_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, server_default=func.now()
+    )
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class RetrievalVector(Base):
+    """片段內的半開字元區間及 768 維向量；複合外鍵限制索引與片段的歸屬。"""
+
+    __tablename__ = "retrieval_vectors"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["index_id", "chunk_set_id"],
+            ["retrieval_indexes.id", "retrieval_indexes.chunk_set_id"],
+            ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["chunk_id", "chunk_set_id"],
+            ["retrieval_chunks.id", "retrieval_chunks.chunk_set_id"],
+            ondelete="CASCADE",
+        ),
+        UniqueConstraint("index_id", "chunk_id", "ordinal"),
+        CheckConstraint("ordinal >= 0", name="ordinal_nonnegative"),
+        CheckConstraint("start_offset >= 0 AND end_offset > start_offset", name="offsets_valid"),
+        CheckConstraint("token_count >= 1 AND token_count <= 512", name="token_count_valid"),
+        Index("ix_retrieval_vectors_chunk_id_chunk_set_id", "chunk_id", "chunk_set_id"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    index_id: Mapped[int] = mapped_column(BigInteger)
+    chunk_set_id: Mapped[int] = mapped_column(BigInteger)
+    chunk_id: Mapped[int] = mapped_column(BigInteger)
+    ordinal: Mapped[int] = mapped_column(Integer)
+    start_offset: Mapped[int] = mapped_column(Integer)
+    end_offset: Mapped[int] = mapped_column(Integer)
+    token_count: Mapped[int] = mapped_column(Integer)
+    embedding: Mapped[list[float]] = mapped_column(Vector(768))
 
 
 class GithubCredential(Base):
@@ -187,7 +323,8 @@ class Job(Base):
     __tablename__ = "jobs"
     __table_args__ = (
         CheckConstraint(
-            "kind IN ('snapshot_import', 'snapshot_index', 'github_register', 'github_fetch')",
+            "kind IN ('snapshot_import', 'snapshot_index', 'github_register', 'github_fetch', "
+            "'snapshot_retrieval')",
             name="kind_valid",
         ),
         CheckConstraint(
@@ -196,7 +333,7 @@ class Job(Base):
         ),
         CheckConstraint(
             "phase IN ('pending', 'importing', 'indexing', 'resolving', 'cloning', "
-            "'registering', 'fetching', 'completed')",
+            "'registering', 'fetching', 'embedding', 'completed')",
             name="phase_valid",
         ),
         # running 若且唯若持有令牌與租約期限：不會有「沒有期限、永遠無法復原」的 running 工作
@@ -386,20 +523,25 @@ class SnapshotIndex(Base):
 
 
 class IndexedFile(Base):
-    """索引過的檔案（只有 Python／C# 檔；其他檔案沒有列，不宣稱理解其結構）。"""
+    """索引過的檔案；不支援的檔案沒有列，不宣稱理解其結構。"""
 
     __tablename__ = "indexed_files"
     __table_args__ = (
         UniqueConstraint("snapshot_index_id", "snapshot_file_id"),
         # 冗餘的唯一約束：讓 symbols 等表以複合外鍵保證「同一個索引」
         UniqueConstraint("id", "snapshot_index_id"),
-        CheckConstraint("language IN ('python', 'csharp')", name="language_valid"),
+        CheckConstraint(
+            "language IN ('python', 'csharp', 'typescript', 'javascript', 'java', 'go', "
+            "'rust', 'sql')",
+            name="language_valid",
+        ),
         CheckConstraint(
             "parse_status IN ('parsed', 'parsed_with_errors', 'failed')", name="parse_status_valid"
         ),
         CheckConstraint(
             "error_kind IS NULL OR error_kind IN "
-            "('syntax_error', 'tree_error', 'too_deep', 'parser_crash')",
+            "('syntax_error', 'tree_error', 'too_deep', 'parser_crash', 'dialect_unspecified', "
+            "'sql_too_large', 'sql_name_too_long')",
             name="error_kind_valid",
         ),
         CheckConstraint(
@@ -455,10 +597,15 @@ class Symbol(Base):
             ["symbols.id", "symbols.snapshot_index_id"],
             ondelete="CASCADE",
         ),
-        CheckConstraint("language IN ('python', 'csharp')", name="language_valid"),
         CheckConstraint(
-            "kind IN ('module', 'namespace', 'class', 'struct', 'record', 'interface', 'enum', "
-            "'enum_member', 'delegate', 'function', 'method', 'constructor', 'property', 'field')",
+            "language IN ('python', 'csharp', 'typescript', 'javascript', 'java', 'go', "
+            "'rust', 'sql')",
+            name="language_valid",
+        ),
+        CheckConstraint(
+            "kind IN ('module', 'namespace', 'class', 'struct', 'record', 'interface', "
+            "'type_alias', 'enum', 'enum_member', 'delegate', 'function', 'method', "
+            "'constructor', 'property', 'field', 'table', 'view', 'procedure')",
             name="kind_valid",
         ),
         CheckConstraint("start_line >= 1 AND end_line >= start_line", name="lines_valid"),
@@ -517,10 +664,15 @@ class ImportReference(Base):
             ["symbols.id", "symbols.snapshot_index_id"],
             ondelete="CASCADE",
         ),
-        CheckConstraint("language IN ('python', 'csharp')", name="language_valid"),
+        CheckConstraint(
+            "language IN ('python', 'csharp', 'typescript', 'javascript', 'java', 'go', "
+            "'rust', 'sql')",
+            name="language_valid",
+        ),
         CheckConstraint(
             "kind IN ('import', 'from_import', 'using', 'using_static', 'using_alias', "
-            "'global_using')",
+            "'global_using', 'script_import', 'java_import', 'java_static_import', "
+            "'go_import', 'rust_use')",
             name="kind_valid",
         ),
         CheckConstraint("line >= 1", name="line_valid"),

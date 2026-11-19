@@ -25,9 +25,15 @@ x-job-env: &job-env
   REPOSITORY_ROOTS: /mnt/repos
   MANAGED_REPOS_DIR: /mnt/managed
 
+x-postgres: &postgres
+  build:
+    context: ./docker
+    dockerfile: postgres.Dockerfile
+  image: repopilot-postgres:17-pgvector0.8.1
+
 services:
   db:
-    image: postgres:17
+    <<: *postgres
     environment:
       POSTGRES_USER: repopilot
       POSTGRES_PASSWORD: repopilot_dev
@@ -43,7 +49,7 @@ services:
       retries: 10
 
   db-test:
-    image: postgres:17
+    <<: *postgres
     environment:
       POSTGRES_USER: repopilot
       POSTGRES_PASSWORD: repopilot_test
@@ -127,6 +133,8 @@ services:
       CELERY_BROKER_URL: redis://redis:6379/0
       CELERY_QUEUE_NAME: repopilot.jobs
       CELERY_GLOBAL_KEYPREFIX: "repopilot:"
+      # 選用的 GPU runtime 的 socket；沒啟動 embedding-gpu 時工作選 GPU 會被 API 事先拒絕
+      EMBEDDING_GPU_SOCKET_PATH: /run/embed-gpu/runtime.sock
       # 主機路徑 ↔ 容器路徑；host 用正斜線（D:/repos），與下方 bind mount 的來源相同。
       # 預設的相對路徑不是合法的主機路徑，worker 會在啟動時明確拒絕（請在 .env 設定兩個 *_HOST_DIR）
       WORKER_PATH_MAPPINGS: '[{"host":"${WORKER_REPOSITORIES_HOST_DIR:-./.test-repos}","container":"/mnt/repos","mode":"ro"},{"host":"${WORKER_MANAGED_HOST_DIR:-./.test-managed}","container":"/mnt/managed","mode":"rw"}]'
@@ -142,6 +150,14 @@ services:
       - type: bind
         source: ${WORKER_MANAGED_HOST_DIR:-./.test-managed}
         target: /mnt/managed
+      - type: volume
+        source: embedding_socket
+        target: /run/embed
+        read_only: true
+      - type: volume
+        source: embedding_gpu_socket
+        target: /run/embed-gpu
+        read_only: true
     # Celery 的 warm shutdown 會等手上的任務；超過寬限期被 SIGKILL 時，租約過期後由復原掃描接手
     stop_grace_period: 60s
     healthcheck:
@@ -151,6 +167,186 @@ services:
       retries: 6
       start_period: 40s
     networks: [default, jobs]
+
+  embedding-init:
+    image: repopilot-worker:stage02-slice3
+    profiles: ["embedding"]
+    user: "0:0"
+    network_mode: none
+    read_only: true
+    cap_drop: [ALL]
+    cap_add: [CHOWN, FOWNER]
+    security_opt:
+      - no-new-privileges:true
+    entrypoint: ["sh", "-c", "chown 10001:10001 /run/embed && chmod 700 /run/embed"]
+    volumes:
+      - embedding_socket:/run/embed
+
+  embedding:
+    build:
+      context: .
+      dockerfile: docker/embedding.Dockerfile
+    image: repopilot-embedding:stage03
+    profiles: ["embedding"]
+    user: "10001:10001"
+    network_mode: none
+    read_only: true
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp
+    depends_on:
+      embedding-init: { condition: service_completed_successfully }
+    command:
+      - python
+      - -m
+      - repopilot.embedding.isolated_runtime
+      - --model
+      - /model/model.gguf
+      - --model-sha256
+      - ${EMBEDDING_MODEL_SHA256:-}
+      - --socket
+      - /run/embed/runtime.sock
+      # 只影響速度，不改變 embedding 設定識別（見 README「隔離 embedding 服務」）。
+      # 這個服務固定走 CPU；GPU 是另一個服務 embedding-gpu（profile embedding-gpu）
+      - --threads
+      - ${EMBEDDING_THREADS:-8}
+      - --gpu-layers
+      - "0"
+    volumes:
+      - type: bind
+        source: ${EMBEDDING_MODEL_HOST_PATH:-./.embedding-model-not-configured}
+        target: /model/model.gguf
+        read_only: true
+        bind:
+          create_host_path: false
+      - embedding_socket:/run/embed
+    healthcheck:
+      test: ["CMD", "python", "-m", "repopilot.embedding.socket_health"]
+      interval: 30s
+      timeout: 15s
+      retries: 5
+      start_period: 120s
+
+  # 選用：GPU runtime（需 NVIDIA container toolkit／Docker Desktop＋WSL2）。與 CPU 的 embedding 同一份
+  # 映像與模型、同樣無網路，只是另一個容器與私有 socket；沒有可用 GPU 時它會啟動失敗，不影響 CPU 服務。
+  # 啟動：docker compose --profile embedding --profile embedding-gpu up -d --wait embedding-gpu
+  embedding-gpu-init:
+    image: repopilot-worker:stage02-slice3
+    profiles: ["embedding-gpu"]
+    user: "0:0"
+    network_mode: none
+    read_only: true
+    cap_drop: [ALL]
+    cap_add: [CHOWN, FOWNER]
+    security_opt:
+      - no-new-privileges:true
+    entrypoint: ["sh", "-c", "chown 10001:10001 /run/embed && chmod 700 /run/embed"]
+    volumes:
+      - embedding_gpu_socket:/run/embed
+
+  embedding-gpu:
+    image: repopilot-embedding:stage03
+    profiles: ["embedding-gpu"]
+    user: "10001:10001"
+    network_mode: none
+    read_only: true
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp
+    depends_on:
+      embedding-gpu-init: { condition: service_completed_successfully }
+    command:
+      - python
+      - -m
+      - repopilot.embedding.isolated_runtime
+      - --model
+      - /model/model.gguf
+      - --model-sha256
+      - ${EMBEDDING_MODEL_SHA256:-}
+      - --socket
+      - /run/embed/runtime.sock
+      - --threads
+      - ${EMBEDDING_THREADS:-8}
+      - --gpu-layers
+      - "99"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    volumes:
+      - type: bind
+        source: ${EMBEDDING_MODEL_HOST_PATH:-./.embedding-model-not-configured}
+        target: /model/model.gguf
+        read_only: true
+        bind:
+          create_host_path: false
+      - embedding_gpu_socket:/run/embed
+    healthcheck:
+      test: ["CMD", "python", "-m", "repopilot.embedding.socket_health"]
+      interval: 30s
+      timeout: 15s
+      retries: 5
+      start_period: 120s
+
+  embedding-gateway:
+    image: repopilot-worker:stage02-slice3
+    profiles: ["embedding"]
+    user: "10001:10001"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp
+    command: ["python", "-m", "repopilot.embedding.gateway"]
+    depends_on:
+      embedding: { condition: service_healthy }
+    environment:
+      EMBEDDING_MODEL_SHA256: ${EMBEDDING_MODEL_SHA256:-}
+      EMBEDDING_RUNTIME_SHA256: ${EMBEDDING_RUNTIME_SHA256:-}
+      EMBEDDING_GATEWAY_TOKEN: ${EMBEDDING_GATEWAY_TOKEN:-}
+      EMBEDDING_SOCKET_PATH: /run/embed/runtime.sock
+      EMBEDDING_GPU_SOCKET_PATH: /run/embed-gpu/runtime.sock
+    volumes:
+      - type: volume
+        source: embedding_socket
+        target: /run/embed
+        read_only: true
+      - type: volume
+        source: embedding_gpu_socket
+        target: /run/embed-gpu
+        read_only: true
+    networks: [embedding-gateway]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8765/health',timeout=2).read()"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+  embedding-proxy:
+    image: repopilot-worker:stage02-slice3
+    profiles: ["embedding"]
+    user: "10001:10001"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp
+    command: ["python", "-m", "repopilot.embedding.gateway_proxy"]
+    depends_on:
+      embedding-gateway: { condition: service_healthy }
+    ports:
+      - "127.0.0.1:${EMBEDDING_GATEWAY_PORT:-18763}:8765"
+    networks: [embedding-ingress, embedding-gateway]
 
   # ---- 測試堆疊（profile jobs-test）----
   # 由 tests/integration/stack 的 pytest fixture 啟動與停止（會設定 WORKER_TEST_*_HOST_DIR 為專案內的
@@ -266,9 +462,14 @@ services:
 
 networks:
   jobs:
+  embedding-gateway:
+    internal: true
+  embedding-ingress:
   # 測試堆疊專用網路：db-test、redis-test、worker-test、dispatcher-test 只在這裡（R5）
   jobs-test:
 
 volumes:
   postgres_dev_data:
   redis_dev_data:
+  embedding_socket:
+  embedding_gpu_socket:

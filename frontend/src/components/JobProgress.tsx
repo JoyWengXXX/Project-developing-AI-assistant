@@ -1,4 +1,4 @@
-import { batchText, bytesReceivedText, isIndexing, jobPercent, progressNumbers, progressText } from '../jobFormat'
+import { batchText, bytesReceivedText, estimateText, isIndexing, jobPercent, progressNumbers, progressText } from '../jobFormat'
 import type { Job } from '../types'
 import { Elapsed } from './JobTimes'
 
@@ -18,7 +18,7 @@ export function JobProgressBar({ job }: { job: Job }) {
         aria-valuemin={0}
         aria-valuemax={total}
         aria-valuenow={Math.min(done, total)}
-        aria-valuetext={`${isIndexing(job) ? '已建立索引' : '已處理'} ${done} / ${total} 個檔案（${pct}%）`}
+        aria-valuetext={`${isIndexing(job) ? '已建立索引' : '已處理'} ${done} / ${total} 個${job.kind === 'snapshot_retrieval' ? '片段' : '檔案'}（${pct}%）`}
       >
         <div className="progress-fill" style={{ width: `${pct}%` }} />
       </div>
@@ -50,6 +50,7 @@ export function JobProgress({ job }: { job: Job }) {
   const running = job.status === 'running'
   const batch = batchText(job)
   const received = bytesReceivedText(p.bytes_received)
+  const estimate = estimateText(job)
 
   return (
     <div className="job-progress">
@@ -60,6 +61,13 @@ export function JobProgress({ job }: { job: Job }) {
         {p.indexed_files > 0 && <span>已建立索引 {p.indexed_files} 個檔案</span>}
         {p.parse_error_count > 0 && <span>解析錯誤 {p.parse_error_count}</span>}
         {received !== null && <span>{received}</span>}
+        {running && p.vectors_written !== null && p.vectors_written !== undefined && (
+          <span className="muted">已計算 {p.vectors_written.toLocaleString('zh-TW')} 個向量</span>
+        )}
+        {estimate !== null && <span className="muted">{estimate}</span>}
+        {running && p.chunks_reused !== null && p.chunks_reused !== undefined && p.chunks_reused > 0 && (
+          <span className="muted">重用既有向量 {p.chunks_reused.toLocaleString('zh-TW')} 個片段</span>
+        )}
         {running && job.phase_started_at !== null && (
           <span className="muted">
             此階段已進行 <Elapsed sinceIso={job.phase_started_at} />

@@ -32,6 +32,7 @@ from functools import lru_cache
 import tree_sitter_c_sharp
 from tree_sitter import Language, Node, Parser
 
+from repopilot.indexing.tree_utils import find_errors as _find_errors
 from repopilot.indexing.types import (
     MAX_NAME_CHARS,
     ExtractedImport,
@@ -58,7 +59,6 @@ _MEMBER_NODES: dict[str, SymbolKind] = {
 }
 # 這些節點本身不是宣告，但可能在裡面包著宣告（`#if` 分支）
 _PREPROCESSOR_NODES = frozenset({"preproc_if", "preproc_elif", "preproc_else"})
-MAX_ERROR_COUNT = 1000
 
 
 @lru_cache(maxsize=1)
@@ -91,26 +91,6 @@ def extract_csharp(
         walker.imports,
         walker.relations,
     )
-
-
-def _find_errors(root: Node) -> tuple[int, tuple[int, int] | None]:
-    """最上層錯誤節點數與第一個錯誤的 (行, 欄)；只進入 `has_error` 的子樹，不遞迴。"""
-    count = 0
-    first: tuple[int, int] | None = None
-    stack = [root]
-    while stack and count < MAX_ERROR_COUNT:
-        node = stack.pop()
-        if node.is_error or node.is_missing:
-            count += 1
-            point = (node.start_point.row + 1, node.start_point.column)
-            if first is None or point < first:
-                first = point
-        elif node.has_error:
-            stack.extend(node.children)
-    if count == 0:
-        # 根節點說有錯誤但找不到錯誤節點：仍算一個，位置用根節點
-        return 1, (root.start_point.row + 1, root.start_point.column)
-    return count, first
 
 
 def _text(node: Node | None) -> str:

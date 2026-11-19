@@ -5,7 +5,7 @@
 // 這裡不保存任何請求或回應內容（沒有呼叫紀錄、沒有快取、沒有 console 輸出）：
 // 請求 body 可能含 GitHub token，只在 fetch 呼叫的瞬間存在。
 
-import type { ErrorBody, ValidationDetail } from './types'
+import type { ErrorBody, ErrorDetails } from './types'
 
 // ---------- 錯誤 ----------
 
@@ -14,14 +14,14 @@ export class ApiError extends Error {
   status: number | null // 連線失敗時為 null
   code: string
   requestId: string | null
-  details: ValidationDetail[] | undefined
+  details: ErrorDetails | undefined
 
   constructor(
     status: number | null,
     code: string,
     message: string,
     requestId: string | null,
-    details?: ValidationDetail[],
+    details?: ErrorDetails,
   ) {
     super(message)
     this.status = status
@@ -121,8 +121,7 @@ export async function api<T>(
       e.code,
       e.message,
       e.request_id ?? requestId,
-      // snapshot_index_not_ready 的 details 是物件（{ index_status }），介面不需要它：只保留 422 的陣列形式
-      Array.isArray(e.details) ? e.details : undefined,
+      e.details,
     )
   }
   // 不是統一錯誤格式：常見於後端沒啟動時，Vite proxy 自己回 502／500 且沒有統一格式的 body

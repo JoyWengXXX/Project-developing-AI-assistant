@@ -1,7 +1,8 @@
 """worker 執行一個匯入 job（第二階段切片 3，規格 5.5，D40）。
 
 Celery 任務（`jobs/worker.py`）只是一層薄殼，把 `job_id` 交給這裡的 `run_job`；Celery 與
-Redis 都不在這個模組裡，所以流程可以用真實 PostgreSQL 直接測試。
+Redis 都不在這個模組裡（唯一例外：錯誤分類引用 Celery 的 soft time limit 例外），
+所以流程可以用真實 PostgreSQL 直接測試。
 
 流程（每一步失敗的去向見各處註解）：
 
@@ -39,6 +40,7 @@ from collections.abc import Callable
 from typing import Any, Literal
 from uuid import UUID
 
+from celery.exceptions import SoftTimeLimitExceeded
 from sqlalchemy import Engine
 from sqlalchemy.exc import InterfaceError, OperationalError
 from sqlalchemy.orm import Session, sessionmaker
@@ -73,10 +75,17 @@ from repopilot.github.client import GitHubClient
 from repopilot.indexing.profile import IndexProfile
 from repopilot.logging_config import APP_LOGGER_NAME
 from repopilot.request_context import request_id_var
-from repopilot.services import github_job_runner, job_poison, snapshot_indexing, snapshots
+from repopilot.services import (
+    github_job_runner,
+    job_poison,
+    retrieval_job_runner,
+    snapshot_indexing,
+    snapshots,
+)
 from repopilot.services import jobs as job_service
 from repopilot.services.import_profile import ImportProfile
 from repopilot.services.repositories import get_repository, repository_key, resolve_worker_path
+from repopilot.services.retrieval_build import SliceExhausted
 
 logger = logging.getLogger(f"{APP_LOGGER_NAME}.services.job_runner")
 
@@ -105,6 +114,11 @@ NETWORK_TIMEOUT_SUMMARY = (
 )
 # GitHub API 回 5xx（暫時性）；摘要固定，不含 GitHub 回應內容
 GITHUB_SERVER_ERROR_SUMMARY = "GitHub returned a server error; the job will be retried."
+# worker 的單一任務時限（Celery soft time limit）已到：永久性失敗，不自動重試；摘要固定
+TIME_LIMIT_SUMMARY = (
+    "The job reached the worker's task time limit before it finished. "
+    "WORKER_TASK_TIME_LIMIT_SECONDS sets that limit."
+)
 
 
 def apply_worker_timeouts(settings: Settings) -> Settings:
@@ -247,6 +261,10 @@ def _run_leased(
             _run_import(session, job, token, heartbeat, engine, settings, finished)
         elif job.kind == "snapshot_index":
             _run_index(session, job, token, heartbeat, engine, settings, finished)
+        elif job.kind == "snapshot_retrieval":
+            retrieval_job_runner.run_retrieval(
+                session, job, token, engine, settings, heartbeat.checkpoint, finished
+            )
         elif job.kind == "github_register":
             client = github_client or GitHubClient(
                 base_url=settings.github_api_base_url,
@@ -266,6 +284,13 @@ def _run_leased(
         # 視同忙碌，稍後再看
         session.rollback()
         job_service.defer_job(session, job.id, token)
+        return "deferred"
+    except SliceExhausted:
+        # 檢索索引的時間切片用完：已完成的片段都已寫入（下一次接手時續跑）。放回佇列、不消耗
+        # 重試額度；先讓出 worker，排在佇列中的其他工作可以先執行
+        session.rollback()
+        job_service.defer_job(session, job.id, token)
+        logger.info("retrieval_slice_deferred", extra={"job_id": job.id})
         return "deferred"
     except ImportCancelledError:
         session.rollback()
@@ -302,6 +327,8 @@ def classify_error(exc: BaseException) -> tuple[str, str]:
     token 或 Git stderr：領域例外的訊息本來就是固定文字，但 `GitCommandError` 的訊息夾帶
     stderr 片段，所以改用固定文字；Git 逾時另附 R1 的 `git gc` 提示。
     """
+    if isinstance(exc, SoftTimeLimitExceeded):
+        return "job_time_limit_exceeded", TIME_LIMIT_SUMMARY
     if isinstance(exc, GitHubCloneTimeoutError | GitHubFetchTimeoutError):
         return "git_timeout", NETWORK_TIMEOUT_SUMMARY
     if isinstance(exc, GitTimeoutError):

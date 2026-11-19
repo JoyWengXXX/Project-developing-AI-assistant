@@ -8,8 +8,11 @@ from fastapi.responses import JSONResponse
 from sqlalchemy.exc import OperationalError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+from repopilot.embedding.local_runtime import EmbeddingInputTooLongError, EmbeddingRuntimeError
 from repopilot.errors import (
     DatabaseUnavailableError,
+    EmbeddingDeviceUnavailableError,
+    EmbeddingNotConfiguredError,
     GitCommandError,
     GitHubApiError,
     GitHubCloneError,
@@ -37,6 +40,10 @@ from repopilot.errors import (
     RepositoryBusyError,
     RepositoryNotFoundError,
     RepositoryNotGitHubError,
+    RetrievalIndexNotReadyError,
+    RetrievalSnapshotNotCompletedError,
+    RetrievalSnapshotNotFoundError,
+    SearchScopeTooLargeError,
     SearchTimeoutError,
     SnapshotBusyError,
     SnapshotFileNotFoundError,
@@ -72,6 +79,10 @@ ERROR_STATUS: dict[type[RepoPilotError], int] = {
     GitTimeoutError: 504,
     # 設定問題（服務端缺金鑰）不是使用者輸入錯誤，故 503 而非 422
     TokenEncryptionNotConfiguredError: 503,
+    EmbeddingNotConfiguredError: 503,
+    EmbeddingDeviceUnavailableError: 503,
+    EmbeddingRuntimeError: 503,
+    EmbeddingInputTooLongError: 422,
     GitHubTokenInvalidError: 422,
     # 上游（GitHub）問題：連不上／非預期回應為 502，逾時為 504；GitHubTimeoutError 依 MRO 先於父類別
     GitHubUnreachableError: 502,
@@ -104,9 +115,12 @@ ERROR_STATUS: dict[type[RepoPilotError], int] = {
     ImportCancelledError: 409,
     # 結構索引（第二階段切片 6）：索引尚未就緒是「稍後再查」的衝突；符號不在該索引內是 404
     SnapshotIndexNotReadyError: 409,
+    RetrievalIndexNotReadyError: 409,
     SymbolNotFoundError: 404,
     # 搜尋（第二階段切片 8）：逾時是 504（同 Git 逾時），不是資料庫不可用的 503
     SearchTimeoutError: 504,
+    # 選取範圍太大：在掃描前拒絕，是輸入（選取的快照）的問題，不是伺服器逾時
+    SearchScopeTooLargeError: 422,
 }
 
 _HTTP_ERROR_CODES = {
@@ -149,6 +163,12 @@ def _handle_domain_error(_: Request, raw_exc: Exception) -> JSONResponse:
 
 
 def _details_of(exc: RepoPilotError) -> dict[str, Any] | None:
+    if isinstance(exc, RetrievalIndexNotReadyError):
+        return {"snapshot_id": exc.snapshot_id, "index_status": exc.index_status}
+    if isinstance(exc, RetrievalSnapshotNotFoundError | RetrievalSnapshotNotCompletedError):
+        return {"snapshot_id": exc.snapshot_id}
+    if isinstance(exc, SearchScopeTooLargeError):
+        return {"chunk_count": exc.chunk_count, "max_chunks": exc.max_chunks}
     if isinstance(exc, SnapshotIndexNotReadyError):
         return {"index_status": exc.index_status}
     return None

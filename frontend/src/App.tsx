@@ -5,6 +5,7 @@ import { GitHubRegistrations } from './components/GitHubRegistrations'
 import { JobsSummaryBar } from './components/JobsSummaryBar'
 import { RepoDetailHeader } from './components/RepoDetailHeader'
 import { RepoOverviewGrid } from './components/RepoOverviewGrid'
+import { RetrievalPanel } from './components/RetrievalPanel'
 import { StatusHeader } from './components/StatusHeader'
 import { VersionPanel } from './components/VersionPanel'
 import type { Repository } from './types'
@@ -83,15 +84,18 @@ export default function App() {
         </div>
 
         {repo === null ? (
-          <RepoOverviewGrid
-            list={list}
-            imports={imports}
-            jobs={jobs}
-            github={github}
-            onOpen={openRepo}
-            onRemoved={handleRepoRemoved}
-            focusTitle={returnedFromDetail}
-          />
+          <>
+            <RetrievalPanel repos={list.items ?? []} snapshotKey={snapshotRefreshKey} />
+            <RepoOverviewGrid
+              list={list}
+              imports={imports}
+              jobs={jobs}
+              github={github}
+              onOpen={openRepo}
+              onRemoved={handleRepoRemoved}
+              focusTitle={returnedFromDetail}
+            />
+          </>
         ) : (
           <>
             <RepoDetailHeader key={`header-${repo.id}`} repo={repo} onBack={backToOverview} />

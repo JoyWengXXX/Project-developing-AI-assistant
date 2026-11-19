@@ -263,7 +263,7 @@ export interface RepositoryOverview {
 
 // ---------- 背景工作（第二階段切片 2：/api/v1/jobs，對應 schemas.py 的 Job* 模型） ----------
 
-export type JobKind = 'snapshot_import' | 'snapshot_index' | 'github_register' | 'github_fetch'
+export type JobKind = 'snapshot_import' | 'snapshot_index' | 'github_register' | 'github_fetch' | 'snapshot_retrieval'
 export type JobStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled'
 // 列表篩選多一個 active（＝queued＋running）
 export type JobStatusFilter = JobStatus | 'active'
@@ -271,6 +271,7 @@ export type JobPhase =
   | 'pending'
   | 'importing'
   | 'indexing'
+  | 'embedding'
   | 'resolving'
   | 'cloning'
   | 'registering'
@@ -283,6 +284,10 @@ export interface JobProgress {
   indexed_files: number
   parse_error_count: number
   bytes_received: number | null // 暫存目錄大小（非百分比）
+  // 檢索索引工作（snapshot_retrieval）：此時 processed_files／total_files 是「片段」數；其他種類為 null／缺少
+  vectors_written?: number | null
+  estimated_remaining_seconds?: number | null // 估計值，資料不足時為 null
+  chunks_reused?: number | null // 本次執行以相同內容的既有向量複製完成的片段數
 }
 
 export interface JobError {
@@ -352,6 +357,47 @@ export interface JobSubmitResponse {
   reused: boolean
 }
 
+export type EmbeddingDevice = 'cpu' | 'gpu'
+
+export interface EmbeddingDeviceState {
+  configured: boolean
+  available: boolean
+}
+
+export type EmbeddingDevices = Record<EmbeddingDevice, EmbeddingDeviceState>
+
+export interface RetrievalIndex {
+  snapshot_id: number
+  repository_id: number
+  status: IndexStatus
+  index_id: number | null
+  profile_hash: string
+  chunk_count: number | null
+  segment_count: number | null
+  job: Job | null
+}
+
+export interface RetrievalSearchItem {
+  chunk_id: number
+  repository_id: number
+  snapshot_id: number
+  commit_sha: string
+  path: string
+  start_line: number
+  end_line: number
+  content: string
+  split_kind: 'structure' | 'paragraph' | 'text'
+  support_level: 'structure' | 'text'
+  keyword_score?: number
+  semantic_score?: number
+  hybrid_score?: number
+}
+
+export interface RetrievalSearchResponse {
+  mode: 'keyword' | 'semantic' | 'hybrid'
+  items: RetrievalSearchItem[]
+}
+
 // online：至少一個實例的心跳未過期；stale：有紀錄但都過期；absent：從來沒有紀錄
 export type ServiceStatus = 'online' | 'stale' | 'absent'
 
@@ -379,20 +425,21 @@ export interface ReadyResponse {
 }
 
 // 統一錯誤格式：{ "error": { code, message, request_id, details? } }
-// details 只有 422 validation_error 才有
+// 422 回傳欄位錯誤；索引或快照錯誤可附狀態及快照 ID。
 export interface ValidationDetail {
   loc: (string | number)[]
   msg: string
   type: string
 }
 
+export type ErrorDetails = ValidationDetail[] | { index_status?: string; snapshot_id?: number }
+
 export interface ErrorBody {
   error: {
     code: string
     message: string
     request_id: string | null
-    // 422 validation_error 是陣列；snapshot_index_not_ready 是 { index_status }
-    details?: ValidationDetail[] | { index_status: string }
+    details?: ErrorDetails
   }
 }
 
@@ -425,8 +472,9 @@ export interface IndexedFile {
   indexed_file_id: number
   file_id: number
   path: string
-  language: 'python' | 'csharp'
+  language: 'python' | 'csharp' | 'typescript' | 'javascript' | 'java' | 'go' | 'rust' | 'sql'
   parse_status: ParseStatus
+  error_kind: string | null
   error_count: number
   first_error: { line: number; column: number } | null // column 是 0-based UTF-8 位元組位移
   symbol_count: number
@@ -438,7 +486,7 @@ export type IndexedFileList = Page<IndexedFile>
 export interface SymbolSummary {
   symbol_id: number
   kind: string
-  language: 'python' | 'csharp'
+  language: 'python' | 'csharp' | 'typescript' | 'javascript' | 'java' | 'go' | 'rust' | 'sql'
   name: string
   qualified_name: string
   file_id: number
@@ -504,7 +552,7 @@ export interface FileMatch {
 export interface SymbolMatch {
   symbol_id: number
   kind: string
-  language: 'python' | 'csharp'
+  language: 'python' | 'csharp' | 'typescript' | 'javascript' | 'java' | 'go' | 'rust' | 'sql'
   name: string
   qualified_name: string
   file_id: number

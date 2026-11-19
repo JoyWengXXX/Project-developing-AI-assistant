@@ -255,7 +255,7 @@ export function ImportedVersions({
           )}
           {currentRowSnapshot !== null && currentRowSnapshot.status === 'completed' && (
             <details className="snapshot-detail-toggle" open={structureOpen} onToggle={(e) => setStructureOpen(e.currentTarget.open)}>
-              <summary>程式結構（Python 符號、部分解析的檔案）</summary>
+              <summary>程式結構（符號、部分解析的檔案）</summary>
               {structureOpen && <StructurePanel key={currentRowSnapshot.id} snapshotId={currentRowSnapshot.id} />}
             </details>
           )}

@@ -44,6 +44,44 @@ def test_defaults() -> None:
     assert settings.worker_task_time_limit_seconds == 3600
 
 
+def test_the_gpu_embedding_socket_is_optional_and_blank_means_none(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    assert _settings().embedding_gpu_socket_path is None
+    assert _settings(embedding_gpu_socket_path="").embedding_gpu_socket_path is None
+    monkeypatch.setenv("EMBEDDING_GPU_SOCKET_PATH", "/run/embed-gpu/runtime.sock")
+    assert str(_settings().embedding_gpu_socket_path).endswith("runtime.sock")
+
+
+def test_the_retrieval_time_slice_is_clamped_below_the_task_time_limit() -> None:
+    assert _settings().effective_retrieval_slice_seconds == 1200
+    # 單一任務時限扣掉 180 秒（軟性上限 60 秒＋緩衝）才是上限，不使設定組合無效
+    assert (
+        _settings(
+            worker_task_time_limit_seconds=1500, retrieval_time_slice_seconds=3000
+        ).effective_retrieval_slice_seconds
+        == 1320
+    )
+    assert (
+        _settings(
+            worker_task_time_limit_seconds=86_400, retrieval_time_slice_seconds=600
+        ).effective_retrieval_slice_seconds
+        == 600
+    )
+
+
+def test_the_retrieval_time_slice_never_becomes_zero_or_negative() -> None:
+    settings = _settings(
+        worker_task_time_limit_seconds=120,
+        worker_git_timeout_seconds=5,
+        worker_import_git_timeout_seconds=5,
+        github_clone_timeout_seconds=5,
+        managed_temp_orphan_seconds=60,
+    )
+
+    assert settings.effective_retrieval_slice_seconds == 0.001
+
+
 def test_the_broker_url_is_a_secret_and_never_shown_in_repr() -> None:
     settings = _settings(celery_broker_url="redis://:FAKE_PASSWORD_FOR_TEST@redis:6379/0")
 

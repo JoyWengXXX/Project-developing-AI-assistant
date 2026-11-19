@@ -85,6 +85,34 @@ body {
   font-size: 14px;
 }
 
+.retrieval-snapshots,
+.retrieval-indexes {
+  list-style: none;
+  padding: 0;
+}
+
+.retrieval-index-row {
+  border-bottom: 1px solid var(--row-border);
+  padding: 8px 0;
+}
+
+.retrieval-index-row button {
+  margin-left: 8px;
+}
+
+.retrieval-results {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 300px), 1fr));
+  gap: 12px;
+}
+
+.retrieval-content {
+  max-height: 16rem;
+  overflow: auto;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
 h1,
 h2,
 h3,

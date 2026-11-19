@@ -1,7 +1,7 @@
 from dataclasses import asdict
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, Query, Response, status
+from fastapi import APIRouter, Body, Depends, Query, Response, status
 from sqlalchemy.orm import Session
 
 from repopilot.api.index_responses import (
@@ -23,6 +23,8 @@ from repopilot.api.schemas import (
     LimitQuery,
     OffsetQuery,
     ParentIdQuery,
+    RetrievalIndexResponse,
+    RetrievalJobRequest,
     SnapshotDetailResponse,
     SnapshotFileDetail,
     SnapshotFileListResponse,
@@ -40,8 +42,9 @@ from repopilot.db.session import get_session
 from repopilot.request_context import request_id_var
 from repopilot.services import index_jobs as index_job_service
 from repopilot.services import index_queries as index_query_service
-from repopilot.services import snapshot_queries
+from repopilot.services import retrieval_jobs, snapshot_queries
 from repopilot.services import snapshot_removal as removal_service
+from repopilot.services.import_jobs import latest_job
 from repopilot.services.import_profile import ImportProfile
 
 router = APIRouter(prefix="/api/v1/snapshots", tags=["snapshots"])
@@ -143,6 +146,77 @@ def create_index_job(
         snapshot_id=submission.snapshot_id,
         repository_id=submission.repository_id,
         reused=submission.reused,
+    )
+
+
+@router.post(
+    "/{snapshot_id}/retrieval-jobs",
+    response_model=JobSubmitResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+    responses={
+        200: {"model": JobSubmitResponse, "description": "目前設定的檢索索引已完成"},
+        404: {"description": "快照不存在"},
+        409: {"description": "快照尚未完成"},
+        503: {"description": "embedding 模型或執行器的識別尚未設定，或選取的裝置不可用"},
+    },
+)
+def create_retrieval_job(
+    snapshot_id: SnapshotIdPath,
+    response: Response,
+    session: SessionDep,
+    settings: SettingsDep,
+    request: Annotated[RetrievalJobRequest | None, Body()] = None,
+) -> JobSubmitResponse:
+    submission = retrieval_jobs.submit_retrieval_job(
+        session,
+        snapshot_id,
+        settings,
+        request_id=request_id_var.get(),
+        device=request.device if request is not None else "cpu",
+    )
+    if submission.reused:
+        response.status_code = status.HTTP_200_OK
+    elif submission.job is not None:
+        response.headers["Location"] = f"/api/v1/jobs/{submission.job.id}"
+    return JobSubmitResponse(
+        job=to_job_response(submission.job) if submission.job is not None else None,
+        snapshot_id=submission.snapshot_id,
+        repository_id=submission.repository_id,
+        reused=submission.reused,
+    )
+
+
+@router.get(
+    "/{snapshot_id}/retrieval-index",
+    response_model=RetrievalIndexResponse,
+    responses={
+        404: {"description": "快照不存在"},
+        409: {"description": "快照尚未完成"},
+        503: {"description": "embedding 模型或執行器的識別尚未設定"},
+    },
+)
+def get_retrieval_index(
+    snapshot_id: SnapshotIdPath, session: SessionDep, settings: SettingsDep
+) -> RetrievalIndexResponse:
+    identity = retrieval_jobs.current_identity(session, snapshot_id, settings)
+    current = retrieval_jobs.current_index(session, identity)
+    latest = latest_job(session, identity.dedupe_key)
+    index, chunks = current if current is not None else (None, None)
+    return RetrievalIndexResponse(
+        snapshot_id=snapshot_id,
+        repository_id=identity.repository_id,
+        status=index.status if index is not None else "none",
+        index_id=index.id if index is not None else None,
+        profile_hash=identity.profile_hash,
+        chunk_count=(
+            chunks.chunk_count
+            if chunks is not None and index is not None and index.status == "completed"
+            else None
+        ),
+        segment_count=index.segment_count
+        if index is not None and index.status == "completed"
+        else None,
+        job=to_job_response(latest) if latest is not None else None,
     )
 
 

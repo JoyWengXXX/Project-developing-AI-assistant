@@ -48,6 +48,7 @@ def _list_item(question: QaQuestion) -> dict[str, object]:
         "provider": question.provider,
         "model": question.model,
         "error_code": question.error_code,
+        "attempts": question.attempts,
         "usage": QaUsageDetailResponse(
             input_tokens=question.input_tokens,
             output_tokens=question.output_tokens,

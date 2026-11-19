@@ -46,7 +46,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from repopilot.config import Settings
-from repopilot.db.models import Job, JobDispatch
+from repopilot.db.models import Job, JobDispatch, QaQuestion
 from repopilot.errors import (
     JobLeaseLostError,
     JobNotCancellableError,
@@ -773,6 +773,14 @@ def cancel_job(session: Session, job_id: int, *, now: datetime | None = None) ->
     try:
         if status == "queued":
             cancelled = finish_locked(session, job, "cancelled", now_expr)
+            if job.kind == "qa_question":
+                # 問答與 job 同一交易變為 cancelled；worker 還沒開始，所以沒有預留需要處理
+                session.execute(
+                    update(QaQuestion)
+                    .where(QaQuestion.job_id == job_id, QaQuestion.status == "queued")
+                    .values(status="cancelled", finished_at=now_expr)
+                    .execution_options(synchronize_session=False)
+                )
             session.commit()
             _log("job_cancelled", cancelled)
             return CancelResult(cancelled, "cancelled")

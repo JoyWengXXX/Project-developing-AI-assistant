@@ -924,6 +924,8 @@ class QaQuestionListItem(BaseModel):
     provider: str
     model: str
     error_code: str | None
+    # 實際呼叫供應商的次數（含重試）；usage／cost 是各次嘗試的累計
+    attempts: int
     usage: QaUsageDetailResponse
     cost: QaCostResponse
     job_id: int | None

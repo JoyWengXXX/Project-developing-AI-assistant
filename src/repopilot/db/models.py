@@ -896,6 +896,7 @@ class QaQuestion(Base):
         CheckConstraint("status <> 'failed' OR error_code IS NOT NULL", name="failed_has_error"),
         CheckConstraint("cardinality(snapshot_ids) >= 1", name="snapshot_ids_nonempty"),
         CheckConstraint("max_tokens >= 1", name="max_tokens_positive"),
+        CheckConstraint("attempts >= 0", name="attempts_nonnegative"),
         CheckConstraint(
             "(input_tokens IS NULL OR input_tokens >= 0)"
             " AND (output_tokens IS NULL OR output_tokens >= 0)"
@@ -918,6 +919,8 @@ class QaQuestion(Base):
     model: Mapped[str] = mapped_column(String(100))
     prompt_version: Mapped[str] = mapped_column(String(20))
     max_tokens: Mapped[int] = mapped_column(Integer)
+    # 實際呼叫供應商的次數（含重試）；`input_tokens`／`output_tokens`／`cost_usd` 是各次嘗試的累計
+    attempts: Mapped[int] = mapped_column(Integer, default=0, server_default=text("0"))
     reservation_id: Mapped[UUID | None] = mapped_column(Uuid)
     estimated_input_tokens: Mapped[int] = mapped_column(BigInteger)
     estimated_cost_usd: Mapped[Decimal] = mapped_column(Numeric(18, 8))

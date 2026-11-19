@@ -3,9 +3,19 @@
 訊息只含固定文字與狀態碼；不得放入 API key、問題、片段或供應商回應內容。
 """
 
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from repopilot.qa.provider import Usage
+
 
 class QAProviderError(Exception):
-    """所有供應商錯誤的基底；`code` 是穩定的機器可讀錯誤碼。"""
+    """所有供應商錯誤的基底；`code` 是穩定的機器可讀錯誤碼。
+
+    `retryable` 只表示「錯誤類別是暫時性的」；是否真的重試由 `qa.failures` 決定。
+    `retry_after_seconds` 是供應商 `retry-after` 標頭的秒數；`usage` 是錯誤發生時供應商仍回報的
+    用量（例如回應已完成但格式不可用），讓結算能照實計入。
+    """
 
     code = "provider_error"
     retryable = False
@@ -16,10 +26,14 @@ class QAProviderError(Exception):
         *,
         status_code: int | None = None,
         request_id: str | None = None,
+        retry_after_seconds: float | None = None,
+        usage: "Usage | None" = None,
     ) -> None:
         super().__init__(message)
         self.status_code = status_code
         self.request_id = request_id
+        self.retry_after_seconds = retry_after_seconds
+        self.usage = usage
 
 
 class UnsupportedModelError(QAProviderError):
@@ -57,6 +71,12 @@ class ProviderRequestTooLargeError(QAProviderError):
 
 class ProviderBadRequestError(QAProviderError):
     code = "provider_bad_request"
+
+
+class ProviderSpendLimitReachedError(QAProviderError):
+    """供應商端組織層的花費上限（400／429，`enforced_spend_limit_reached`）：不重試。"""
+
+    code = "provider_spend_limit_reached"
 
 
 class ProviderMalformedResponseError(QAProviderError):

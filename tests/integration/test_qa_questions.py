@@ -173,6 +173,7 @@ def env(
 ) -> Env:
     monkeypatch.setattr(retrieval_job_runner, "SocketEmbeddingClient", _FakeEmbedding)
     monkeypatch.setattr(qa_question_runner, "SocketEmbeddingClient", _FakeEmbedding)
+    monkeypatch.setattr(qa_question_runner, "sleep", lambda seconds: None)  # 重試退避不真的等待
     alpha = _make_repo(db_engine, "alpha", 1)
     beta = _make_repo(db_engine, "beta", 2)
     layout = [("alpha", alpha, 1), ("beta", beta, 1), ("alpha", alpha, 2)]
@@ -860,19 +861,22 @@ def test_qa_questions_provider_failures_close_the_reservation_and_keep_the_trace
     assert done["status"] == "failed" and done["answer_status"] is None
     assert done["error"]["code"] == code and done["statements"] == []
     assert len(done["context_chunks"]) == 3  # 追蹤記錄保留
+    # 暫時性錯誤（逾時、限流）依 #6 重試到上限，其餘只嘗試一次；每次嘗試各有一個預留
+    attempts = 3 if code in ("provider_timeout", "provider_rate_limited") else 1
+    assert done["attempts"] == attempts == env.provider.call_count
     events = _ledger(env.engine)
-    assert [e["event_type"] for e in events] == ["reserve", final_event]
+    assert [e["event_type"] for e in events] == ["reserve", final_event] * attempts
     _assert_no_open_reservations(env.engine)
-    assert events[1]["usage_unknown"] is unknown
+    finals = events[1::2]
+    assert all(e["usage_unknown"] is unknown for e in finals)
     assert done["usage"]["usage_unknown"] is unknown
+    assert done["usage"]["input_tokens"] == sum(e["input_tokens"] for e in finals)
+    assert done["usage"]["output_tokens"] == sum(e["output_tokens"] for e in finals)
     if final_event == "release":
         assert done["usage"]["input_tokens"] == 0 and Decimal(done["cost"]["actual_usd"]) == 0
-    else:
-        assert done["usage"]["input_tokens"] == events[1]["input_tokens"]
-        assert done["usage"]["output_tokens"] == events[1]["output_tokens"]
     job = env.client.get(f"/api/v1/jobs/{submitted['job']['id']}").json()
     assert job["status"] == "failed" and job["error"]["code"] == code
-    assert job["attempt"] == 1  # 這些都是永久性錯誤：不自動重試（重試矩陣是 #6）
+    assert job["attempt"] == 1  # 問答自己重試；job 層不會再重跑
 
 
 def test_qa_questions_unexpected_error_after_the_call_settles_conservatively(
@@ -1179,7 +1183,7 @@ def test_qa_questions_migration_downgrade_refuses_while_questions_exist(
     with pytest.raises(DBAPIError, match="Cannot downgrade"):
         command.downgrade(alembic_config(test_database_url), "0020")
 
-    assert _version(db_engine) == "0021" and _tables(db_engine) >= QA_TABLES
+    assert _version(db_engine) == "0022" and _tables(db_engine) >= QA_TABLES
     assert _count(db_engine, "qa_questions") == 1
 
 
@@ -1197,7 +1201,7 @@ def test_qa_questions_migration_downgrade_refuses_while_question_jobs_exist(
     with pytest.raises(DBAPIError, match="Cannot downgrade"):
         command.downgrade(alembic_config(test_database_url), "0020")
 
-    assert _version(db_engine) == "0021"
+    assert _version(db_engine) == "0022"
     assert _count(db_engine, "jobs") == 1
 
 

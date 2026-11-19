@@ -207,7 +207,7 @@ class QaQuestionNotFoundError(RepoPilotError):
 
 
 class QaQuestionActiveError(RepoPilotError):
-    """問答還在排隊或執行中，不能刪除（完整的取消流程由 #6 處理）。"""
+    """問答還在排隊或執行中，不能刪除；先取消（`POST /jobs/{id}/cancel`）或等它結束。"""
 
     code = "qa_question_active"
 

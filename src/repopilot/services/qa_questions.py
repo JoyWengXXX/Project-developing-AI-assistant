@@ -292,7 +292,7 @@ def list_questions(
 def delete_question(session: Session, question_id: int) -> None:
     """刪除單筆（陳述、引用、片段記錄一併刪除；帳本事件是用量事實，不刪）。
 
-    排隊或執行中拒絕（409）：worker 還會寫入它；取消後再刪是 #6 的範圍。
+    排隊或執行中拒絕（409）：worker 還會寫入它；先取消（已取消即為終態）再刪。
     """
     deleted = session.execute(
         delete(QaQuestion)

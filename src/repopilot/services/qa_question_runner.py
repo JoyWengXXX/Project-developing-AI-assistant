@@ -1,16 +1,21 @@
-"""背景工作：執行一個問答（第四階段 4-3a 成功路徑，加上最低限度的安全處理）。
+"""背景工作：執行一個問答（第四階段 4-3a 成功路徑；4-3b 失敗、重試與取消）。
 
 流程：重新驗證（設定與同意可能在排隊期間改變）→ 混合檢索 → 組上下文並保存片段清單 →
-預留額度 → 呼叫供應商 → 解析與引用驗證 → **同一交易**內結算帳本並保存答案與用量 → 完成 job。
+**嘗試迴圈**（預留額度 → 呼叫供應商）→ 解析與引用驗證 → **同一交易**內結算帳本、保存答案與用量並
+完成 job（`jobs.complete_job` 的 `before_publish`）。
 
 額度與供應商的順序保證：
-- 預留之前不會有供應商呼叫；`token_budget_exceeded` 時沒有呼叫、沒有帳本事件。
+- 每次嘗試之前：先檢查取消，再向帳本預留（重試也一樣，不以重試掩蓋額度不足）；預留之前不會有
+  供應商呼叫；`token_budget_exceeded` 時沒有呼叫、沒有新的帳本事件。
 - 預留 id 在預留**之前**就寫進問答記錄，崩潰後也找得到。
-- 任何例外都不會讓預留懸空：呼叫之前失敗 → `release`（全數釋放）；供應商明確拒絕（認證、限流、
-  請求錯誤…，沒有處理過請求）→ `release`；供應商可能已處理（逾時、5xx、格式錯誤、答案無法解析、
-  非預期例外）→ 以實際用量結算，沒有用量就沿用預留量並標記 `usage_unknown`。
-- 失敗時問答標為 `failed` 並保留已保存的片段清單與用量；完整的失敗與取消矩陣（重試、取消進行中的
-  呼叫）是 #6 的範圍。
+- 每個預留恰好結束一次：供應商明確拒絕（認證、限流、請求錯誤、花費上限…，沒有處理過請求）→
+  `release`；供應商可能已處理（逾時、5xx、格式錯誤、答案無法解析、非預期例外）→ 以實際用量結算，
+  沒有用量就沿用預留量並標記 `usage_unknown`。失敗的嘗試用量累計在問答上。
+- 只有暫時性錯誤（逾時、429、5xx／529，且不是供應商端花費上限）才重試，上限與退避見
+  `qa.failures`；退避期間以小間隔檢查取消，睡眠函式可注入（測試不真的等待）。
+- 取消：嘗試之間與退避期間檢查；已送出的呼叫結束後用量照實結算，之後不再呼叫。取消與完成的先後
+  由 job 列鎖決定：問答與 job 要嘛一起 `succeeded`，要嘛一起 `cancelled`（用量仍結算）。
+- 失敗時問答標為 `failed` 並保留已保存的片段清單與用量。
 
 日誌與錯誤訊息只含固定文字、id 與錯誤碼；不記錄問題、片段、回答，**也不記錄例外訊息或堆疊**
 （SQL 例外可能夾帶參數）。
@@ -54,7 +59,6 @@ from repopilot.errors import (
     QaReservationFinalizedError,
     QaReservationNotFoundError,
     RepoPilotError,
-    TokenBudgetExceededError,
 )
 from repopilot.logging_config import APP_LOGGER_NAME
 from repopilot.qa import usage_ledger
@@ -68,14 +72,21 @@ from repopilot.qa.context import (
     build_context,
 )
 from repopilot.qa.errors import (
-    AnswerParseError,
     ProviderAuthError,
     ProviderBadRequestError,
     ProviderPaymentRequiredError,
     ProviderRateLimitedError,
     ProviderRequestTooLargeError,
+    ProviderSpendLimitReachedError,
     QAProviderError,
     UnsupportedModelError,
+)
+from repopilot.qa.failures import (
+    MAX_ATTEMPTS,
+    SLEEP_SLICE_SECONDS,
+    ProviderOutcomeError,
+    describe_failure,
+    retry_delay_seconds,
 )
 from repopilot.qa.prompts import SYSTEM_PROMPT, answer_json_schema, build_user_message
 from repopilot.qa.provider import (
@@ -93,7 +104,7 @@ from repopilot.qa.question_rules import (
     estimate_request_input_tokens,
     retrieval_query,
 )
-from repopilot.qa.usage_ledger import ModelPrice, token_cost_usd
+from repopilot.qa.usage_ledger import ModelPrice, UsageLimits, token_cost_usd
 from repopilot.services import jobs, retrieval_search
 from repopilot.services import qa_settings as settings_service
 from repopilot.services.qa_questions import check_prerequisites
@@ -109,19 +120,12 @@ _NOT_CHARGED = (
     ProviderRateLimitedError,
     ProviderPaymentRequiredError,
     ProviderRequestTooLargeError,
+    ProviderSpendLimitReachedError,
     UnsupportedModelError,
 )
 
-_OUTCOME_CODES = {
-    GenerationOutcome.MAX_TOKENS: "provider_max_tokens",
-    GenerationOutcome.REFUSAL: "provider_refusal",
-    GenerationOutcome.CONTEXT_WINDOW_EXCEEDED: "provider_context_window_exceeded",
-}
-_OUTCOME_MESSAGES = {
-    GenerationOutcome.MAX_TOKENS: "The provider stopped at max_tokens; the answer is incomplete.",
-    GenerationOutcome.REFUSAL: "The provider refused to answer.",
-    GenerationOutcome.CONTEXT_WINDOW_EXCEEDED: "The request exceeded the model's context window.",
-}
+# 退避期間的睡眠；測試以 monkeypatch 取代（不真的等待）
+sleep: Callable[[float], None] = time.sleep
 
 
 def build_provider(api_key: str) -> QAProvider:
@@ -133,19 +137,25 @@ def build_provider(api_key: str) -> QAProvider:
 class _State:
     started: float = field(default_factory=time.monotonic)
     price: ModelPrice = field(default_factory=lambda: ModelPrice(Decimal(0), Decimal(0)))
+    # 以下是「目前這次嘗試」的預留與呼叫狀態；每次嘗試由 `begin_attempt` 重設
     reservation_id: UUID | None = None
     reserved: bool = False
     closed: bool = False
     call_started: bool = False
     response: GenerateResponse | None = None
 
+    def begin_attempt(self, reservation_id: UUID) -> None:
+        self.reservation_id = reservation_id
+        self.reserved = self.closed = self.call_started = False
+        self.response = None
 
-class _ProviderOutcomeError(Exception):
-    """供應商回了不是 COMPLETED 的結果（max_tokens、拒答、超出上下文）。"""
 
-    def __init__(self, outcome: GenerationOutcome) -> None:
-        super().__init__(outcome.value)
-        self.outcome = outcome
+@dataclass(frozen=True)
+class _Result:
+    """嘗試迴圈的成果：答案狀態，以及在 job 完成交易內保存問答的回呼。"""
+
+    answer_status: str
+    persist: Callable[[Session], None]
 
 
 def _now() -> datetime:
@@ -182,13 +192,14 @@ def run_question(
 
     state = _State()
     try:
-        answer_status = _execute(
+        result = _execute(
             session, job_id, token, settings, heartbeat_checkpoint, question_id, state
         )
+        _publish(session, job_id, token, question_id, state, result, finished)
     except JobLeaseLostError:
         raise  # 新的擁有者負責；這裡不寫任何結果（預留由重跑時的 _handle_not_queued 收尾）
     except ImportCancelledError:
-        _record_cancelled(session, question_id, state)
+        _record_cancelled(session, question_id, state, None)
         raise
     except Exception as exc:
         code, message = _describe(exc)
@@ -200,9 +211,35 @@ def run_question(
                 "error_type": type(exc).__name__,
             },
         )
+        if _cancel_pending(session, job_id, token):
+            # 失敗的同時使用者要求取消：job 會以 cancelled 結束（`fail_job` 的規則），問答跟著一致
+            _record_cancelled(session, question_id, state, exc)
+            raise ImportCancelledError("The job was cancelled.") from None
         _record_failure(session, question_id, state, code, message, exc)
         raise QaQuestionFailedError(code, message) from None
-    _complete_job(session, job_id, token, question_id, answer_status, finished)
+
+
+def _publish(
+    session: Session,
+    job_id: int,
+    token: UUID,
+    question_id: int,
+    state: _State,
+    result: _Result,
+    finished: dict[str, str],
+) -> None:
+    """保存答案、結算帳本與完成 job 在同一交易（列鎖內才檢查取消旗標）；取消勝出則一律不保存。"""
+    done = jobs.complete_job(
+        session,
+        job_id,
+        token,
+        result={"question_id": question_id, "answer_status": result.answer_status},
+        before_publish=result.persist,
+    )
+    finished["status"] = done.status
+    if done.status == "cancelled":
+        raise ImportCancelledError("The job was cancelled.")
+    state.closed = True
 
 
 def _complete_job(
@@ -213,14 +250,47 @@ def _complete_job(
     answer_status: str,
     finished: dict[str, str],
 ) -> None:
+    """job 重跑時問答已經成功：只完成 job（答案已保存、額度已結算）。"""
     done = jobs.complete_job(
         session, job_id, token, result={"question_id": question_id, "answer_status": answer_status}
     )
     finished["status"] = done.status
     if done.status == "cancelled":
-        # 答案已經保存、額度已結算：問答保持 succeeded（結果已經產生也已計費）
         logger.info("qa_job_cancelled_after_success", extra={"question_id": question_id})
         raise ImportCancelledError("The job was cancelled.")
+
+
+def _check_cancel(
+    session: Session, job_id: int, token: UUID, heartbeat_checkpoint: Callable[[], None]
+) -> None:
+    """檢查點：租約遺失或使用者要求取消就中止。直接讀資料庫旗標，不等心跳執行緒的下一輪。"""
+    heartbeat_checkpoint()
+    if jobs.read_cancel_requested(session, job_id, token):
+        raise ImportCancelledError("The job was cancelled.")
+
+
+def _cancel_pending(session: Session, job_id: int, token: UUID) -> bool:
+    try:
+        session.rollback()
+        return jobs.read_cancel_requested(session, job_id, token)
+    except Exception:
+        session.rollback()
+        return False
+
+
+def _sleep_unless_cancelled(
+    session: Session,
+    job_id: int,
+    token: UUID,
+    heartbeat_checkpoint: Callable[[], None],
+    seconds: float,
+) -> None:
+    remaining = seconds
+    while remaining > 1e-9:
+        step = min(SLEEP_SLICE_SECONDS, remaining)
+        sleep(step)
+        remaining -= step
+        _check_cancel(session, job_id, token, heartbeat_checkpoint)
 
 
 def _execute(
@@ -231,7 +301,7 @@ def _execute(
     heartbeat_checkpoint: Callable[[], None],
     question_id: int,
     state: _State,
-) -> str:
+) -> _Result:
     row = _load_question(session, question_id)
     question_text, snapshot_ids = row.question, list(row.snapshot_ids)
     model, max_tokens = row.model, row.max_tokens
@@ -251,32 +321,12 @@ def _execute(
 
     if not context.included:
         # 沒有任何可送出的證據：不花任何額度，直接回「證據不足」
-        _finish_without_call(session, question_id, state)
-        return "insufficient_evidence"
+        return _Result(
+            "insufficient_evidence", lambda s: _persist_without_call(s, question_id, state)
+        )
 
     user_message = build_user_message(question_text, context)
     estimated_input = estimate_request_input_tokens(user_message)
-    reservation_id = uuid4()
-    row = _load_question(session, question_id)
-    row.reservation_id = reservation_id
-    row.estimated_input_tokens = estimated_input
-    row.estimated_cost_usd = token_cost_usd(estimated_input, max_tokens, state.price)
-    session.commit()
-    state.reservation_id = reservation_id
-    usage_ledger.reserve(
-        session,
-        estimated_input_tokens=estimated_input,
-        max_tokens=max_tokens,
-        price=state.price,
-        limits=prerequisites.limits,
-        now=_now(),
-        tz=ZoneInfo(settings.qa_usage_timezone),
-        reservation_id=reservation_id,
-    )
-    state.reserved = True
-
-    jobs.update_progress(session, job_id, token, phase="generating")
-    heartbeat_checkpoint()
     request = GenerateRequest(
         model=model,
         system=SYSTEM_PROMPT,
@@ -287,15 +337,102 @@ def _execute(
         json_schema=answer_json_schema(),
         disable_thinking=True,
     )
-    provider = build_provider(api_key)
-    state.call_started = True
-    response = provider.generate(request)
+    provider: QAProvider | None = None
+    attempt = 0
+    while True:
+        _check_cancel(session, job_id, token, heartbeat_checkpoint)
+        if attempt > 0:
+            # 重試：設定、同意與額度上限都重新取得（退避期間可能改變）
+            prerequisites = check_prerequisites(session, settings, snapshot_ids)
+            state.price = prerequisites.price
+        _reserve(session, settings, question_id, state, estimated_input, prerequisites.limits)
+        attempt += 1
+        _count_attempt(session, question_id, attempt)
+
+        jobs.update_progress(session, job_id, token, phase="generating")
+        heartbeat_checkpoint()
+        provider = provider or build_provider(api_key)
+        state.call_started = True
+        try:
+            response = provider.generate(request)
+        except QAProviderError as error:
+            delay = retry_delay_seconds(error, attempt)
+            if delay is None or attempt >= MAX_ATTEMPTS:
+                raise
+            if not _close_attempt(session, question_id, state, error):
+                raise
+            logger.info(
+                "qa_question_retry",
+                extra={
+                    "question_id": question_id,
+                    "attempt": attempt,
+                    "error_code": error.code,
+                    "delay_seconds": delay,
+                },
+            )
+            _sleep_unless_cancelled(session, job_id, token, heartbeat_checkpoint, delay)
+            continue
+        break
     state.response = response
     if response.outcome is not GenerationOutcome.COMPLETED:
-        raise _ProviderOutcomeError(response.outcome)
+        raise ProviderOutcomeError(response.outcome)
     verified = verify_answer(parse_answer(response.text, answer_max_chars(max_tokens)), context)
-    _persist_success(session, question_id, state, response, verified, retrieval.repository_ids)
-    return verified.status
+    return _Result(
+        verified.status,
+        lambda s: _persist_success(
+            s, question_id, state, response, verified, retrieval.repository_ids
+        ),
+    )
+
+
+def _reserve(
+    session: Session,
+    settings: Settings,
+    question_id: int,
+    state: _State,
+    estimated_input: int,
+    limits: UsageLimits,
+) -> None:
+    row = _load_question(session, question_id)
+    reservation_id = uuid4()
+    row.reservation_id = reservation_id
+    row.estimated_input_tokens = estimated_input
+    row.estimated_cost_usd = token_cost_usd(estimated_input, row.max_tokens, state.price)
+    session.commit()
+    state.begin_attempt(reservation_id)
+    usage_ledger.reserve(
+        session,
+        estimated_input_tokens=estimated_input,
+        max_tokens=row.max_tokens,
+        price=state.price,
+        limits=limits,
+        now=_now(),
+        tz=ZoneInfo(settings.qa_usage_timezone),
+        reservation_id=reservation_id,
+    )
+    state.reserved = True
+
+
+def _count_attempt(session: Session, question_id: int, attempt: int) -> None:
+    _load_question(session, question_id).attempts = attempt
+    session.commit()
+
+
+def _close_attempt(
+    session: Session, question_id: int, state: _State, error: QAProviderError
+) -> bool:
+    """失敗但會重試的嘗試：結束它的預留並把用量累計到問答；預留沒結束成功就回 False（不重試）。"""
+    session.rollback()
+    closed = _close_reservation(session, state, error)
+    if not state.closed:
+        return False
+    row = session.get(QaQuestion, question_id, populate_existing=True)
+    if row is None:
+        return False
+    if closed is not None:
+        _apply_usage(row, closed.totals, closed.usage_unknown, error.request_id)
+    session.commit()
+    return True
 
 
 def _load_question(session: Session, question_id: int) -> QaQuestion:
@@ -393,7 +530,8 @@ def _save_context_chunks(session: Session, question_id: int, retrieval: _Retriev
     session.flush()
 
 
-def _finish_without_call(session: Session, question_id: int, state: _State) -> None:
+def _persist_without_call(session: Session, question_id: int, state: _State) -> None:
+    """沒有證據、沒有呼叫：在 job 完成交易內把問答標為成功（用量為 0）。"""
     row = session.get(QaQuestion, question_id)
     if row is None:
         raise QaQuestionNotFoundError("Question not found.")
@@ -404,7 +542,6 @@ def _finish_without_call(session: Session, question_id: int, state: _State) -> N
     row.estimated_input_tokens = 0
     row.estimated_cost_usd = Decimal(0)
     _stamp_finished(row, state, _now())
-    session.commit()
 
 
 def _stamp_finished(row: QaQuestion, state: _State, now: datetime) -> None:
@@ -424,7 +561,7 @@ def _persist_success(
     verified: VerifiedAnswer,
     repository_ids: dict[int, int],
 ) -> None:
-    """結算帳本、保存陳述與引用、更新問答：同一交易，要嘛全部成功、要嘛都不留。"""
+    """結算帳本、保存陳述與引用、更新問答；在 job 完成交易內執行（`complete_job` 負責提交）。"""
     now = _now()
     if state.reservation_id is None:
         raise RepoPilotError("The question has no reservation.")
@@ -482,33 +619,31 @@ def _persist_success(
                     resolved_end_line=resolved.end_line if resolved else None,
                 )
             )
-    session.commit()
-    state.closed = True
+    session.flush()
 
 
 def _apply_usage(
     row: QaQuestion, totals: usage_ledger.UsageTotals, unknown: bool, request_id: str | None
 ) -> None:
-    row.input_tokens = totals.input_tokens
-    row.output_tokens = totals.output_tokens
-    row.cost_usd = totals.cost_usd
-    row.usage_unknown = unknown
-    row.provider_request_id = None if request_id is None else request_id[:100]
+    """把一次嘗試的有效用量累計到問答（重試的用量也計入）。"""
+    row.input_tokens = (row.input_tokens or 0) + totals.input_tokens
+    row.output_tokens = (row.output_tokens or 0) + totals.output_tokens
+    row.cost_usd = (row.cost_usd or Decimal(0)) + totals.cost_usd
+    row.usage_unknown = bool(row.usage_unknown) or unknown
+    if request_id is not None:
+        row.provider_request_id = request_id[:100]
 
 
-# --- 失敗與取消（最低限度的安全處理；完整矩陣見 #6） ---
+# --- 失敗與取消 ---
 
 
 def _describe(exc: BaseException) -> tuple[str, str]:
     """例外 → (穩定錯誤碼, 固定的安全訊息)；不使用例外訊息中可能含內容的部分。"""
     if isinstance(exc, SoftTimeLimitExceeded):
         return "job_time_limit_exceeded", "The job reached the worker's task time limit."
-    if isinstance(exc, _ProviderOutcomeError):
-        return _OUTCOME_CODES[exc.outcome], _OUTCOME_MESSAGES[exc.outcome]
-    if isinstance(exc, TokenBudgetExceededError):
-        return exc.code, f"The token budget does not allow this request ({exc.reason})."
-    if isinstance(exc, QAProviderError | AnswerParseError | RepoPilotError):
-        return exc.code, str(exc)
+    described = describe_failure(exc)
+    if described is not None:
+        return described
     if isinstance(exc, OperationalError | InterfaceError):
         return "database_unavailable", "The database was unavailable."
     return "internal_error", f"Unexpected {type(exc).__name__}."
@@ -523,18 +658,28 @@ class _Closed:
 def _close_reservation(
     session: Session, state: _State, exc: BaseException | None
 ) -> _Closed | None:
-    """結束仍開著的預留；回傳要記在問答上的有效用量（沒有預留或已結束則為 None）。"""
+    """結束仍開著的預留；回傳要記在問答上的有效用量（沒有預留或已結束則為 None）。
+
+    有回報的用量（回應或附在例外上的）照實結算；呼叫可能已被處理卻沒有用量 → 沿用預留量並標記；
+    供應商明確拒絕、或根本還沒呼叫 → 全數釋放。
+    """
     if state.reservation_id is None or not state.reserved or state.closed:
         return None
     now = _now()
+    reported = (
+        state.response.usage
+        if state.response is not None
+        else exc.usage
+        if isinstance(exc, QAProviderError)
+        else None
+    )
     try:
-        if state.response is not None:
-            usage = state.response.usage
+        if reported is not None:
             closed = _Closed(
                 usage_ledger.settle(
-                    session, state.reservation_id, usage, price=state.price, now=now
+                    session, state.reservation_id, reported, price=state.price, now=now
                 ),
-                not usage.known,
+                not reported.known,
             )
         elif state.call_started and not isinstance(exc, _NOT_CHARGED):
             closed = _Closed(
@@ -584,8 +729,7 @@ def _record_failure(
         row.error_code = code
         row.error_summary = message[:500]
         if closed is not None:
-            request_id = None if state.response is None else state.response.request_id
-            _apply_usage(row, closed.totals, closed.usage_unknown, request_id)
+            _apply_usage(row, closed.totals, closed.usage_unknown, _request_id(state, exc))
         if not state.reserved:
             row.reservation_id = None
         _stamp_finished(row, state, _now())
@@ -598,16 +742,25 @@ def _record_failure(
         )
 
 
-def _record_cancelled(session: Session, question_id: int, state: _State) -> None:
+def _request_id(state: _State, exc: BaseException | None) -> str | None:
+    if state.response is not None:
+        return state.response.request_id
+    return exc.request_id if isinstance(exc, QAProviderError) else None
+
+
+def _record_cancelled(
+    session: Session, question_id: int, state: _State, exc: BaseException | None
+) -> None:
+    """取消：問答標為 `cancelled`（不設錯誤碼）；已發生的用量照實計入，未用到的預留釋放。"""
     try:
         session.rollback()
-        closed = _close_reservation(session, state, None)
+        closed = _close_reservation(session, state, exc)
         row = session.get(QaQuestion, question_id, populate_existing=True)
         if row is None:
             return
         row.status = "cancelled"
         if closed is not None:
-            _apply_usage(row, closed.totals, closed.usage_unknown, None)
+            _apply_usage(row, closed.totals, closed.usage_unknown, _request_id(state, exc))
         _stamp_finished(row, state, _now())
         session.commit()
     except Exception as record_error:

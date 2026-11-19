@@ -4,7 +4,9 @@ SDK 自動重試一律關閉（重試與額度重新核對由我們自己控制�
 日誌與例外只含模型、狀態碼、request id 與 token 數，不含 API key、問題或片段內容。
 """
 
+import json
 import logging
+import math
 from typing import Any
 
 import anthropic
@@ -16,6 +18,7 @@ from repopilot.qa.errors import (
     ProviderPaymentRequiredError,
     ProviderRateLimitedError,
     ProviderRequestTooLargeError,
+    ProviderSpendLimitReachedError,
     ProviderTimeoutError,
     ProviderUnavailableError,
     QAProviderError,
@@ -32,6 +35,7 @@ from repopilot.qa.provider import (
 logger = logging.getLogger(__name__)
 
 _THINKING_DISABLE_MAX_EFFORT = {"low", "medium", "high"}
+_SPEND_LIMIT_SIGNAL = "enforced_spend_limit_reached"
 
 _STOP_REASON_OUTCOMES = {
     "end_turn": GenerationOutcome.COMPLETED,
@@ -80,6 +84,28 @@ def parse_usage(raw: Any) -> Usage:
     )
 
 
+def _retry_after_seconds(exc: anthropic.APIStatusError) -> float | None:
+    """`retry-after` 標頭的秒數；缺少、非數字（HTTP 日期）或為負則 None。"""
+    raw = exc.response.headers.get("retry-after")
+    if raw is None:
+        return None
+    try:
+        seconds = float(raw)
+    except ValueError:
+        return None
+    return seconds if math.isfinite(seconds) and seconds >= 0 else None
+
+
+def _is_spend_limit(exc: anthropic.APIStatusError) -> bool:
+    """組織層花費上限的訊號（400／429）；只比對固定識別字串，內容不會被保存或記錄。
+
+    回應本文的確切形狀未實測（未驗證）：同時檢查解析後的本文與例外訊息。
+    """
+    if exc.status_code not in (400, 429):
+        return False
+    return _SPEND_LIMIT_SIGNAL in f"{exc.message} {json.dumps(exc.body, default=str)}"
+
+
 def classify_error(exc: Exception) -> QAProviderError:
     """把 SDK 例外轉成領域例外；402、413、529 沒有專屬 SDK 類別，依 `status_code` 分派。"""
     if isinstance(exc, anthropic.APITimeoutError):
@@ -89,8 +115,16 @@ def classify_error(exc: Exception) -> QAProviderError:
     if isinstance(exc, anthropic.APIStatusError):
         status = exc.status_code
         request_id = exc.request_id
+        retry_after = _retry_after_seconds(exc)
         if status == 408:
             return ProviderTimeoutError(
+                f"provider returned {status}",
+                status_code=status,
+                request_id=request_id,
+                retry_after_seconds=retry_after,
+            )
+        if _is_spend_limit(exc):
+            return ProviderSpendLimitReachedError(
                 f"provider returned {status}", status_code=status, request_id=request_id
             )
         if status in (401, 403):
@@ -105,7 +139,12 @@ def classify_error(exc: Exception) -> QAProviderError:
             error_type = ProviderUnavailableError
         else:
             error_type = ProviderBadRequestError
-        return error_type(f"provider returned {status}", status_code=status, request_id=request_id)
+        return error_type(
+            f"provider returned {status}",
+            status_code=status,
+            request_id=request_id,
+            retry_after_seconds=retry_after,
+        )
     return QAProviderError("provider call failed")
 
 
@@ -131,7 +170,11 @@ class AnthropicProvider:
             message = self._client.messages.create(**params, timeout=request.timeout_seconds)
         except Exception as exc:
             raise self._translate(exc) from None
-        response = self._to_response(request, message)
+        try:
+            response = self._to_response(request, message)
+        except ProviderMalformedResponseError as error:
+            error.usage = parse_usage(getattr(message, "usage", None))  # 回應已計費，用量照實結算
+            raise
         logger.info(
             "qa provider call: model=%s outcome=%s input_tokens=%d output_tokens=%d",
             response.model,

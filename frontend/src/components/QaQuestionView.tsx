@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { api } from '../api'
 import { JOB_PHASE_LABEL, queueWarning } from '../jobFormat'
 import { QA_STATUS_BADGE, QA_STATUS_LABEL, isQaActive } from '../qaQuestion'
-import type { Job, JobsStatus, QaEstimate, QaQuestion, QaQuestionStatus, QaQuestionSubmitResponse } from '../types'
+import type { Job, JobsStatus, QaEstimate, QaQuestion, QaQuestionCreate, QaQuestionStatus, QaQuestionSubmitResponse } from '../types'
 import { ApiHint } from '../ui'
 import { useAction } from '../useAction'
 import { usePolling, type PollState } from '../usePolling'
@@ -33,9 +33,14 @@ function ResubmitButton({ question, onResubmitted }: { question: QaQuestion; onR
   const action = useAction()
   async function resubmit() {
     await action.run(async () => {
-      const res = await api<QaQuestionSubmitResponse>('POST', '/api/v1/qa/questions', {
-        body: { snapshot_ids: question.snapshot_ids, question: question.question, max_tokens: question.max_tokens },
-      })
+      const body: QaQuestionCreate = {
+        snapshot_ids: question.snapshot_ids,
+        question: question.question,
+        max_tokens: question.max_tokens,
+        ...(question.file_kinds !== null && { file_kinds: question.file_kinds }),
+        ...(question.path_prefix !== null && { path_prefix: question.path_prefix }),
+      }
+      const res = await api<QaQuestionSubmitResponse>('POST', '/api/v1/qa/questions', { body })
       onResubmitted(res.data)
     })
   }

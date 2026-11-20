@@ -12,6 +12,8 @@ import { useSnapshotList } from '../useSnapshotList'
 import { isFinished } from '../versionJobs'
 import { JobProgress } from './JobProgress'
 import { PollErrorBox } from './PollErrorBox'
+import { DEFAULT_SCOPE, scopeBody, type SearchScope } from '../searchScope'
+import { SearchScopePicker } from './SearchScopePicker'
 
 type Mode = RetrievalSearchResponse['mode']
 type Selection = { repo: Repository; snapshot: SnapshotItem }
@@ -208,6 +210,8 @@ export function RetrievalPanel({ repos, snapshotKey }: { repos: Repository[]; sn
   const [results, setResults] = useState<Record<Mode, SearchResult> | null>(null)
   const [busy, setBusy] = useState(false)
   const [device, setDevice] = useState<EmbeddingDevice>('cpu')
+  const [scope, setScope] = useState<SearchScope>(DEFAULT_SCOPE)
+  const scopeFields = scopeBody(scope)
   const devices = usePolling<EmbeddingDevices>('/api/v1/retrieval/devices', {
     enabled: open,
     intervalMs: () => 10_000,
@@ -236,7 +240,7 @@ export function RetrievalPanel({ repos, snapshotKey }: { repos: Repository[]; sn
   }
 
   async function compare() {
-    if (controller.current !== null || selected.length === 0 || !query.trim()) return
+    if (controller.current !== null || selected.length === 0 || !query.trim() || scopeFields === null) return
     clearSearch()
     const request = new AbortController()
     controller.current = request
@@ -244,7 +248,7 @@ export function RetrievalPanel({ repos, snapshotKey }: { repos: Repository[]; sn
     async function run(mode: Mode): Promise<SearchResult> {
       try {
         const response = await api<RetrievalSearchResponse>('POST', '/api/v1/retrieval/search', {
-          body: { snapshot_ids: selected.map((item) => item.snapshot.id), query, mode, limit: 10 },
+          body: { snapshot_ids: selected.map((item) => item.snapshot.id), query, mode, limit: 10, ...scopeFields },
           signal: request.signal,
         })
         return { data: response.data, error: null }
@@ -297,6 +301,7 @@ export function RetrievalPanel({ repos, snapshotKey }: { repos: Repository[]; sn
               ))}
             </ul>
             <form onSubmit={(event) => { event.preventDefault(); void compare() }}>
+              <SearchScopePicker scope={scope} onChange={(next) => { clearSearch(); setScope(next) }} />
               <label>
                 查詢{' '}
                 <input
@@ -306,7 +311,7 @@ export function RetrievalPanel({ repos, snapshotKey }: { repos: Repository[]; sn
                   onChange={(event) => { clearSearch(); setQuery(event.target.value) }}
                 />
               </label>{' '}
-              <button type="submit" disabled={busy || selected.length === 0 || !query.trim()}>
+              <button type="submit" disabled={busy || selected.length === 0 || !query.trim() || scopeFields === null}>
                 {busy ? '搜尋中…' : '比較三種搜尋'}
               </button>
             </form>

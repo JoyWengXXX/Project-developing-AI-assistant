@@ -4,6 +4,7 @@ import { durationText, QA_STATUS_BADGE, QA_STATUS_LABEL, skipLabel } from '../qa
 import type { QaQuestion } from '../types'
 import type { SnapshotPresence } from '../useSnapshotPresence'
 import { QaSourceRef } from './QaSourceRef'
+import { FILE_KIND_LABEL } from '../searchScope'
 
 type PresenceMap = ReadonlyMap<number, SnapshotPresence> | null
 
@@ -40,6 +41,7 @@ export function QaQuestionMeta({ question }: { question: QaQuestion }) {
       <dd>
         輸入 {tokenText(usage.input_tokens)}・輸出 {tokenText(usage.output_tokens)}
         {usage.usage_unknown && '（供應商沒有回報用量，帳本沿用預留量）'}
+        {cost.exceeded_reservation && '（超出預留：實際用量大於預留，已以實際用量計入今日額度）'}
       </dd>
       <dt>供應商呼叫次數</dt>
       <dd>{question.attempts}（含重試；token 與費用是各次的累計）</dd>
@@ -51,6 +53,15 @@ export function QaQuestionMeta({ question }: { question: QaQuestion }) {
       </dd>
       <dt>選取的快照</dt>
       <dd>{question.snapshot_ids.map((id) => `#${id}`).join('、')}</dd>
+      <dt>搜尋範圍</dt>
+      <dd>
+        {question.file_kinds === null ? '所有種類' : question.file_kinds.map((kind) => FILE_KIND_LABEL[kind]).join('、')}
+        {question.path_prefix !== null && (
+          <>
+            ・路徑前綴 <code className="wrap">{question.path_prefix}</code>
+          </>
+        )}
+      </dd>
       <dt>送出的片段</dt>
       <dd>
         {sent} 個已送出{question.context_chunks.length - sent > 0 && `・${question.context_chunks.length - sent} 個檢索到但未送出`}

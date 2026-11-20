@@ -494,11 +494,16 @@ export type QaAnswerStatus = 'answered' | 'insufficient_evidence'
 export type QaStatementKind = 'fact' | 'inference' | 'open_question'
 export type QaContextSkipReason = 'count_cap' | 'budget_exhausted' | 'empty_text'
 
-// POST /qa/questions 的 body。刻意沒有 file_kinds／path_prefix：本分支的後端會對這兩個欄位回 422。
+// 依路徑判斷的檔案種類（後端 indexing/file_kinds.py）；data 與 build 不進檢索索引
+export type FileKind = 'source' | 'test' | 'docs' | 'data' | 'build'
+
+// POST /qa/questions 的 body；file_kinds／path_prefix 省略表示不篩選
 export interface QaQuestionCreate {
   snapshot_ids: number[]
   question: string
   max_tokens?: number
+  file_kinds?: FileKind[]
+  path_prefix?: string
 }
 
 export interface QaEstimate {
@@ -585,6 +590,7 @@ export interface QaCost {
   estimated_usd: string
   estimated_input_tokens: number
   actual_usd: string | null
+  exceeded_reservation: boolean // true＝實際用量超過預留，仍以實際用量計入
 }
 
 export interface QaQuestionListItem {
@@ -593,6 +599,8 @@ export interface QaQuestionListItem {
   answer_status: QaAnswerStatus | null
   question: string
   snapshot_ids: number[]
+  file_kinds: FileKind[] | null // 當次檢索範圍；null 表示沒有篩選
+  path_prefix: string | null
   provider: string
   model: string
   error_code: string | null

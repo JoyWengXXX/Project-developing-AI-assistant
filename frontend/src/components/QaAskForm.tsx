@@ -1,13 +1,16 @@
+import { useState } from 'react'
 import { api } from '../api'
 import { repoTitle } from '../format'
 import { formatTokens, formatUsd } from '../qaFormat'
-import type { QaQuestionSubmitResponse, QaSettings, QaUsage } from '../types'
+import type { QaQuestionCreate, QaQuestionSubmitResponse, QaSettings, QaUsage } from '../types'
 import { ErrorBox } from '../ui'
 import { useAction } from '../useAction'
 import type { QaConsents } from '../useQaConsents'
 import { useLoad } from '../useLoad'
 import { QaErrorBox } from './QaErrorBox'
 import type { QaSelection } from './QaSnapshotPicker'
+import { DEFAULT_SCOPE, scopeBody, type SearchScope } from '../searchScope'
+import { SearchScopePicker } from './SearchScopePicker'
 
 /** 問題長度上限（後端 MAX_QUESTION_CHARS；以字元計，不是位元組）。超過時後端回 422，這裡只是讓明顯的錯誤不必送出。 */
 export const QA_QUESTION_MAX_CHARS = 2000
@@ -106,19 +109,20 @@ function EstimatePreview({ settings }: { settings: QaSettings | null }) {
 export function QaAskForm(props: Props) {
   const { settings, selected, consents, text, onTextChange } = props
   const action = useAction()
+  const [scope, setScope] = useState<SearchScope>(DEFAULT_SCOPE)
   const chars = [...text].length
-  const reason = blockReason(props, chars)
+  const scopeFields = scopeBody(scope)
+  const reason = blockReason(props, chars) ?? (scopeFields === null ? '搜尋範圍至少要勾選一種檔案。' : null)
   const consentKnown = consents.byRepo !== null
   const unconsented = consentKnown
     ? [...new Map(selected.map((item) => [item.repo.id, item.repo])).values()].filter((repo) => !consents.byRepo?.has(repo.id))
     : []
 
   async function submit() {
-    if (reason !== null) return
+    if (reason !== null || scopeFields === null) return
     await action.run(async () => {
-      const res = await api<QaQuestionSubmitResponse>('POST', '/api/v1/qa/questions', {
-        body: { snapshot_ids: selected.map((item) => item.snapshot.id), question: text },
-      })
+      const body: QaQuestionCreate = { snapshot_ids: selected.map((item) => item.snapshot.id), question: text, ...scopeFields }
+      const res = await api<QaQuestionSubmitResponse>('POST', '/api/v1/qa/questions', { body })
       onTextChange('')
       props.onSubmitted(res.data)
     })
@@ -165,6 +169,7 @@ export function QaAskForm(props: Props) {
       <p id="qa-question-count" className={chars > QA_QUESTION_MAX_CHARS ? 'field-error' : 'muted'}>
         {chars.toLocaleString('zh-TW')} / {QA_QUESTION_MAX_CHARS.toLocaleString('zh-TW')} 字
       </p>
+      <SearchScopePicker scope={scope} onChange={setScope} />
 
       <div className="two-col">
         <EstimatePreview settings={settings} />

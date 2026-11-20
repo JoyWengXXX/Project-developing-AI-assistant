@@ -108,11 +108,34 @@ def test_create_request_accepts_a_minimal_body_and_strips_the_question() -> None
         {"snapshot_ids": [1], "question": "q", "max_tokens": 0},
         {"snapshot_ids": [1], "question": "q", "max_tokens": 16385},
         {"snapshot_ids": [1], "question": "q", "max_tokens": "10"},
-        # 這一版沒有檢索篩選：不接受（不能默默忽略）
-        {"snapshot_ids": [1], "question": "q", "file_kinds": ["source"]},
-        {"snapshot_ids": [1], "question": "q", "path_prefix": "src/"},
     ],
 )
 def test_create_request_rejects_invalid_bodies(body: dict[str, object]) -> None:
     with pytest.raises(ValidationError):
         QaQuestionCreate.model_validate(body)
+
+
+def test_create_request_accepts_retrieval_filters() -> None:
+    # file_kinds 被接受
+    body1 = QaQuestionCreate.model_validate(
+        {"snapshot_ids": [1], "question": "q", "file_kinds": ["source", "test"]}
+    )
+    assert body1.file_kinds == ["source", "test"]
+
+    # path_prefix 被接受
+    body2 = QaQuestionCreate.model_validate(
+        {"snapshot_ids": [1], "question": "q", "path_prefix": "src/"}
+    )
+    assert body2.path_prefix == "src/"
+
+    # 兩個都可以組合
+    body3 = QaQuestionCreate.model_validate(
+        {
+            "snapshot_ids": [1],
+            "question": "q",
+            "file_kinds": ["source"],
+            "path_prefix": "src/",
+        }
+    )
+    assert body3.file_kinds == ["source"]
+    assert body3.path_prefix == "src/"

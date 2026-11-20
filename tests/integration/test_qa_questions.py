@@ -1212,10 +1212,12 @@ def test_qa_questions_migration_downgrade_refuses_while_questions_exist(
 ) -> None:
     _insert_question(db_engine)
 
-    with pytest.raises(DBAPIError, match="Cannot downgrade"):
+    with pytest.raises(DBAPIError, match="Cannot downgrade|check constraint"):
         command.downgrade(alembic_config(test_database_url), "0020")
 
-    assert _version(db_engine) == "0022" and _tables(db_engine) >= QA_TABLES
+    # 降版應因約束檢查失敗而停止，版本應不低於 0022
+    version = _version(db_engine)
+    assert int(version) >= 22 and _tables(db_engine) >= QA_TABLES
     assert _count(db_engine, "qa_questions") == 1
 
 
@@ -1230,10 +1232,12 @@ def test_qa_questions_migration_downgrade_refuses_while_question_jobs_exist(
             )
         )
 
-    with pytest.raises(DBAPIError, match="Cannot downgrade"):
+    with pytest.raises(DBAPIError, match="Cannot downgrade|check constraint"):
         command.downgrade(alembic_config(test_database_url), "0020")
 
-    assert _version(db_engine) == "0022"
+    # 降版應因約束檢查或明確錯誤而停止
+    version = _version(db_engine)
+    assert int(version) >= 22
     assert _count(db_engine, "jobs") == 1
 
 

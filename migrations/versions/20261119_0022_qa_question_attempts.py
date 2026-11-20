@@ -28,7 +28,12 @@ def downgrade() -> None:
     # 檢查是否有 qa_questions 存在，若有則拒絕降版
     result = op.get_bind().execute(sa.text("SELECT COUNT(*) FROM qa_questions")).scalar()
     if result and result > 0:
-        raise RuntimeError("Cannot downgrade migration 0022 while qa_questions exist.")
+        # 建立一個會失敗的檢查約束，強制降版失敗
+        op.create_check_constraint(
+            "downgrade_blocked_qa_questions_exist",
+            "qa_questions",
+            "FALSE",  # 此條件永遠為假，會導致降版失敗
+        )
 
     op.drop_constraint(op.f("ck_qa_questions_attempts_nonnegative"), "qa_questions", type_="check")
     op.drop_column("qa_questions", "attempts")

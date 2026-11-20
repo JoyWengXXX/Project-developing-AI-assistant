@@ -217,11 +217,12 @@ def release(
     *,
     price: ModelPrice,
     now: datetime,
+    commit: bool = True,
 ) -> UsageTotals:
     """取消或失敗：已產生的用量照實計入，沒用到的預留釋放。
 
     `used_so_far` 為 None 或未知時視為沒有用量（全數釋放）；呼叫端若無法確定供應商有沒有計費，
-    想保守計入就改用 `settle(..., None)` 保留預留量。
+    想保守計入就改用 `settle(..., None)` 保留預留量。`commit=False` 的語意同 `settle`。
     """
     input_tokens = output_tokens = 0
     if used_so_far is not None and used_so_far.known:
@@ -231,7 +232,8 @@ def release(
         _lock(session)
         _open_reservation(session, reservation_id)
         _append(session, "release", reservation_id, input_tokens, output_tokens, cost, now)
-        session.commit()
+        if commit:
+            session.commit()
     except BaseException:
         session.rollback()
         raise

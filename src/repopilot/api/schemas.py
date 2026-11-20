@@ -928,6 +928,8 @@ class QaCostResponse(BaseModel):
     # 美元（字串）；預估是預留的值（worker 預留前是提問時的上限估計）
     estimated_usd: UsdAmount
     estimated_input_tokens: int
+    # 預留輸入 token 的來源；預留之前為 null
+    estimation_source: Literal["provider_count", "local_estimate"] | None
     actual_usd: UsdAmount | None
     # true＝實際用量超過預留；仍以實際用量計入每日累計
     exceeded_reservation: bool

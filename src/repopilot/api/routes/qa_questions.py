@@ -60,6 +60,7 @@ def _list_item(question: QaQuestion) -> dict[str, object]:
         "cost": QaCostResponse(
             estimated_usd=question.estimated_cost_usd,
             estimated_input_tokens=question.estimated_input_tokens,
+            estimation_source=question.estimation_source,
             actual_usd=question.cost_usd,
             exceeded_reservation=question.exceeded_reservation,
         ),

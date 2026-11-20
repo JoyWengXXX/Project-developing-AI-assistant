@@ -589,6 +589,7 @@ export interface QaUsageDetail {
 export interface QaCost {
   estimated_usd: string
   estimated_input_tokens: number
+  estimation_source: 'provider_count' | 'local_estimate' | null // 預留輸入 token 的來源；預留前為 null
   actual_usd: string | null
   exceeded_reservation: boolean // true＝實際用量超過預留，仍以實際用量計入
 }

@@ -70,7 +70,7 @@ docker compose up -d --wait db db-test
 #    已經有 .env 時不要再執行這行（Copy-Item 會直接覆蓋）
 Copy-Item .env.example .env
 
-# 3. 建立資料表（目前最新 migration 為 0018；升級既有資料庫也是這行）
+# 3. 建立資料表（目前最新 migration 為 0025；升級既有資料庫也是這行）
 uv run alembic upgrade head
 uv run alembic current        # 預期 0018 (head)
 
@@ -129,6 +129,7 @@ uv run python -c "from cryptography.fernet import Fernet; print(Fernet.generate_
 | `GIT_POLL_SECONDS`、`CLONE_PROGRESS_SECONDS`、`MANAGED_TEMP_ORPHAN_SECONDS` | 1、2、7200 | 切片 5（只影響 worker，未實測）：clone／fetch 期間檢查取消旗標與租約的間隔、量測暫存目錄大小（`progress.bytes_received`）的間隔、孤兒暫存目錄的年齡門檻（須大於 `GITHUB_CLONE_TIMEOUT_SECONDS`） |
 | `SEARCH_MAX_CHUNKS` | 5000 | 第三階段收尾 H7：`keyword` 與 `hybrid` 檢索會掃描選取快照的全部片段（耗時隨片段數線性成長），超過這個片段總數就在掃描前回 422 `search_scope_too_large`（`details` 帶 `chunk_count`、`max_chunks`），不等到逾時；`semantic` 不受限。預設值是依現行查詢在 20,000 片段的合成量測（常見詞約 3.5 秒、7 詞自然語言約 25 秒）保守訂的，其他硬體與真實 repo 未驗證 |
 | `SEARCH_STATEMENT_TIMEOUT_SECONDS` | 10 | 切片 8：每個搜尋請求的時間上限（PostgreSQL `statement_timeout`；內容搜尋另有整體期限）；超過回 504 `search_timeout`，不回空列表。預設值只在 20,000 檔合成快照上量測過一次 |
+| `QA_TOKEN_ESTIMATE_SAFETY_FACTOR` | 1.4 | 第四階段收尾：worker 預留額度前先呼叫供應商 `count_tokens`；失敗時改用本機估計乘上這個係數。**1.4 是暫定值，沒有統計依據**（首輪真實操作只有一題：本機估計 38,181、實際 50,448）；只影響 worker |
 | `WORKER_PATH_MAPPINGS` | 空 | 主機路徑 ↔ 容器路徑（JSON 陣列 `[{host, container, mode}]`）；**API 建立 import-job 時用它檢查路徑可映射**，未涵蓋回 503 `worker_path_not_mapped`；容器內的設定由 docker-compose 提供，所以 **API 的 `.env` 也要設** |
 | `WORKER_REPOSITORIES_HOST_DIR`、`WORKER_MANAGED_HOST_DIR` | 專案內 `.test-repos`、`.test-managed` | 只給 docker compose 插值（後端不讀）：worker 容器掛載的主機目錄 |
 | `WORKER_GIT_TIMEOUT_SECONDS`、`WORKER_IMPORT_GIT_TIMEOUT_SECONDS`、`WORKER_TASK_TIME_LIMIT_SECONDS` | 120、900、3600 | worker 的 Git 與任務逾時；未實測，只影響 worker |
@@ -266,7 +267,8 @@ React + TypeScript + Vite 的最小操作主控台（`frontend/`），用來以�
 | POST | `/api/v1/snapshots/{id}/retrieval-jobs` | 背景建立檢索索引；選填本文 `{"device": "cpu" 或 "gpu"}`（預設 cpu）。需要 API 與 worker 的模型／執行器 SHA-256 一致，worker 另需私有 socket。失敗或取消後重試（含 `POST /jobs/{id}/retry`）會續跑：保留已完整涵蓋的片段向量，只補缺少的；內容與既有已完成索引（同 embedding 設定，可來自其他快照或 repo）相同的片段直接複製向量，不重算 | 202＋`Location`；200 `reused=true`；404 `snapshot_not_found`；409 `snapshot_not_completed`；503 `embedding_not_configured`／`embedding_device_unavailable` |
 | GET | `/api/v1/snapshots/{id}/retrieval-index` | 查詢目前設定的索引狀態、完成後的片段與向量數，以及最近的對應工作；尚無索引時為 `none` | 200；404 `snapshot_not_found`；409 `snapshot_not_completed`；503 `embedding_not_configured` |
 | GET | `/api/v1/retrieval/devices` | 建立檢索索引可選的運算裝置與各自的 `configured`／`available`（經本機 gateway 向各 runtime 驗證） | 200；503 |
-| POST | `/api/v1/retrieval/search` | 支援 `keyword`、`semantic`、`hybrid`；傳入 `snapshot_ids`、`query`、`mode` 與選填 `limit`，結果含來源、行號、片段與適用的排序分數 | 200；404 `snapshot_not_found`；409 `snapshot_not_completed`／`retrieval_index_not_ready`；422（含 `validation_error`，以及 `keyword`／`hybrid` 的選取片段總數超過 `SEARCH_MAX_CHUNKS` 時的 `search_scope_too_large`）；503；504 |
+| POST | `/api/v1/retrieval/search` | 支援 `keyword`、`semantic`、`hybrid`；傳入 `snapshot_ids`、`query`、`mode` 與選填 `limit`、`file_kinds`（`source`／`test`／`docs`／`data`／`build`，只依路徑判斷）、`path_prefix`（1～1024 字元、區分大小寫，`%`／`_` 按字面），結果含來源、行號、片段與適用的排序分數。檢索索引不包含 `data`、`build` 種類的檔案 | 200；404 `snapshot_not_found`；409 `snapshot_not_completed`／`retrieval_index_not_ready`；422（含 `validation_error`，以及 `keyword`／`hybrid` 的選取片段總數超過 `SEARCH_MAX_CHUNKS` 時的 `search_scope_too_large`）；503；504 |
+| POST | `/api/v1/qa/questions` | 提問（第四階段）：`snapshot_ids`、`question`，選填 `max_tokens`、`file_kinds`、`path_prefix`（範圍規則同 `/retrieval/search`；省略表示不篩選，主控台預設「原始碼＋測試」）。`GET /api/v1/qa/questions/{id}` 回傳當次的 `file_kinds`／`path_prefix`、`cost.estimation_source`（`provider_count` 或 `local_estimate`）與 `cost.exceeded_reservation`（實際用量超過預留，仍以實際用量計入） | 202；409 `token_budget_exceeded` 等；422 `validation_error`；503 |
 | GET | `/api/v1/snapshots/{id}/index` | 快照在**目前設定**下的索引狀態：`none`（沒有索引，200 不是錯誤）、`building`、`completed`（另有 `counts`：依語言、解析狀態、符號種類）、`failed`；`analyzers` 是抽取器與版本 | 200；404；409 `snapshot_not_completed` |
 | GET | `/api/v1/snapshots/{id}/index/files` | 被索引的檔案、解析狀態與 `error_kind`（`has_problems`、`language`、`limit`、`offset`；依 path 排序）；只有第一個語法錯誤的位置，**沒有程式碼片段** | 200；409 `snapshot_not_completed`、`snapshot_index_not_ready`（`details.index_status`） |
 | GET | `/api/v1/snapshots/{id}/symbols` | 符號列表（`kind`、`parent_id`、`top_level`、`file_id`、`path_prefix`、`limit`、`offset`；依 path、起始行排序；`has_children` 供符號樹逐層載入）；只採用 `completed` 的索引 | 200；409 `snapshot_not_completed`、`snapshot_index_not_ready` |

@@ -273,6 +273,8 @@ def _cancel_pending(session: Session, job_id: int, token: UUID) -> bool:
     try:
         session.rollback()
         return jobs.read_cancel_requested(session, job_id, token)
+    except JobLeaseLostError:
+        raise  # 租約已被清掃接手：不能再寫入問答（可能已重新排隊給另一個 worker）
     except Exception:
         session.rollback()
         return False
@@ -366,11 +368,13 @@ def _execute(
             counted = provider.count_tokens(request)
         except Exception:
             provider = None
+        source = "provider_count"
         if counted is None:
             logger.info("qa_token_count_fallback", extra={"question_id": question_id})
             counted = int(estimated_input * settings.qa_token_estimate_safety_factor)
+            source = "local_estimate"
 
-        _reserve(session, settings, question_id, state, counted, prerequisites.limits)
+        _reserve(session, settings, question_id, state, counted, source, prerequisites.limits)
         attempt += 1
         _count_attempt(session, question_id, attempt)
 
@@ -418,6 +422,7 @@ def _reserve(
     question_id: int,
     state: _State,
     estimated_input: int,
+    estimation_source: str,
     limits: UsageLimits,
 ) -> None:
     row = _load_question(session, question_id)
@@ -425,6 +430,7 @@ def _reserve(
     row.reservation_id = reservation_id
     row.estimated_input_tokens = estimated_input
     row.estimated_cost_usd = token_cost_usd(estimated_input, row.max_tokens, state.price)
+    row.estimation_source = estimation_source
     session.commit()
     state.begin_attempt(reservation_id)
     usage_ledger.reserve(

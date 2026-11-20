@@ -719,6 +719,17 @@ def test_qa_questions_usage_above_the_reservation_is_settled_in_full_and_flagged
     assert (today["input_tokens"], today["output_tokens"]) == (50_448, 21)
 
 
+def test_qa_questions_reservation_uses_the_providers_token_count(env: Env) -> None:
+    """#11 AC-1：預留的輸入 token 等於供應商計數，估計來源為 provider_count。"""
+    env.provider = FakeProvider(text=_success_text(), input_token_estimate=4321)
+
+    done = _ask_and_run(env)
+
+    reserve = _ledger(env.engine)[0]
+    assert reserve["input_tokens"] == done["cost"]["estimated_input_tokens"] == 4321
+    assert done["cost"]["estimation_source"] == "provider_count"
+
+
 class _CountFailsProvider(FakeProvider):
     def count_tokens(self, request: GenerateRequest) -> int:
         raise ProviderTimeoutError("fake count timeout")
@@ -734,6 +745,7 @@ def test_qa_questions_count_tokens_failure_reserves_the_local_estimate_times_the
         env.settings = env.settings.model_copy(update={"qa_token_estimate_safety_factor": factor})
         done = _ask_and_run(env)
         assert done["status"] == "succeeded"
+        assert done["cost"]["estimation_source"] == "local_estimate"
         reserved.append(done["cost"]["estimated_input_tokens"])
 
     assert reserved[1] == reserved[0] * 2 > 0
@@ -1071,16 +1083,10 @@ def test_qa_questions_rerun_of_an_interrupted_question_settles_its_reservation(
     assert env.provider.requests == []
 
 
-@pytest.mark.parametrize("cancel_requested", [False, True], ids=["lost", "cancel_requested"])
-def test_qa_questions_lease_sweep_ends_a_running_question_and_settles_its_reservation(
-    env: Env, cancel_requested: bool
-) -> None:
-    """CL-04：worker 中斷（租約過期）後清掃，問答結束、預留在同一交易結算，不需要手動重置。"""
-    submitted = _submit(env)
-    job_id = submitted["job"]["id"]
-    reservation_id = uuid4()
+def _make_running_with_reservation(env: Env, submitted: dict[str, Any]) -> None:
+    """模擬 worker 在預留之後中斷：job 持有租約、問答執行中、預留開著、片段已保存。"""
     with Session(env.engine) as session:
-        assert job_service.acquire_lease(session, job_id, env.settings) is not None
+        assert job_service.acquire_lease(session, submitted["job"]["id"], env.settings)
         usage_ledger.reserve(
             session,
             estimated_input_tokens=1000,
@@ -1089,7 +1095,7 @@ def test_qa_questions_lease_sweep_ends_a_running_question_and_settles_its_reserv
             limits=UsageLimits(),
             now=datetime.now(UTC),
             tz=ZoneInfo("Asia/Taipei"),
-            reservation_id=reservation_id,
+            reservation_id=(reservation_id := uuid4()),
         )
     with env.engine.begin() as connection:
         connection.execute(
@@ -1099,15 +1105,48 @@ def test_qa_questions_lease_sweep_ends_a_running_question_and_settles_its_reserv
             ),
             {"rid": reservation_id, "id": submitted["id"]},
         )
+        connection.execute(
+            text(
+                "INSERT INTO qa_context_chunks (question_id, rank, code, repository_id, "
+                "repo_name, snapshot_id, commit_sha, path, start_line, end_line, chunk_id, "
+                "truncated) VALUES (:id, 1, 'C1', 1, 'alpha', 1, :sha, 'src/app.py', 1, 1, 1, "
+                "false)"
+            ),
+            {"id": submitted["id"], "sha": "a" * 40},
+        )
+
+
+def _sweep(env: Env) -> tuple[int, int, int]:
+    with Session(env.engine) as session:
+        return job_dispatch.recover_expired_leases(
+            session, env.settings, now=datetime.now(UTC) + timedelta(hours=1)
+        )
+
+
+def _today_tokens(env: Env) -> int:
+    return int(env.client.get("/api/v1/qa/usage").json()["today"]["total_tokens"])
+
+
+@pytest.mark.parametrize("cancel_requested", [False, True], ids=["no_attempts_left", "cancel"])
+def test_qa_questions_lease_sweep_ends_the_question_and_returns_the_reservation(
+    env: Env, cancel_requested: bool
+) -> None:
+    """#12 AC-1、AC-2：清掃結束問答並歸還預留，今日用量回到預留前的值。"""
+    submitted = _submit(env)
+    job_id = submitted["job"]["id"]
+    _make_running_with_reservation(env, submitted)
+    with env.engine.begin() as connection:
         if cancel_requested:
             connection.execute(
                 text("UPDATE jobs SET cancel_requested_at = now() WHERE id = :id"), {"id": job_id}
             )
+        else:
+            connection.execute(
+                text("UPDATE jobs SET max_attempts = attempt WHERE id = :id"), {"id": job_id}
+            )
+    assert _today_tokens(env) == 1500  # 預留中
 
-    with Session(env.engine) as session:
-        counts = job_dispatch.recover_expired_leases(
-            session, env.settings, now=datetime.now(UTC) + timedelta(hours=1)
-        )
+    counts = _sweep(env)
 
     done = _get(env, submitted["id"])
     job = env.client.get(f"/api/v1/jobs/{job_id}").json()
@@ -1115,29 +1154,63 @@ def test_qa_questions_lease_sweep_ends_a_running_question_and_settles_its_reserv
         assert counts == (0, 0, 1)
         assert job["status"] == "cancelled" and done["status"] == "cancelled"
     else:
-        assert counts == (0, 1, 0)  # 還有重試次數也不重新排隊
+        assert counts == (0, 1, 0)
         assert job["status"] == "failed" and job["error"]["code"] == "worker_lost"
-        assert done["status"] == "failed" and done["error"]["code"] == "qa_worker_lost"
-    assert done["usage"] == {"input_tokens": 1000, "output_tokens": 500, "usage_unknown": True}
-    assert [e["event_type"] for e in _ledger(env.engine)] == ["reserve", "settle"]
+        assert done["status"] == "failed" and done["error"]["code"] == "worker_lost"
+    assert [e["event_type"] for e in _ledger(env.engine)] == ["reserve", "release"]
     _assert_no_open_reservations(env.engine)
-    assert env.provider.requests == []
+    assert _today_tokens(env) == 0
+    assert done["finished_at"] is not None
 
 
-def test_qa_questions_lease_sweep_requeues_a_question_that_never_started(env: Env) -> None:
+def test_qa_questions_lease_sweep_requeues_and_the_rerun_settles_exactly_once(env: Env) -> None:
+    """#12 AC-3：還有嘗試次數時重新排隊；舊預留歸還，重跑重新預留並只結算一次。"""
+    env.provider = FakeProvider(text=_success_text(), usage=Usage(900, 40))
     submitted = _submit(env)
-    job_id = submitted["job"]["id"]
-    with Session(env.engine) as session:
-        assert job_service.acquire_lease(session, job_id, env.settings) is not None
+    _make_running_with_reservation(env, submitted)
 
-    with Session(env.engine) as session:
-        counts = job_dispatch.recover_expired_leases(
-            session, env.settings, now=datetime.now(UTC) + timedelta(hours=1)
+    assert _sweep(env) == (1, 0, 0)
+
+    queued = _get(env, submitted["id"])
+    assert queued["status"] == "queued" and queued["context_chunks"] == []
+    assert [e["event_type"] for e in _ledger(env.engine)] == ["reserve", "release"]
+    with env.engine.begin() as connection:
+        connection.execute(
+            text("UPDATE jobs SET next_attempt_at = now() WHERE id = :id"),
+            {"id": submitted["job"]["id"]},
         )
 
-    assert counts == (1, 0, 0)
-    assert _get(env, submitted["id"])["status"] == "queued"
-    assert _ledger(env.engine) == []
+    assert _run(env, submitted) == "succeeded"
+
+    done = _get(env, submitted["id"])
+    assert done["status"] == "succeeded"
+    events = [e["event_type"] for e in _ledger(env.engine)]
+    assert events == ["reserve", "release", "reserve", "settle"]
+    _assert_no_open_reservations(env.engine)
+    assert _today_tokens(env) == 940
+    assert _sweep(env) == (0, 0, 0)  # 已完成的 job 不會再被清掃
+
+
+@pytest.mark.parametrize("behavior", ["success", "malformed"])
+def test_qa_questions_worker_that_lost_its_lease_to_the_sweep_writes_nothing(
+    env: Env, behavior: str
+) -> None:
+    """#12 AC-4：清掃在 worker 呼叫供應商時接手；舊 worker 之後不論成功或失敗都不寫問答與帳本。"""
+    swept: list[tuple[int, int, int]] = []
+    env.provider = FakeProvider(
+        behavior,  # type: ignore[arg-type]
+        text=_success_text(),
+        on_call=lambda _n: swept.append(_sweep(env)),
+    )
+    submitted = _submit(env)
+
+    assert _run(env, submitted) == "lease_lost"
+
+    assert swept == [(1, 0, 0)]
+    after = _get(env, submitted["id"])
+    assert after["status"] == "queued" and after["error"] is None
+    assert [e["event_type"] for e in _ledger(env.engine)] == ["reserve", "release"]
+    _assert_no_open_reservations(env.engine)
 
 
 def test_qa_questions_job_rerun_of_a_finished_question_does_not_run_it_again(env: Env) -> None:

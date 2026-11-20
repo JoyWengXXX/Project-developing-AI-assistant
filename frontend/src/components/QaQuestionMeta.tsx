@@ -34,6 +34,8 @@ export function QaQuestionMeta({ question }: { question: QaQuestion }) {
       <dd>
         {formatUsd(cost.estimated_usd)} 美元（上限估計：輸入約 {formatTokens(cost.estimated_input_tokens)} token、輸出最多{' '}
         {formatTokens(question.max_tokens)} token；假設值，不是實測）
+        {cost.estimation_source === 'provider_count' && '・輸入 token 由供應商計數'}
+        {cost.estimation_source === 'local_estimate' && '・供應商計數失敗，輸入 token 為本機估計乘上安全係數'}
       </dd>
       <dt>實際費用</dt>
       <dd>{cost.actual_usd === null ? '—（尚未結算）' : `${formatUsd(cost.actual_usd)} 美元`}</dd>

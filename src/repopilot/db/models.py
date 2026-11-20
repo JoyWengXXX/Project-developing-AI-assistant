@@ -880,6 +880,10 @@ class QaQuestion(Base):
     __tablename__ = "qa_questions"
     __table_args__ = (
         CheckConstraint(
+            "estimation_source IN ('provider_count', 'local_estimate')",
+            name="estimation_source_known",
+        ),
+        CheckConstraint(
             "status IN ('queued', 'running', 'succeeded', 'failed', 'cancelled')",
             name="status_valid",
         ),
@@ -924,6 +928,8 @@ class QaQuestion(Base):
     reservation_id: Mapped[UUID | None] = mapped_column(Uuid)
     estimated_input_tokens: Mapped[int] = mapped_column(BigInteger)
     estimated_cost_usd: Mapped[Decimal] = mapped_column(Numeric(18, 8))
+    # 預留輸入 token 的來源：供應商計數，或計數失敗時的本機估計 × 安全係數
+    estimation_source: Mapped[str | None] = mapped_column(String(20))
     input_tokens: Mapped[int | None] = mapped_column(BigInteger)
     output_tokens: Mapped[int | None] = mapped_column(BigInteger)
     cost_usd: Mapped[Decimal | None] = mapped_column(Numeric(18, 8))

@@ -332,9 +332,9 @@ def delete_all_questions(session: Session) -> tuple[int, int]:
     return len(deleted), skipped
 
 
-# --- 租約過期清掃（C3／CL-04） ---
+# --- 租約過期清掃（C3） ---
 
-WORKER_LOST_CODE = "qa_worker_lost"
+WORKER_LOST_CODE = "worker_lost"
 
 
 def lock_active_question(session: Session, job_id: int) -> QaQuestion | None:
@@ -348,28 +348,31 @@ def lock_active_question(session: Session, job_id: int) -> QaQuestion | None:
 
 
 def close_lost_question(
-    session: Session, question: QaQuestion, *, status: str, now: datetime
+    session: Session, question: QaQuestion, *, outcome: str, now: datetime
 ) -> None:
-    """清掃把 qa_question job 結束時呼叫：問答跟著結束，開著的預留一併結束（同一交易，不提交）。
+    """清掃處理 qa_question job 時呼叫（同一交易，不提交）：開著的預留歸還，問答跟著 job 的結果。
 
-    不知道供應商呼叫有沒有發生：預留保守結算（沿用預留量並標記 `usage_unknown`），與重跑時的
-    `qa_interrupted` 相同。預留因此結束，不需要手動重置額度。
+    - `failed`／`cancelled`：問答結束（失敗的錯誤碼與 job 相同，`worker_lost`）。
+    - `queued`：job 重新排隊，問答回到排隊中並清掉上一次的片段記錄，下一次嘗試重新預留。
+
+    清掃不知道供應商呼叫有沒有發生、也沒有用量回報，所以歸還的用量計為 0（使用者決定：預留
+    歸還，剩餘額度回到預留前的值）；舊 worker 之後寫入會被租約柵欄擋下。
     """
     reservation_id = question.reservation_id
     if reservation_id is not None and usage_ledger.lock_and_check_open(session, reservation_id):
         price = settings_service.get_prices(session).get(
             question.model, ModelPrice(Decimal(0), Decimal(0))
         )
-        totals = usage_ledger.settle(
-            session, reservation_id, None, price=price, now=now, commit=False
-        )
-        question.input_tokens = (question.input_tokens or 0) + totals.input_tokens
-        question.output_tokens = (question.output_tokens or 0) + totals.output_tokens
-        question.cost_usd = (question.cost_usd or Decimal(0)) + totals.cost_usd
-        question.usage_unknown = True
-    question.status = status
-    if status == "failed":
-        question.error_code = WORKER_LOST_CODE
-        question.error_summary = "The worker stopped sending heartbeats while running the question."
-    question.finished_at = now
+        usage_ledger.release(session, reservation_id, None, price=price, now=now, commit=False)
+    if outcome == "queued":
+        question.status = "queued"
+        question.reservation_id = None
+        question.started_at = None
+        session.execute(delete(QaContextChunk).where(QaContextChunk.question_id == question.id))
+    else:
+        question.status = outcome
+        if outcome == "failed":
+            question.error_code = WORKER_LOST_CODE
+            question.error_summary = "The worker stopped sending heartbeats and no attempts remain."
+        question.finished_at = now
     session.flush()

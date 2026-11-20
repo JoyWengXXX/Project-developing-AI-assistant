@@ -934,6 +934,9 @@ class QaQuestion(Base):
     duration_ms: Mapped[int | None] = mapped_column(Integer)
     job_id: Mapped[int | None] = mapped_column(ForeignKey("jobs.id", ondelete="SET NULL"))
     request_id: Mapped[str | None] = mapped_column(String(64))
+    retrieval_filters: Mapped[dict[str, object] | None] = mapped_column(
+        JSONB, comment="檢索篩選條件，包含 file_kinds (列表) 和 path_prefix (字串)"
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

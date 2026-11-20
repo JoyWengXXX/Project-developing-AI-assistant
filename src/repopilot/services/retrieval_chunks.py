@@ -31,8 +31,15 @@ _FILE_BATCH_MAX_BYTES = 8 * 1024 * 1024
 _INSERT_BATCH_SIZE = 500
 
 
-def chunk_profile_hash(max_bytes: int, structure_index_id: int | None) -> str:
-    return sha256(f"{_ALGORITHM}:{max_bytes}:{structure_index_id}".encode("ascii")).hexdigest()
+def chunk_profile_hash(
+    max_bytes: int, structure_index_id: int | None, excluded_kinds: tuple[str, ...] | None = None
+) -> str:
+    excluded_key = ""
+    if excluded_kinds:
+        # 排序以確保一致性
+        excluded_key = ":" + ",".join(sorted(set(excluded_kinds)))
+    full_key = f"{_ALGORITHM}:{max_bytes}:{structure_index_id}{excluded_key}"
+    return sha256(full_key.encode("ascii")).hexdigest()
 
 
 @dataclass(frozen=True)

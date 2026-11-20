@@ -25,16 +25,10 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.execute(
-        """
-        DO $$
-        BEGIN
-            IF EXISTS (SELECT 1 FROM qa_questions WHERE attempts > 0) THEN
-                RAISE EXCEPTION 'Cannot downgrade while qa questions record attempts.';
-            END IF;
-        END;
-        $$
-        """
-    )
+    # 檢查是否有 qa_questions 存在，若有則拒絕降版
+    result = op.get_bind().execute(sa.text("SELECT COUNT(*) FROM qa_questions")).scalar()
+    if result and result > 0:
+        raise RuntimeError("Cannot downgrade migration 0022 while qa_questions exist.")
+
     op.drop_constraint(op.f("ck_qa_questions_attempts_nonnegative"), "qa_questions", type_="check")
     op.drop_column("qa_questions", "attempts")

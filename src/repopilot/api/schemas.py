@@ -15,6 +15,7 @@ from pydantic import (
     model_validator,
 )
 
+from repopilot.indexing.file_kinds import FileKind
 from repopilot.qa.pricing import MODEL_TIERS
 from repopilot.qa.question_rules import (
     MAX_QUESTION_CHARS,
@@ -579,6 +580,8 @@ class RetrievalSearchRequest(BaseModel):
     query: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=512)]
     mode: Literal["keyword", "semantic", "hybrid"]
     limit: int = Field(default=10, ge=1, le=50)
+    file_kinds: list[FileKind] | None = Field(default=None, description="篩選檔案種類")
+    path_prefix: str | None = Field(default=None, description="篩選路徑前綴")
 
     @field_validator("snapshot_ids")
     @classmethod
@@ -788,7 +791,8 @@ QaQuestionIdPath = Annotated[int, Path(ge=1, le=_INT64_MAX)]
 
 
 class QaQuestionCreate(BaseModel):
-    """提問。`max_tokens` 是這題的輸出上限（含思考）；省略用預設，且超過單次額度時 409。"""
+    """提問。`max_tokens` 是這題的輸出上限（含思考）；省略用預設，且超過單次額度時 409。
+    `file_kinds` 與 `path_prefix` 篩選檢索範圍；規則與 `/retrieval/search` 相同。"""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -799,6 +803,8 @@ class QaQuestionCreate(BaseModel):
         str, StringConstraints(strip_whitespace=True, min_length=1, max_length=MAX_QUESTION_CHARS)
     ]
     max_tokens: int | None = Field(default=None, strict=True, ge=1, le=MAX_TOKENS_CEILING)
+    file_kinds: list[FileKind] | None = Field(default=None, description="篩選檔案種類")
+    path_prefix: str | None = Field(default=None, description="篩選路徑前綴")
 
     @field_validator("snapshot_ids")
     @classmethod

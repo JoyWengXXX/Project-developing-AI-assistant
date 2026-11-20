@@ -175,6 +175,10 @@ class Settings(BaseSettings):
     # 問答額度「每日」的邊界：該時區（IANA 名稱）的 00:00；載入設定時就驗證名稱
     qa_usage_timezone: str = "Asia/Taipei"
 
+    # C2 token count 與安全係數（token count 失敗時的降級）。預設值 1.4 基於首輪實測
+    # （38K → 50K，低估 32%）的經驗，無完整統計依據，預留 40% 緩衝
+    qa_token_estimate_safety_factor: float = Field(default=1.4, ge=1.0, le=10.0)
+
     # 設定必須由部署者核對；空值代表尚未啟用檢索。
     embedding_model_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     embedding_runtime_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")

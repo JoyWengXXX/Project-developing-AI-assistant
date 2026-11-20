@@ -158,6 +158,8 @@ def submit_question(
     max_tokens: int,
     request_id: str | None = None,
     now: datetime | None = None,
+    file_kinds: list[str] | None = None,
+    path_prefix: str | None = None,
 ) -> SubmittedQuestion:
     now = now or datetime.now(UTC)
     prerequisites = check_prerequisites(session, settings, snapshot_ids)
@@ -172,9 +174,18 @@ def submit_question(
         total_tokens_upper_bound=input_bound + max_tokens,
         cost_usd=token_cost_usd(input_bound, max_tokens, prerequisites.price),
     )
+
+    # 構造 retrieval_filters JSON
+    retrieval_filters: dict[str, object] = {}
+    if file_kinds:
+        retrieval_filters["file_kinds"] = file_kinds
+    if path_prefix:
+        retrieval_filters["path_prefix"] = path_prefix
+
     row = QaQuestion(
         question=question,
         snapshot_ids=snapshot_ids,
+        retrieval_filters=retrieval_filters,
         provider=PROVIDER,
         model=prerequisites.model,
         prompt_version=PROMPT_VERSION,

@@ -305,6 +305,10 @@ def _execute(
     row = _load_question(session, question_id)
     question_text, snapshot_ids = row.question, list(row.snapshot_ids)
     model, max_tokens = row.model, row.max_tokens
+    # 解析檢索篩選（無篩選時 retrieval_filters 為空 dict）
+    retrieval_filters = row.retrieval_filters or {}
+    file_kinds = retrieval_filters.get("file_kinds")
+    path_prefix = retrieval_filters.get("path_prefix")
     heartbeat_checkpoint()
     prerequisites = check_prerequisites(session, settings, snapshot_ids)
     state.price = prerequisites.price
@@ -314,7 +318,14 @@ def _execute(
 
     jobs.update_progress(session, job_id, token, phase="retrieving")
     heartbeat_checkpoint()
-    retrieval = retrieve_context(session, settings, snapshot_ids, question_text)
+    retrieval = retrieve_context(
+        session,
+        settings,
+        snapshot_ids,
+        question_text,
+        file_kinds=file_kinds,  # type: ignore[arg-type]
+        path_prefix=path_prefix,  # type: ignore[arg-type]
+    )
     context = retrieval.context
     _save_context_chunks(session, question_id, retrieval)
     session.commit()  # 同時結束檢索的讀取交易（SET LOCAL statement_timeout）
@@ -345,13 +356,56 @@ def _execute(
             # 重試：設定、同意與額度上限都重新取得（退避期間可能改變）
             prerequisites = check_prerequisites(session, settings, snapshot_ids)
             state.price = prerequisites.price
-        _reserve(session, settings, question_id, state, estimated_input, prerequisites.limits)
+
+        # C2：嘗試使用 provider count_tokens 獲得精確 token 數（預留前進行估計優化）
+        # 但預留仍使用本機估計（可靠且不依賴 provider），以支持早期預算檢查
+        final_estimated_input = estimated_input
+        estimation_method = "local_estimate"
+        precise_estimate = None
+
+        try:
+            if provider is None:
+                provider = build_provider(api_key)
+            provider_count = _try_provider_count_tokens(settings, provider, request)
+            if provider_count is not None:
+                precise_estimate = provider_count
+                estimation_method = "provider_count"
+        except Exception:
+            # count_tokens 失敗：降級為本機估計×係數（用於預留）
+            # provider 重置以便錯誤恢復
+            provider = None
+            logger.info(
+                "qa_token_count_fallback",
+                extra={
+                    "question_id": question_id,
+                    "reason": "count_tokens_error",
+                },
+            )
+
+        # 預留時使用本機估計×係數（確保預算檢查不受 provider 狀態影響）
+        # 如果 count_tokens 成功，之後會用更精確的值
+        factor = settings.qa_token_estimate_safety_factor
+        final_estimated_input = precise_estimate or int(estimated_input * factor)
+
+        _reserve(
+            session,
+            settings,
+            question_id,
+            state,
+            final_estimated_input,
+            prerequisites.limits,
+            estimation_method,
+        )
         attempt += 1
         _count_attempt(session, question_id, attempt)
 
         jobs.update_progress(session, job_id, token, phase="generating")
         heartbeat_checkpoint()
-        provider = provider or build_provider(api_key)
+
+        # 確認 provider 可用；若未建立或之前失敗，現在嘗試重新建立
+        if provider is None:
+            provider = build_provider(api_key)
+
         state.call_started = True
         try:
             response = provider.generate(request)
@@ -392,12 +446,14 @@ def _reserve(
     state: _State,
     estimated_input: int,
     limits: UsageLimits,
+    estimation_method: str = "local_estimate",
 ) -> None:
     row = _load_question(session, question_id)
     reservation_id = uuid4()
     row.reservation_id = reservation_id
     row.estimated_input_tokens = estimated_input
     row.estimated_cost_usd = token_cost_usd(estimated_input, row.max_tokens, state.price)
+    row.estimation_method = estimation_method  # type: ignore[attr-defined]
     session.commit()
     state.begin_attempt(reservation_id)
     usage_ledger.reserve(
@@ -435,6 +491,18 @@ def _close_attempt(
     return True
 
 
+def _try_provider_count_tokens(
+    settings: Settings, provider: QAProvider, request: GenerateRequest
+) -> int | None:
+    """嘗試透過供應商 count_tokens API 取得精確 token 數；失敗時返回 None"""
+    try:
+        # 設定超時避免 worker 卡住
+        return provider.count_tokens(request)
+    except Exception:
+        # 供應商不支援、逾時或錯誤時降級
+        return None
+
+
 def _load_question(session: Session, question_id: int) -> QaQuestion:
     row = session.get(QaQuestion, question_id)
     if row is None:
@@ -456,6 +524,8 @@ def retrieve_context(
     snapshot_ids: list[int],
     question: str,
     *,
+    file_kinds: list[str] | None = None,
+    path_prefix: str | None = None,
     embed: Callable[[str], list[float]] | None = None,
 ) -> Retrieval:
     """混合檢索 → `build_context`（問答 worker 與評估腳本共用，輸入因此完全相同）。
@@ -479,6 +549,8 @@ def retrieve_context(
         query=retrieval_query(question),
         mode="hybrid",
         limit=RETRIEVAL_CANDIDATES,
+        file_kinds=file_kinds,
+        path_prefix=path_prefix,
         embed=embed,
     )
     names = dict(
@@ -739,6 +811,7 @@ def _record_failure(
         row.status = "failed"
         row.error_code = code
         row.error_summary = message[:500]
+        row.failure_code = code  # type: ignore[attr-defined]
         if closed is not None:
             _apply_usage(row, closed.totals, closed.usage_unknown, _request_id(state, exc))
         if not state.reserved:

@@ -40,6 +40,8 @@ def search_retrieval(
         query=request.query,
         mode=request.mode,
         limit=request.limit,
+        file_kinds=request.file_kinds,
+        path_prefix=request.path_prefix,
     )
     return RetrievalSearchResponse(
         mode=request.mode, items=[RetrievalSearchItem(**asdict(item)) for item in items]

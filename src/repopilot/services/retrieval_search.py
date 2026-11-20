@@ -1,6 +1,6 @@
 """在指定快照的相容已完成索引中搜尋片段。"""
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
 from typing import Literal
 
@@ -26,6 +26,7 @@ from repopilot.errors import (
     RetrievalSnapshotNotFoundError,
     SearchScopeTooLargeError,
 )
+from repopilot.indexing.file_kinds import kind_expression
 from repopilot.search_query import keyword_terms
 from repopilot.services import retrieval_jobs
 from repopilot.services.search import _set_statement_timeout, _timeout_as_domain_error
@@ -51,6 +52,25 @@ class KeywordMatch:
 
 _CANDIDATE_LIMIT = 100
 _RRF_K = 60
+
+
+def _scope_conditions(
+    file_kinds: list[str] | None,
+    path_prefix: str | None,
+) -> list[ColumnElement[bool]]:
+    """根據檔案種類與路徑前綴產生 WHERE 條件清單；未篩選時傳回空清單。"""
+    conditions: list[ColumnElement[bool]] = []
+
+    # 檔案種類篩選
+    if file_kinds:
+        # 轉換 ["source", "docs", ...] 為 kind_expression(...).in_(["source", "docs", ...])
+        conditions.append(kind_expression(SnapshotFile.path).in_(file_kinds))
+
+    # 路徑前綴篩選
+    if path_prefix:
+        conditions.append(SnapshotFile.path.startswith(path_prefix))
+
+    return conditions
 
 
 def _index_ids(session: Session, settings: Settings, snapshot_ids: list[int]) -> list[int]:
@@ -93,18 +113,30 @@ def _ensure_keyword_scope(session: Session, settings: Settings, index_ids: list[
 
 
 def keyword_search(
-    session: Session, settings: Settings, *, snapshot_ids: list[int], query: str, limit: int
+    session: Session,
+    settings: Settings,
+    *,
+    snapshot_ids: list[int],
+    query: str,
+    limit: int,
+    file_kinds: Sequence[str] | None = None,
+    path_prefix: str | None = None,
 ) -> list[KeywordMatch]:
     terms = keyword_terms(query)
     with _timeout_as_domain_error():
         _set_statement_timeout(session, settings.search_statement_timeout_seconds)
         index_ids = _index_ids(session, settings, snapshot_ids)
         _ensure_keyword_scope(session, settings, index_ids)
-        return _keyword_candidates(session, index_ids, terms, limit)
+        return _keyword_candidates(session, index_ids, terms, limit, file_kinds, path_prefix)
 
 
 def _keyword_candidates(
-    session: Session, index_ids: list[int], terms: list[str], limit: int
+    session: Session,
+    index_ids: list[int],
+    terms: list[str],
+    limit: int,
+    file_kinds: Sequence[str] | None = None,
+    path_prefix: str | None = None,
 ) -> list[KeywordMatch]:
     content = func.substr(
         SnapshotFile.content,
@@ -114,6 +146,10 @@ def _keyword_candidates(
     score: ColumnElement[int] = literal(0)
     for term in terms:
         score = score + case((func.strpos(func.lower(content), term) > 0, 1), else_=0)
+
+    file_kinds_list = list(file_kinds) if file_kinds else None
+    scope_conditions = _scope_conditions(file_kinds_list, path_prefix)
+
     rows = session.execute(
         select(
             RetrievalChunk.id,
@@ -137,6 +173,7 @@ def _keyword_candidates(
             RetrievalIndex.status == "completed",
             SnapshotFile.status == "imported",
             score > 0,
+            *scope_conditions,
         )
         .order_by(
             score.desc(),
@@ -168,7 +205,12 @@ def _keyword_candidates(
 
 
 def _semantic_candidates(
-    session: Session, index_ids: list[int], vector: list[float], limit: int
+    session: Session,
+    index_ids: list[int],
+    vector: list[float],
+    limit: int,
+    file_kinds: Sequence[str] | None = None,
+    path_prefix: str | None = None,
 ) -> list[KeywordMatch]:
     distance = type_coerce(
         RetrievalVector.embedding.op("<=>")(literal(vector, type_=Vector(768))), Float
@@ -184,6 +226,10 @@ def _semantic_candidates(
         RetrievalChunk.start_offset + 1,
         RetrievalChunk.end_offset - RetrievalChunk.start_offset,
     )
+
+    file_kinds_list = list(file_kinds) if file_kinds else None
+    scope_conditions = _scope_conditions(file_kinds_list, path_prefix)
+
     rows = session.execute(
         select(
             RetrievalChunk.id,
@@ -202,7 +248,7 @@ def _semantic_candidates(
         .join(RetrievalChunk, RetrievalChunk.snapshot_id == Snapshot.id)
         .join(scores, scores.c.chunk_id == RetrievalChunk.id)
         .join(SnapshotFile, SnapshotFile.id == RetrievalChunk.snapshot_file_id)
-        .where(SnapshotFile.status == "imported")
+        .where(SnapshotFile.status == "imported", *scope_conditions)
         .order_by(
             scores.c.distance,
             Repository.id,
@@ -253,12 +299,20 @@ def search(
     mode: Literal["keyword", "semantic", "hybrid"],
     limit: int,
     embed: Callable[[str], list[float]] | None = None,
+    file_kinds: Sequence[str] | None = None,
+    path_prefix: str | None = None,
 ) -> list[KeywordMatch]:
     """`embed` 省略時經本機 gateway 取得查詢向量（API 的路徑）；worker 沒有 gateway，傳入自己的
     隔離 runtime 客戶端。"""
     if mode == "keyword":
         return keyword_search(
-            session, settings, snapshot_ids=snapshot_ids, query=query, limit=limit
+            session,
+            settings,
+            snapshot_ids=snapshot_ids,
+            query=query,
+            limit=limit,
+            file_kinds=file_kinds,
+            path_prefix=path_prefix,
         )
     with _timeout_as_domain_error():
         _set_statement_timeout(session, settings.search_statement_timeout_seconds)
@@ -271,11 +325,23 @@ def search(
             else embed_query(settings, EmbeddingProfile.from_settings(settings), query)
         )
         semantic = _semantic_candidates(
-            session, index_ids, vector, limit if mode == "semantic" else _CANDIDATE_LIMIT
+            session,
+            index_ids,
+            vector,
+            limit if mode == "semantic" else _CANDIDATE_LIMIT,
+            file_kinds=file_kinds,
+            path_prefix=path_prefix,
         )
         if mode == "semantic":
             return semantic
-        keyword = _keyword_candidates(session, index_ids, keyword_terms(query), _CANDIDATE_LIMIT)
+        keyword = _keyword_candidates(
+            session,
+            index_ids,
+            keyword_terms(query),
+            _CANDIDATE_LIMIT,
+            file_kinds=file_kinds,
+            path_prefix=path_prefix,
+        )
     by_id = {item.chunk_id: item for item in semantic}
     by_id.update({item.chunk_id: item for item in keyword})
     scores: dict[int, float] = {}

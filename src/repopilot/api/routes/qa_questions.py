@@ -193,6 +193,7 @@ def submit_question(
     settings: SettingsDep,
 ) -> QaQuestionSubmitResponse:
     """提問：在任何外部呼叫前驗證所有前置條件，建立問答與背景工作（同一交易）。"""
+    file_kinds_list = [str(k) for k in body.file_kinds] if body.file_kinds else None
     submitted = question_service.submit_question(
         session,
         settings,
@@ -200,6 +201,8 @@ def submit_question(
         question=body.question,
         max_tokens=body.max_tokens or DEFAULT_MAX_TOKENS,
         request_id=request_id_var.get(),
+        file_kinds=file_kinds_list,
+        path_prefix=body.path_prefix,
     )
     status_url = f"/api/v1/qa/questions/{submitted.question.id}"
     response.headers["Location"] = status_url

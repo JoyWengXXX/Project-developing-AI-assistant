@@ -11,6 +11,7 @@ from repopilot.db.models import Job, RetrievalChunkSet, RetrievalIndex, Snapshot
 from repopilot.embedding.devices import DEFAULT_DEVICE, EmbeddingDevice, ensure_available
 from repopilot.embedding.profile import EmbeddingProfile
 from repopilot.errors import SnapshotNotCompletedError, SnapshotNotFoundError
+from repopilot.indexing.file_kinds import RETRIEVAL_EXCLUDED_KINDS
 from repopilot.services import jobs
 from repopilot.services.import_jobs import find_active_job, latest_job
 from repopilot.services.index_queries import get_current_index
@@ -53,7 +54,7 @@ def current_identity(session: Session, snapshot_id: int, settings: Settings) -> 
     structure_id = (
         structure.id if structure is not None and structure.status == "completed" else None
     )
-    chunk_hash = chunk_profile_hash(CHUNK_MAX_BYTES, structure_id)
+    chunk_hash = chunk_profile_hash(CHUNK_MAX_BYTES, structure_id, RETRIEVAL_EXCLUDED_KINDS)
     key_hash = sha256(f"{chunk_hash}:{profile_hash}".encode("ascii")).hexdigest()
     return RetrievalIdentity(
         snapshot_id,

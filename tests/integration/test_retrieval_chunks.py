@@ -88,6 +88,39 @@ def test_reuses_same_profile_and_distinguishes_different_sizes(
     assert other.chunk_set_id != first.chunk_set_id and not other.reused
 
 
+def test_excluded_kinds_are_not_chunked_and_form_a_separate_chunk_set(
+    db_engine: Engine, snapshot_id: int
+) -> None:
+    add_files(
+        db_engine,
+        snapshot_id,
+        {"src/app.py": "print(1)\n", "data/rows.csv": "a,b\n", "dist/app.min.js": "x=1\n"},
+    )
+
+    def paths(chunk_set_id: int) -> set[str]:
+        with db_engine.connect() as connection:
+            return set(
+                connection.execute(
+                    text(
+                        "SELECT f.path FROM retrieval_chunks c "
+                        "JOIN snapshot_files f ON f.id = c.snapshot_file_id "
+                        "WHERE c.chunk_set_id = :id"
+                    ),
+                    {"id": chunk_set_id},
+                ).scalars()
+            )
+
+    with Session(db_engine) as session, session.begin():
+        everything = retrieval_chunks.build_chunk_set(session, snapshot_id, max_bytes=24)
+        filtered = retrieval_chunks.build_chunk_set(
+            session, snapshot_id, max_bytes=24, excluded_kinds=("build", "data")
+        )
+
+    assert filtered.chunk_set_id != everything.chunk_set_id
+    assert {"data/rows.csv", "dist/app.min.js"} <= paths(everything.chunk_set_id)
+    assert paths(filtered.chunk_set_id) == {"hello.txt", "src/app.py"}
+
+
 def test_noncompleted_snapshot_is_rejected(db_engine: Engine, snapshot_id: int) -> None:
     with db_engine.begin() as connection:
         connection.execute(

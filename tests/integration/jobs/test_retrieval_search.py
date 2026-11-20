@@ -14,6 +14,7 @@ from sqlalchemy.orm import Session
 from repopilot.embedding.gateway_client import embed_query
 from repopilot.embedding.local_runtime import EmbeddingRuntimeError
 from repopilot.embedding.profile import EmbeddingProfile
+from repopilot.indexing.file_kinds import FILE_KINDS, classify_path
 from repopilot.main import create_app
 from repopilot.services import job_runner, retrieval_job_runner, retrieval_jobs, retrieval_search
 from tests.integration.jobs.conftest import WorkerEnv
@@ -113,6 +114,37 @@ def test_keyword_search_ranks_only_selected_snapshots(ready_search: SearchFixtur
     assert len(first["commit_sha"]) == 40
     assert first["support_level"] == "text"
     assert all(item["snapshot_id"] != ready_search.snapshot_ids[2] for item in result["items"])
+
+
+@pytest.mark.parametrize("mode", ["keyword", "semantic", "hybrid"])
+def test_search_scope_filters_by_path_prefix_and_file_kind(
+    ready_search: SearchFixtures, mode: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        retrieval_search, "embed_query", lambda *args: [1.0] + [0.0] * 767, raising=False
+    )
+
+    def paths(**scope: object) -> set[str]:
+        response = ready_search.client.post(
+            "/api/v1/retrieval/search",
+            json={
+                "snapshot_ids": ready_search.snapshot_ids[:2],
+                "query": "widget",
+                "mode": mode,
+                "limit": 10,
+                **scope,
+            },
+        )
+        assert response.status_code == 200, response.text
+        return {item["path"] for item in response.json()["items"]}
+
+    kind = classify_path("file-1.txt")
+    other_kinds = [k for k in FILE_KINDS if k != kind]
+    assert paths() == {"file-1.txt", "file-2.txt"}
+    assert paths(path_prefix="file-1") == {"file-1.txt"}
+    assert paths(path_prefix="file_") == set()  # `_` 是字面字元
+    assert paths(file_kinds=[kind]) == {"file-1.txt", "file-2.txt"}
+    assert paths(file_kinds=other_kinds) == set()
 
 
 def _limit_scope(fixtures: SearchFixtures, max_chunks: int) -> None:

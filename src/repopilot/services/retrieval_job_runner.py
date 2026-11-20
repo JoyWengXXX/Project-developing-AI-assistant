@@ -22,6 +22,7 @@ from repopilot.errors import (
     SnapshotNotCompletedError,
     SnapshotNotFoundError,
 )
+from repopilot.indexing.file_kinds import RETRIEVAL_EXCLUDED_KINDS
 from repopilot.services import jobs
 from repopilot.services.job_progress import EMBEDDING_KEY
 from repopilot.services.repositories import get_repository, repository_key
@@ -100,6 +101,7 @@ def run_retrieval(
             snapshot_id,
             max_bytes=CHUNK_MAX_BYTES,
             structure_index_id=structure_id,
+            excluded_kinds=RETRIEVAL_EXCLUDED_KINDS,
             checkpoint=checkpoint,
         )
         repo_lock.assert_alive()

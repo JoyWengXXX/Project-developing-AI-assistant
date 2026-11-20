@@ -23,6 +23,7 @@ from repopilot.errors import (
     SnapshotNotCompletedError,
     SnapshotNotFoundError,
 )
+from repopilot.indexing.file_kinds import kind_expression
 from repopilot.indexing.retrieval_chunking import chunk_text
 
 _ALGORITHM = "retrieval-chunks-v1"
@@ -36,7 +37,7 @@ def chunk_profile_hash(
 ) -> str:
     excluded_key = ""
     if excluded_kinds:
-        # 排序以確保一致性
+        # 順序與重複不影響識別；沒有排除時維持原本的雜湊
         excluded_key = ":" + ",".join(sorted(set(excluded_kinds)))
     full_key = f"{_ALGORITHM}:{max_bytes}:{structure_index_id}{excluded_key}"
     return sha256(full_key.encode("ascii")).hexdigest()
@@ -55,15 +56,20 @@ def build_chunk_set(
     *,
     max_bytes: int,
     structure_index_id: int | None = None,
+    excluded_kinds: tuple[str, ...] = (),
     checkpoint: Callable[[], None] | None = None,
 ) -> ChunkSetSummary:
-    """建立完整片段集合；失敗回滾至 savepoint，由呼叫者決定是否提交外層交易。"""
+    """建立完整片段集合；失敗回滾至 savepoint，由呼叫者決定是否提交外層交易。
+
+    `excluded_kinds`：依路徑判斷為這些種類的檔案不切片（見 `indexing.file_kinds`），並計入集合識別。
+    """
     with session.begin_nested():
         return _build_chunk_set(
             session,
             snapshot_id,
             max_bytes=max_bytes,
             structure_index_id=structure_index_id,
+            excluded_kinds=excluded_kinds,
             checkpoint=checkpoint,
         )
 
@@ -74,6 +80,7 @@ def _build_chunk_set(
     *,
     max_bytes: int,
     structure_index_id: int | None,
+    excluded_kinds: tuple[str, ...],
     checkpoint: Callable[[], None] | None,
 ) -> ChunkSetSummary:
     if not 4 <= max_bytes <= 2_147_483_647:
@@ -100,7 +107,7 @@ def _build_chunk_set(
             )
         structure_profile_hash = structure_index.index_profile_hash
 
-    profile_hash = chunk_profile_hash(max_bytes, structure_index_id)
+    profile_hash = chunk_profile_hash(max_bytes, structure_index_id, excluded_kinds)
     chunk_set_id = session.scalar(
         pg_insert(RetrievalChunkSet)
         .values(
@@ -123,6 +130,9 @@ def _build_chunk_set(
         ).scalar_one()
         return ChunkSetSummary(existing.id, True, existing.chunk_count)
 
+    kind_filter = (
+        [kind_expression(SnapshotFile.path).not_in(excluded_kinds)] if excluded_kinds else []
+    )
     pending: list[dict[str, Any]] = []
     count = 0
     last_file_id = 0
@@ -135,6 +145,7 @@ def _build_chunk_set(
                 SnapshotFile.snapshot_id == snapshot_id,
                 SnapshotFile.status == "imported",
                 SnapshotFile.id > last_file_id,
+                *kind_filter,
             )
             .order_by(SnapshotFile.id)
             .limit(_FILE_BATCH_SIZE)

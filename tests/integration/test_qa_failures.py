@@ -599,11 +599,12 @@ def test_qa_failures_migration_refuses_downgrade_while_attempts_are_recorded(
     _insert_question(db_engine)
     with db_engine.begin() as connection:
         connection.execute(text("UPDATE qa_questions SET attempts = 2"))
+    head = _version(db_engine)
 
     with pytest.raises(DBAPIError, match="Cannot downgrade"):
         command.downgrade(alembic_config(test_database_url), "0021")
 
-    assert _version(db_engine) == "0022"
+    assert _version(db_engine) == head
     with db_engine.connect() as connection:
         assert connection.scalar(text("SELECT attempts FROM qa_questions")) == 2
 
@@ -613,6 +614,7 @@ def test_qa_failures_migration_round_trip_keeps_questions_without_attempts(
 ) -> None:
     config = alembic_config(test_database_url)
     _insert_question(db_engine)  # attempts 取預設值 0
+    head = _version(db_engine)
     try:
         command.downgrade(config, "0021")
 
@@ -631,7 +633,7 @@ def test_qa_failures_migration_round_trip_keeps_questions_without_attempts(
 
         command.upgrade(config, "head")
 
-        assert _version(db_engine) == "0022"
+        assert _version(db_engine) == head
         with db_engine.connect() as connection:
             assert connection.scalar(text("SELECT attempts FROM qa_questions")) == 0
         command.check(config)

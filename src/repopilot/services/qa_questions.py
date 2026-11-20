@@ -175,7 +175,6 @@ def submit_question(
         cost_usd=token_cost_usd(input_bound, max_tokens, prerequisites.price),
     )
 
-    # 構造 retrieval_filters JSON
     retrieval_filters: dict[str, object] = {}
     if file_kinds:
         retrieval_filters["file_kinds"] = file_kinds
@@ -185,7 +184,7 @@ def submit_question(
     row = QaQuestion(
         question=question,
         snapshot_ids=snapshot_ids,
-        retrieval_filters=retrieval_filters,
+        retrieval_filters=retrieval_filters or None,
         provider=PROVIDER,
         model=prerequisites.model,
         prompt_version=PROMPT_VERSION,
@@ -331,3 +330,46 @@ def delete_all_questions(session: Session) -> tuple[int, int]:
     session.rollback()
     logger.info("qa_questions_deleted", extra={"deleted": len(deleted), "skipped_active": skipped})
     return len(deleted), skipped
+
+
+# --- 租約過期清掃（C3／CL-04） ---
+
+WORKER_LOST_CODE = "qa_worker_lost"
+
+
+def lock_active_question(session: Session, job_id: int) -> QaQuestion | None:
+    """鎖定 job 對應、仍是排隊或執行中的問答；沒有就回 None。"""
+    return session.execute(
+        select(QaQuestion)
+        .where(QaQuestion.job_id == job_id, QaQuestion.status.in_(("queued", "running")))
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    ).scalar_one_or_none()
+
+
+def close_lost_question(
+    session: Session, question: QaQuestion, *, status: str, now: datetime
+) -> None:
+    """清掃把 qa_question job 結束時呼叫：問答跟著結束，開著的預留一併結束（同一交易，不提交）。
+
+    不知道供應商呼叫有沒有發生：預留保守結算（沿用預留量並標記 `usage_unknown`），與重跑時的
+    `qa_interrupted` 相同。預留因此結束，不需要手動重置額度。
+    """
+    reservation_id = question.reservation_id
+    if reservation_id is not None and usage_ledger.lock_and_check_open(session, reservation_id):
+        price = settings_service.get_prices(session).get(
+            question.model, ModelPrice(Decimal(0), Decimal(0))
+        )
+        totals = usage_ledger.settle(
+            session, reservation_id, None, price=price, now=now, commit=False
+        )
+        question.input_tokens = (question.input_tokens or 0) + totals.input_tokens
+        question.output_tokens = (question.output_tokens or 0) + totals.output_tokens
+        question.cost_usd = (question.cost_usd or Decimal(0)) + totals.cost_usd
+        question.usage_unknown = True
+    question.status = status
+    if status == "failed":
+        question.error_code = WORKER_LOST_CODE
+        question.error_summary = "The worker stopped sending heartbeats while running the question."
+    question.finished_at = now
+    session.flush()

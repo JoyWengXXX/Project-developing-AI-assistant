@@ -15,7 +15,7 @@ import logging
 import random
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Any, Protocol, cast
 
 from sqlalchemy import CursorResult, delete, exists, select, update
@@ -24,7 +24,7 @@ from sqlalchemy.orm import Session
 from repopilot.config import Settings
 from repopilot.db.models import Job, JobDispatch
 from repopilot.logging_config import APP_LOGGER_NAME
-from repopilot.services import job_rules
+from repopilot.services import job_rules, qa_questions
 from repopilot.services.jobs import db_now, finish_locked, requeue_locked, schedule_dispatch
 
 logger = logging.getLogger(f"{APP_LOGGER_NAME}.services.job_dispatch")
@@ -148,7 +148,8 @@ def recover_expired_leases(
     - 已有取消請求 → `cancelled`（不重試一個使用者已經要取消的工作）。
     - `attempt < max_attempts` → `queued`（`worker_lost`、退避、新的待派送事件）。
     - 否則 → `failed`（`worker_lost`）。
-
+    - `qa_question` 且問答已在執行中 → 直接 `failed`（重跑只會得到 `qa_interrupted`）；問答跟著
+      結束（`qa_worker_lost` 或 `cancelled`），開著的預留在同一交易內結算（C3）。
     `FOR UPDATE SKIP LOCKED`：正在被別的交易處理（例如擁有者正在發布結果）的列這一輪跳過，
     不與正常完成競爭；列鎖加上「租約過期」的 WHERE 條件，也保證擁有者若已延長租約就不會被接手。
     """
@@ -168,10 +169,21 @@ def recover_expired_leases(
             .all()
         )
         for job in jobs:
+            # 執行中的問答被中斷後，重跑也只會得到 qa_interrupted：不重新排隊，直接結束並結算預留
+            question = (
+                qa_questions.lock_active_question(session, job.id)
+                if job.kind == "qa_question"
+                else None
+            )
+            lost_running_question = question is not None and question.status == "running"
             if job.cancel_requested_at is not None:
                 finish_locked(session, job, "cancelled", now_expr)
+                if question is not None:
+                    qa_questions.close_lost_question(
+                        session, question, status="cancelled", now=now or datetime.now(UTC)
+                    )
                 cancelled += 1
-            elif job.attempt < job.max_attempts:
+            elif job.attempt < job.max_attempts and not lost_running_question:
                 requeue_locked(
                     session,
                     job,
@@ -195,6 +207,10 @@ def recover_expired_leases(
                     error_code="worker_lost",
                     error_summary="The worker stopped sending heartbeats and no attempts remain.",
                 )
+                if question is not None:
+                    qa_questions.close_lost_question(
+                        session, question, status="failed", now=now or datetime.now(UTC)
+                    )
                 failed += 1
             logger.info(
                 "job_lease_recovered",

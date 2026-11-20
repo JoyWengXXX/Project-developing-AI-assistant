@@ -930,6 +930,10 @@ class QaQuestion(Base):
     usage_unknown: Mapped[bool] = mapped_column(
         Boolean, default=False, server_default=text("false")
     )
+    # 任一次嘗試的實際用量超過該次預留（CL-03）；帳本仍以實際用量計入
+    exceeded_reservation: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default=text("false")
+    )
     provider_request_id: Mapped[str | None] = mapped_column(String(100))
     duration_ms: Mapped[int | None] = mapped_column(Integer)
     job_id: Mapped[int | None] = mapped_column(ForeignKey("jobs.id", ondelete="SET NULL"))

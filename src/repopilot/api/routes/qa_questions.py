@@ -39,12 +39,15 @@ SessionDep = Annotated[Session, Depends(get_session)]
 
 
 def _list_item(question: QaQuestion) -> dict[str, object]:
+    filters = question.retrieval_filters or {}
     return {
         "id": question.id,
         "status": question.status,
         "answer_status": question.answer_status,
         "question": question.question,
         "snapshot_ids": list(question.snapshot_ids),
+        "file_kinds": filters.get("file_kinds"),
+        "path_prefix": filters.get("path_prefix"),
         "provider": question.provider,
         "model": question.model,
         "error_code": question.error_code,
@@ -58,6 +61,7 @@ def _list_item(question: QaQuestion) -> dict[str, object]:
             estimated_usd=question.estimated_cost_usd,
             estimated_input_tokens=question.estimated_input_tokens,
             actual_usd=question.cost_usd,
+            exceeded_reservation=question.exceeded_reservation,
         ),
         "job_id": question.job_id,
         "created_at": question.created_at,

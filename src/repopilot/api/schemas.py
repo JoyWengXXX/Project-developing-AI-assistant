@@ -581,7 +581,12 @@ class RetrievalSearchRequest(BaseModel):
     mode: Literal["keyword", "semantic", "hybrid"]
     limit: int = Field(default=10, ge=1, le=50)
     file_kinds: list[FileKind] | None = Field(default=None, description="篩選檔案種類")
-    path_prefix: str | None = Field(default=None, description="篩選路徑前綴")
+    path_prefix: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=1024,
+        description="路徑前綴（區分大小寫，不是萬用字元）",
+    )
 
     @field_validator("snapshot_ids")
     @classmethod
@@ -804,7 +809,12 @@ class QaQuestionCreate(BaseModel):
     ]
     max_tokens: int | None = Field(default=None, strict=True, ge=1, le=MAX_TOKENS_CEILING)
     file_kinds: list[FileKind] | None = Field(default=None, description="篩選檔案種類")
-    path_prefix: str | None = Field(default=None, description="篩選路徑前綴")
+    path_prefix: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=1024,
+        description="路徑前綴（區分大小寫，不是萬用字元）",
+    )
 
     @field_validator("snapshot_ids")
     @classmethod
@@ -919,6 +929,8 @@ class QaCostResponse(BaseModel):
     estimated_usd: UsdAmount
     estimated_input_tokens: int
     actual_usd: UsdAmount | None
+    # true＝實際用量超過預留；仍以實際用量計入每日累計
+    exceeded_reservation: bool
 
 
 class QaQuestionListItem(BaseModel):
@@ -927,6 +939,9 @@ class QaQuestionListItem(BaseModel):
     answer_status: QaAnswerStatus | None
     question: str
     snapshot_ids: list[int]
+    # 當次檢索範圍（CL-01）；null 表示沒有篩選
+    file_kinds: list[FileKind] | None
+    path_prefix: str | None
     provider: str
     model: str
     error_code: str | None

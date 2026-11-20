@@ -7,7 +7,7 @@
 import json
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
@@ -25,18 +25,25 @@ from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlalchemy.orm import Session
 
 from repopilot.config import Settings
-from repopilot.db.models import Job
 from repopilot.embedding.profile import EmbeddingProfile
 from repopilot.main import create_app
 from repopilot.qa import usage_ledger
+from repopilot.qa.errors import ProviderTimeoutError
 from repopilot.qa.evaluation import EvalConfigError, load_dataset
 from repopilot.qa.fake_provider import FakeProvider
 from repopilot.qa.pricing import DEFAULT_PRICES
 from repopilot.qa.prompts import PROMPT_VERSION, SYSTEM_PROMPT
-from repopilot.qa.provider import QAProvider, Usage
+from repopilot.qa.provider import GenerateRequest, QAProvider, Usage
 from repopilot.qa.question_rules import DEFAULT_MAX_TOKENS, input_tokens_upper_bound
 from repopilot.qa.usage_ledger import UsageLimits, token_cost_usd
-from repopilot.services import job_runner, qa_question_runner, retrieval_job_runner, retrieval_jobs
+from repopilot.services import (
+    job_dispatch,
+    job_runner,
+    qa_question_runner,
+    retrieval_job_runner,
+    retrieval_jobs,
+)
+from repopilot.services import jobs as job_service
 from repopilot.services.qa_eval_cli import DbEvalBackend, resolve_snapshot_ids
 from tests.github_helpers import capture_logs
 from tests.integration.conftest import alembic_config
@@ -164,30 +171,7 @@ def _index_snapshot(engine: Engine, snapshot_id: int, settings: Settings) -> Non
         submission = retrieval_jobs.submit_retrieval_job(session, snapshot_id, settings)
         assert submission.job is not None
         job_id = submission.job.id
-    # 直接用 retrieval 服務來避免租約檢查複雜性（測試用）
-    with Session(engine, expire_on_commit=False) as session:
-        job = session.query(Job).filter(Job.id == job_id).one()
-        from uuid import uuid4
-
-        # 模擬租約取得（簡化版：跳過心跳）
-        job.lease_token = uuid4()
-        job.status = "running"
-        session.flush()
-
-        def dummy_checkpoint() -> None:
-            pass
-
-        from repopilot.services.retrieval_job_runner import run_retrieval
-
-        try:
-            finished: dict[str, str] = {}
-            run_retrieval(
-                session, job, job.lease_token, engine, settings, dummy_checkpoint, finished
-            )
-            session.commit()
-        except Exception:
-            session.rollback()
-            raise
+    assert job_runner.run_job(job_id, engine, settings) == "succeeded"
 
 
 @pytest.fixture
@@ -572,7 +556,9 @@ def test_qa_questions_stored_key_that_cannot_be_decrypted_counts_as_not_configur
         {"snapshot_ids": []},
         {"snapshot_ids": [1, 1]},
         {"max_tokens": 0},
-        {"file_kinds": ["source"]},
+        {"file_kinds": ["binary"]},
+        {"path_prefix": ""},
+        {"path_prefix": "a" * 1025},
     ],
 )
 def test_qa_questions_invalid_request_is_422(env: Env, body: dict[str, Any]) -> None:
@@ -581,6 +567,39 @@ def test_qa_questions_invalid_request_is_422(env: Env, body: dict[str, Any]) -> 
     assert response.status_code == 422
     assert response.json()["error"]["code"] == "validation_error"
     assert _count(env.engine, "qa_questions") == 0
+
+
+@pytest.mark.parametrize(
+    ("scope", "sends_chunks"),
+    [
+        ({"file_kinds": ["source"]}, True),
+        ({"file_kinds": ["docs", "test"]}, False),
+        ({"path_prefix": "src/"}, True),
+        ({"path_prefix": "docs/"}, False),
+        ({"path_prefix": "src%"}, False),  # `%` 是字面字元，不是萬用字元
+    ],
+)
+def test_qa_questions_retrieval_scope_limits_the_chunks_and_is_kept_on_the_trace(
+    env: Env, scope: dict[str, Any], sends_chunks: bool
+) -> None:
+    """CL-01：範圍篩選套用到檢索；範圍外沒有片段送出，追蹤記錄保存當次範圍。"""
+    env.provider = FakeProvider(text=_success_text())
+
+    done = _ask_and_run(env, **scope)
+
+    assert done["file_kinds"] == scope.get("file_kinds")
+    assert done["path_prefix"] == scope.get("path_prefix")
+    assert bool(done["context_chunks"]) is sends_chunks
+    assert all(chunk["path"] == PATH for chunk in done["context_chunks"])
+    assert len(env.provider.requests) == (1 if sends_chunks else 0)
+
+
+def test_qa_questions_without_scope_records_no_filters(env: Env) -> None:
+    env.provider = FakeProvider(text=_success_text())
+
+    done = _ask_and_run(env)
+
+    assert done["file_kinds"] is None and done["path_prefix"] is None
 
 
 # --- 粗略額度預檢（提問時）與精確預留（worker） ---
@@ -640,7 +659,8 @@ def test_qa_questions_exact_budget_check_in_worker_fails_without_calling_the_pro
     assert done["usage"] == {"input_tokens": None, "output_tokens": None, "usage_unknown": False}
     assert done["cost"]["actual_usd"] is None
     assert len(done["context_chunks"]) == 3  # 追蹤記錄保留已組好的片段
-    assert env.provider.requests == [] and env.keys_seen == []
+    # D-C2 (c)：預留前會先呼叫 count_tokens（需要 key），但不會送出生成請求
+    assert env.provider.requests == []
     assert _ledger(env.engine) == []
     job = env.client.get(f"/api/v1/jobs/{submitted['job']['id']}").json()
     assert job["status"] == "failed" and job["error"]["code"] == "token_budget_exceeded"
@@ -674,8 +694,49 @@ def test_qa_questions_settlement_uses_the_providers_actual_usage(env: Env) -> No
     # 預估值是預留值（依真實片段計算），並且大於 0
     assert done["cost"]["estimated_input_tokens"] == reserve["input_tokens"] > 0
     assert Decimal(done["cost"]["estimated_usd"]) == reserve["cost_usd"]
+    assert done["cost"]["exceeded_reservation"] is False
     today = env.client.get("/api/v1/qa/usage").json()["today"]
     assert (today["input_tokens"], today["output_tokens"]) == (1234, 56)
+
+
+def test_qa_questions_usage_above_the_reservation_is_settled_in_full_and_flagged(
+    env: Env,
+) -> None:
+    """CL-03：預留不足時以實際用量結算、標示超出預留，每日累計用實際值。"""
+    env.provider = FakeProvider(
+        text=_success_text(),
+        usage=Usage(input_tokens=50_448, output_tokens=21),
+        input_token_estimate=100,
+    )
+
+    done = _ask_and_run(env)
+
+    reserve, settle = _ledger(env.engine)
+    assert reserve["input_tokens"] + reserve["output_tokens"] < 50_448 + 21
+    assert (settle["input_tokens"], settle["output_tokens"]) == (50_448, 21)
+    assert done["cost"]["exceeded_reservation"] is True
+    today = env.client.get("/api/v1/qa/usage").json()["today"]
+    assert (today["input_tokens"], today["output_tokens"]) == (50_448, 21)
+
+
+class _CountFailsProvider(FakeProvider):
+    def count_tokens(self, request: GenerateRequest) -> int:
+        raise ProviderTimeoutError("fake count timeout")
+
+
+def test_qa_questions_count_tokens_failure_reserves_the_local_estimate_times_the_factor(
+    env: Env,
+) -> None:
+    """D-C2 (c)：計數失敗不讓問答失敗，改用本機估計 × 安全係數預留。"""
+    env.provider = _CountFailsProvider(text=_success_text())
+    reserved = []
+    for factor in (1.0, 2.0):
+        env.settings = env.settings.model_copy(update={"qa_token_estimate_safety_factor": factor})
+        done = _ask_and_run(env)
+        assert done["status"] == "succeeded"
+        reserved.append(done["cost"]["estimated_input_tokens"])
+
+    assert reserved[1] == reserved[0] * 2 > 0
 
 
 def test_qa_questions_unknown_usage_keeps_the_reserved_amount_and_is_flagged(env: Env) -> None:
@@ -1010,6 +1071,75 @@ def test_qa_questions_rerun_of_an_interrupted_question_settles_its_reservation(
     assert env.provider.requests == []
 
 
+@pytest.mark.parametrize("cancel_requested", [False, True], ids=["lost", "cancel_requested"])
+def test_qa_questions_lease_sweep_ends_a_running_question_and_settles_its_reservation(
+    env: Env, cancel_requested: bool
+) -> None:
+    """CL-04：worker 中斷（租約過期）後清掃，問答結束、預留在同一交易結算，不需要手動重置。"""
+    submitted = _submit(env)
+    job_id = submitted["job"]["id"]
+    reservation_id = uuid4()
+    with Session(env.engine) as session:
+        assert job_service.acquire_lease(session, job_id, env.settings) is not None
+        usage_ledger.reserve(
+            session,
+            estimated_input_tokens=1000,
+            max_tokens=500,
+            price=DEFAULT_PRICES[HAIKU],
+            limits=UsageLimits(),
+            now=datetime.now(UTC),
+            tz=ZoneInfo("Asia/Taipei"),
+            reservation_id=reservation_id,
+        )
+    with env.engine.begin() as connection:
+        connection.execute(
+            text(
+                "UPDATE qa_questions SET status = 'running', started_at = now(), "
+                "reservation_id = :rid WHERE id = :id"
+            ),
+            {"rid": reservation_id, "id": submitted["id"]},
+        )
+        if cancel_requested:
+            connection.execute(
+                text("UPDATE jobs SET cancel_requested_at = now() WHERE id = :id"), {"id": job_id}
+            )
+
+    with Session(env.engine) as session:
+        counts = job_dispatch.recover_expired_leases(
+            session, env.settings, now=datetime.now(UTC) + timedelta(hours=1)
+        )
+
+    done = _get(env, submitted["id"])
+    job = env.client.get(f"/api/v1/jobs/{job_id}").json()
+    if cancel_requested:
+        assert counts == (0, 0, 1)
+        assert job["status"] == "cancelled" and done["status"] == "cancelled"
+    else:
+        assert counts == (0, 1, 0)  # 還有重試次數也不重新排隊
+        assert job["status"] == "failed" and job["error"]["code"] == "worker_lost"
+        assert done["status"] == "failed" and done["error"]["code"] == "qa_worker_lost"
+    assert done["usage"] == {"input_tokens": 1000, "output_tokens": 500, "usage_unknown": True}
+    assert [e["event_type"] for e in _ledger(env.engine)] == ["reserve", "settle"]
+    _assert_no_open_reservations(env.engine)
+    assert env.provider.requests == []
+
+
+def test_qa_questions_lease_sweep_requeues_a_question_that_never_started(env: Env) -> None:
+    submitted = _submit(env)
+    job_id = submitted["job"]["id"]
+    with Session(env.engine) as session:
+        assert job_service.acquire_lease(session, job_id, env.settings) is not None
+
+    with Session(env.engine) as session:
+        counts = job_dispatch.recover_expired_leases(
+            session, env.settings, now=datetime.now(UTC) + timedelta(hours=1)
+        )
+
+    assert counts == (1, 0, 0)
+    assert _get(env, submitted["id"])["status"] == "queued"
+    assert _ledger(env.engine) == []
+
+
 def test_qa_questions_job_rerun_of_a_finished_question_does_not_run_it_again(env: Env) -> None:
     env.provider = FakeProvider(text=_success_text())
     submitted = _submit(env)
@@ -1211,13 +1341,12 @@ def test_qa_questions_migration_downgrade_refuses_while_questions_exist(
     db_engine: Engine, test_database_url: str
 ) -> None:
     _insert_question(db_engine)
+    head = _version(db_engine)
 
-    with pytest.raises(DBAPIError, match="Cannot downgrade|check constraint"):
+    with pytest.raises(DBAPIError, match="Cannot downgrade"):
         command.downgrade(alembic_config(test_database_url), "0020")
 
-    # 降版應因約束檢查失敗而停止，版本應不低於 0022
-    version = _version(db_engine)
-    assert int(version) >= 22 and _tables(db_engine) >= QA_TABLES
+    assert _version(db_engine) == head and _tables(db_engine) >= QA_TABLES
     assert _count(db_engine, "qa_questions") == 1
 
 
@@ -1231,13 +1360,12 @@ def test_qa_questions_migration_downgrade_refuses_while_question_jobs_exist(
                 "VALUES ('qa_question', 'qa_question:1', 3)"
             )
         )
+    head = _version(db_engine)
 
-    with pytest.raises(DBAPIError, match="Cannot downgrade|check constraint"):
+    with pytest.raises(DBAPIError, match="Cannot downgrade"):
         command.downgrade(alembic_config(test_database_url), "0020")
 
-    # 降版應因約束檢查或明確錯誤而停止
-    version = _version(db_engine)
-    assert int(version) >= 22
+    assert _version(db_engine) == head
     assert _count(db_engine, "jobs") == 1
 
 

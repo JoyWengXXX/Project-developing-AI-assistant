@@ -68,7 +68,7 @@ def _scope_conditions(
 
     # 路徑前綴篩選
     if path_prefix:
-        conditions.append(SnapshotFile.path.startswith(path_prefix))
+        conditions.append(SnapshotFile.path.startswith(path_prefix, autoescape=True))
 
     return conditions
 

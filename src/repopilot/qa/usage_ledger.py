@@ -70,6 +70,8 @@ class UsageTotals:
     input_tokens: int
     output_tokens: int
     cost_usd: Decimal
+    # 只有 settle 會設定：實際用量（已知）超過該次預留的 token 數
+    exceeded_reservation: bool = False
 
     @property
     def total_tokens(self) -> int:
@@ -184,7 +186,11 @@ def settle(
             unknown = True
         else:
             cost = token_cost_usd(usage.input_tokens, usage.output_tokens, price)
-            totals = UsageTotals(usage.input_tokens, usage.output_tokens, cost)
+            exceeded = (
+                usage.input_tokens + usage.output_tokens
+                > reserved.input_tokens + reserved.output_tokens
+            )
+            totals = UsageTotals(usage.input_tokens, usage.output_tokens, cost, exceeded)
             unknown = False
         _append(
             session,
@@ -274,6 +280,16 @@ def _lock(session: Session) -> None:
     session.execute(
         text("SELECT pg_advisory_xact_lock(CAST(:key AS bigint))"), {"key": qa_usage_lock_key()}
     )
+
+
+def lock_and_check_open(session: Session, reservation_id: UUID) -> bool:
+    """取得帳本鎖（持有到交易結束）並回報預留是否仍開著；不提交、不回滾。"""
+    _lock(session)
+    try:
+        _open_reservation(session, reservation_id)
+    except (QaReservationNotFoundError, QaReservationFinalizedError):
+        return False
+    return True
 
 
 def _append(

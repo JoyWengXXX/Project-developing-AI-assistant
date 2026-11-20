@@ -357,55 +357,28 @@ def _execute(
             prerequisites = check_prerequisites(session, settings, snapshot_ids)
             state.price = prerequisites.price
 
-        # C2：嘗試使用 provider count_tokens 獲得精確 token 數（預留前進行估計優化）
-        # 但預留仍使用本機估計（可靠且不依賴 provider），以支持早期預算檢查
-        final_estimated_input = estimated_input
-        estimation_method = "local_estimate"
-        precise_estimate = None
-
+        # D-C2 (c)：先以供應商 count_tokens 估計輸入；任何失敗（含建立客戶端）都改用本機估計 ×
+        # 安全係數，客戶端在預留之後重建，建立失敗時預留會被釋放
+        counted: int | None = None
         try:
             if provider is None:
                 provider = build_provider(api_key)
-            provider_count = _try_provider_count_tokens(settings, provider, request)
-            if provider_count is not None:
-                precise_estimate = provider_count
-                estimation_method = "provider_count"
+            counted = provider.count_tokens(request)
         except Exception:
-            # count_tokens 失敗：降級為本機估計×係數（用於預留）
-            # provider 重置以便錯誤恢復
             provider = None
-            logger.info(
-                "qa_token_count_fallback",
-                extra={
-                    "question_id": question_id,
-                    "reason": "count_tokens_error",
-                },
-            )
+        if counted is None:
+            logger.info("qa_token_count_fallback", extra={"question_id": question_id})
+            counted = int(estimated_input * settings.qa_token_estimate_safety_factor)
 
-        # 預留時使用本機估計×係數（確保預算檢查不受 provider 狀態影響）
-        # 如果 count_tokens 成功，之後會用更精確的值
-        factor = settings.qa_token_estimate_safety_factor
-        final_estimated_input = precise_estimate or int(estimated_input * factor)
-
-        _reserve(
-            session,
-            settings,
-            question_id,
-            state,
-            final_estimated_input,
-            prerequisites.limits,
-            estimation_method,
-        )
+        _reserve(session, settings, question_id, state, counted, prerequisites.limits)
         attempt += 1
         _count_attempt(session, question_id, attempt)
 
         jobs.update_progress(session, job_id, token, phase="generating")
         heartbeat_checkpoint()
 
-        # 確認 provider 可用；若未建立或之前失敗，現在嘗試重新建立
         if provider is None:
             provider = build_provider(api_key)
-
         state.call_started = True
         try:
             response = provider.generate(request)
@@ -446,14 +419,12 @@ def _reserve(
     state: _State,
     estimated_input: int,
     limits: UsageLimits,
-    estimation_method: str = "local_estimate",
 ) -> None:
     row = _load_question(session, question_id)
     reservation_id = uuid4()
     row.reservation_id = reservation_id
     row.estimated_input_tokens = estimated_input
     row.estimated_cost_usd = token_cost_usd(estimated_input, row.max_tokens, state.price)
-    row.estimation_method = estimation_method  # type: ignore[attr-defined]
     session.commit()
     state.begin_attempt(reservation_id)
     usage_ledger.reserve(
@@ -489,18 +460,6 @@ def _close_attempt(
         _apply_usage(row, closed.totals, closed.usage_unknown, error.request_id)
     session.commit()
     return True
-
-
-def _try_provider_count_tokens(
-    settings: Settings, provider: QAProvider, request: GenerateRequest
-) -> int | None:
-    """嘗試透過供應商 count_tokens API 取得精確 token 數；失敗時返回 None"""
-    try:
-        # 設定超時避免 worker 卡住
-        return provider.count_tokens(request)
-    except Exception:
-        # 供應商不支援、逾時或錯誤時降級
-        return None
 
 
 def _load_question(session: Session, question_id: int) -> QaQuestion:
@@ -713,6 +672,7 @@ def _apply_usage(
     row.output_tokens = (row.output_tokens or 0) + totals.output_tokens
     row.cost_usd = (row.cost_usd or Decimal(0)) + totals.cost_usd
     row.usage_unknown = bool(row.usage_unknown) or unknown
+    row.exceeded_reservation = bool(row.exceeded_reservation) or totals.exceeded_reservation
     if request_id is not None:
         row.provider_request_id = request_id[:100]
 
@@ -811,7 +771,6 @@ def _record_failure(
         row.status = "failed"
         row.error_code = code
         row.error_summary = message[:500]
-        row.failure_code = code  # type: ignore[attr-defined]
         if closed is not None:
             _apply_usage(row, closed.totals, closed.usage_unknown, _request_id(state, exc))
         if not state.reserved:

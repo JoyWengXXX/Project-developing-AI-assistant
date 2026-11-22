@@ -47,6 +47,8 @@ packages = ["src/repopilot"]
 line-length = 100
 target-version = "py312"
 src = ["src", "tests"]
+# 內建範本（scaffolds/）是給使用者新專案的內容，不是本專案的程式碼
+extend-exclude = ["scaffolds"]
 
 [tool.ruff.lint]
 select = ["E", "W", "F", "I", "B", "UP", "SIM", "RUF", "N", "S"]

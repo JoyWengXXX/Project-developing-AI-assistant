@@ -20,6 +20,54 @@ class InvalidRepositoryPathError(RepoPilotError):
     code = "invalid_repository_path"
 
 
+class ProjectPathInvalidError(RepoPilotError):
+    """初始專案路徑不合格：非絕對路徑、不存在或不可讀、含 symlink，或不在允許的根目錄內。"""
+
+    code = "project_path_invalid"
+
+
+class ProjectDependenciesNotFoundError(RepoPilotError):
+    """專案根目錄沒有任何可辨識的依賴檔；`detected_language` 與 `suggestions` 供使用者補齊。"""
+
+    code = "project_dependencies_not_found"
+
+    def __init__(
+        self, message: str, *, detected_language: str | None, suggestions: list[str]
+    ) -> None:
+        super().__init__(message)
+        self.detected_language = detected_language
+        self.suggestions = suggestions
+
+
+class ProjectAnswerInvalidError(RepoPilotError):
+    """對話中某個回答不在該步驟的選項內或格式不合；`step` 為 None 表示回答數量多於問題數量。"""
+
+    code = "project_answer_invalid"
+
+    def __init__(self, message: str, *, step: str | None, options: list[str]) -> None:
+        super().__init__(message)
+        self.step = step
+        self.options = options
+
+
+class ProjectPlanNotFoundError(RepoPilotError):
+    """指定的新專案計畫不存在。"""
+
+    code = "project_plan_not_found"
+
+
+class ProjectPlanInvalidOutputError(RepoPilotError):
+    """模型的規劃輸出不符合契約（格式錯誤或沒有任何有效檔案）；已呼叫模型，用量照實計入。"""
+
+    code = "project_plan_invalid_output"
+
+
+class ProjectPlanLockedError(RepoPilotError):
+    """計畫已確認（鎖定），刪除須明確帶 `force=true`。"""
+
+    code = "project_plan_locked"
+
+
 class RepositoryNotFoundError(RepoPilotError):
     """指定的 Repository 不存在。"""
 

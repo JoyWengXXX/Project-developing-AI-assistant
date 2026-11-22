@@ -670,7 +670,9 @@ export interface ValidationDetail {
 // 非 422 的錯誤可附 details 物件（內容不可信，使用前須檢查型別）：
 //   索引／快照錯誤：snapshot_id、index_status；search_scope_too_large：chunk_count、max_chunks；
 //   token_budget_exceeded：reason（per_request_tokens／daily_tokens／daily_cost_usd）、limit、requested、used（token 為數字、美元為字串）；
-//   qa_egress_not_consented：repositories（沒有同意的 repo）。
+//   qa_egress_not_consented：repositories（沒有同意的 repo）；
+//   project_dependencies_not_found：detected_language（可能為 null）、suggestions；
+//   project_answer_invalid：step（可能為 null）、options。
 export interface ErrorDetailsObject {
   index_status?: string
   snapshot_id?: number
@@ -681,6 +683,10 @@ export interface ErrorDetailsObject {
   requested?: number | string
   used?: number | string
   repositories?: { repository_id: number; name: string }[]
+  detected_language?: string | null
+  suggestions?: string[]
+  step?: string | null
+  options?: string[]
 }
 
 export type ErrorDetails = ValidationDetail[] | ErrorDetailsObject
@@ -827,3 +833,153 @@ export interface TextMatch {
 export type FileSearchPage = SearchPageBase<FileMatch>
 export type SymbolSearchPage = SearchPageBase<SymbolMatch>
 export type TextSearchPage = SearchPageBase<TextMatch>
+
+// ---------- 新專案（第五階段，對應 api/project_schemas.py） ----------
+
+export interface ProjectConfig {
+  language: string
+  framework: string | null
+  orm: string | null
+  test_framework: string | null
+  database: string | null
+  dependencies: Record<string, string>
+  root_path: string | null
+  detected_at: string | null
+  init_instructions: string | null
+}
+
+export interface ProjectInitResult {
+  project_config: ProjectConfig
+  confidence: 'high' | 'medium'
+  manifests: string[]
+  language_files: Record<string, number>
+  directories: string[]
+}
+
+export interface ProjectConversationMessage {
+  role: 'user' | 'assistant'
+  content: string
+}
+
+export interface ProjectRecommendation {
+  value: string
+  reason: string | null
+  source: 'reference' | 'llm'
+}
+
+export interface ProjectLlmStatus {
+  state: 'used' | 'skipped' | 'failed' | 'not_needed'
+  code: string | null
+  model: string | null
+  input_tokens: number | null
+  output_tokens: number | null
+}
+
+export interface ProjectTemplate {
+  name: string
+  template_path: string
+  files: string[]
+}
+
+export interface ProjectPlanReferenceLocation {
+  path: string
+  start_line: number
+  end_line: number
+}
+
+export interface ProjectPlanFile {
+  path: string
+  module: string
+  purpose: string
+  complexity: 'low' | 'medium' | 'high'
+  references: ProjectPlanReferenceLocation[]
+}
+
+export interface ProjectPlanDocument {
+  reference_analysis: {
+    detected: { language: string; framework: string | null } | null
+    architecture_pattern: string
+    layer_count: number | null
+    core_modules: string[]
+  } | null
+  architecture: {
+    summary: string
+    layer_count: number | null
+    modules: { name: string; purpose: string; depends_on: string[] }[]
+  }
+  files: ProjectPlanFile[]
+  open_questions: string[]
+  rejected_files: { path: string | null; reason: string }[]
+  dropped_references: (ProjectPlanReferenceLocation & { file: string; reason: string })[]
+  warnings: string[]
+  workload: {
+    file_count: number
+    by_complexity: Record<string, number>
+    input_tokens: number
+    output_tokens: number
+    cost_usd: string
+    model: string
+    note: string
+  }
+}
+
+export interface ProjectPlanListItem {
+  id: number
+  status: 'draft' | 'confirmed'
+  locked: boolean
+  created_at: string
+  confirmed_at: string | null
+  language: string
+  framework: string | null
+  requirements_excerpt: string
+  file_count: number
+  reference: { snapshot_id: number | null; repository_name: string; commit_sha: string; available: boolean } | null
+  cost_usd: string
+}
+
+export interface ProjectPlanList {
+  items: ProjectPlanListItem[]
+  total: number
+  limit: number
+  offset: number
+}
+
+export interface ProjectPlan {
+  id: number
+  status: 'draft' | 'confirmed'
+  locked: boolean
+  created_at: string
+  confirmed_at: string | null
+  target_project_config: ProjectConfig
+  project_requirements: string
+  reference: {
+    snapshot_id: number | null
+    repository_name: string
+    commit_sha: string
+    available: boolean
+  } | null
+  plan: ProjectPlanDocument
+  plan_markdown: string
+  usage: {
+    provider: string
+    model: string
+    prompt_version: string
+    input_tokens: number
+    output_tokens: number
+    cost_usd: string
+    usage_known: boolean
+  }
+}
+
+export interface ProjectCreateWithLlmResult {
+  done: boolean
+  step: string | null
+  question: string | null
+  options: string[]
+  collected: Record<string, string | null>
+  recommendation: ProjectRecommendation | null
+  llm: ProjectLlmStatus
+  project_config: ProjectConfig | null
+  template: ProjectTemplate | null
+}
+

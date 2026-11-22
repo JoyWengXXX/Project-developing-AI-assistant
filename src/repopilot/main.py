@@ -12,6 +12,7 @@ from repopilot.api.routes import (
     github_repositories,
     health,
     jobs,
+    projects,
     qa,
     qa_questions,
     qa_settings,
@@ -59,4 +60,5 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(qa.router)
     app.include_router(qa_questions.router)
     app.include_router(qa_settings.router)
+    app.include_router(projects.router)
     return app

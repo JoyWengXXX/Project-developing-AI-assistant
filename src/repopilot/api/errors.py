@@ -36,6 +36,12 @@ from repopilot.errors import (
     JobNotRetryableError,
     ManagedStorageError,
     PathNotMappedError,
+    ProjectAnswerInvalidError,
+    ProjectDependenciesNotFoundError,
+    ProjectPathInvalidError,
+    ProjectPlanInvalidOutputError,
+    ProjectPlanLockedError,
+    ProjectPlanNotFoundError,
     QaEgressNotConsentedError,
     QaModelNotSelectedError,
     QaProviderNotConfiguredError,
@@ -66,6 +72,8 @@ from repopilot.errors import (
     WorkerPathNotMappedError,
 )
 from repopilot.logging_config import APP_LOGGER_NAME
+from repopilot.qa.errors import QAProviderError
+from repopilot.qa.failures import OUTCOME_CODES, PROVIDER_MESSAGES, ProviderOutcomeError
 from repopilot.request_context import request_id_var
 
 logger = logging.getLogger(f"{APP_LOGGER_NAME}.api.errors")
@@ -144,11 +152,27 @@ ERROR_STATUS: dict[type[RepoPilotError], int] = {
     QaQuestionActiveError: 409,
     # 只在 worker 內部使用（成為 job 的 error.code），沒有 HTTP 端點會拋出
     QaQuestionFailedError: 500,
+    # 新專案初始骨架（第五階段 5-0a）：路徑不合格依 issue 回 400；缺依賴檔是內容問題，422
+    ProjectPathInvalidError: 400,
+    ProjectDependenciesNotFoundError: 422,
+    ProjectAnswerInvalidError: 422,
+    # 新專案計畫（5-1～5-2）：模型輸出不可用是上游問題（502），與問答的 provider_* 同類
+    ProjectPlanNotFoundError: 404,
+    ProjectPlanInvalidOutputError: 502,
+    # 刪除已確認（鎖定）的計畫須帶 force=true：目前狀態不允許，409
+    ProjectPlanLockedError: 409,
 }
 
 _HTTP_ERROR_CODES = {
     404: "not_found",
     405: "method_not_allowed",
+}
+
+# 供應商錯誤碼 → HTTP 狀態；未列出者 502（上游錯誤）。逾時 504，暫時性的限流與不可用 503
+_PROVIDER_STATUS = {
+    "provider_timeout": 504,
+    "provider_rate_limited": 503,
+    "provider_unavailable": 503,
 }
 
 
@@ -194,6 +218,10 @@ def _details_of(exc: RepoPilotError) -> dict[str, Any] | None:
         return {"chunk_count": exc.chunk_count, "max_chunks": exc.max_chunks}
     if isinstance(exc, SnapshotIndexNotReadyError):
         return {"index_status": exc.index_status}
+    if isinstance(exc, ProjectDependenciesNotFoundError):
+        return {"detected_language": exc.detected_language, "suggestions": exc.suggestions}
+    if isinstance(exc, ProjectAnswerInvalidError):
+        return {"step": exc.step, "options": exc.options}
     if isinstance(exc, QaEgressNotConsentedError):
         return {
             "repositories": [
@@ -210,6 +238,21 @@ def _details_of(exc: RepoPilotError) -> dict[str, Any] | None:
             details["used"] = exc.used
         return details
     return None
+
+
+def _handle_provider_error(_: Request, raw_exc: Exception) -> JSONResponse:
+    """同步呼叫模型的端點（5-1～5-2）：供應商錯誤是上游問題；訊息只用固定文字。"""
+    exc = cast(QAProviderError, raw_exc)
+    status_code = _PROVIDER_STATUS.get(exc.code, 502)
+    logger.warning("provider_error", extra={"error_code": exc.code})
+    message = PROVIDER_MESSAGES.get(exc.code, "The provider call failed.")
+    return error_response(status_code, exc.code, message)
+
+
+def _handle_provider_outcome(_: Request, raw_exc: Exception) -> JSONResponse:
+    exc = cast(ProviderOutcomeError, raw_exc)
+    code = OUTCOME_CODES[exc.outcome]
+    return error_response(502, code, PROVIDER_MESSAGES[code])
 
 
 def _handle_validation_error(_: Request, raw_exc: Exception) -> JSONResponse:
@@ -238,6 +281,8 @@ def _handle_database_error(_: Request, raw_exc: Exception) -> JSONResponse:
 # Starlette 依註冊的例外型別分派，handler 收到的必為對應型別
 def register_exception_handlers(app: FastAPI) -> None:
     app.add_exception_handler(RepoPilotError, _handle_domain_error)
+    app.add_exception_handler(QAProviderError, _handle_provider_error)
+    app.add_exception_handler(ProviderOutcomeError, _handle_provider_outcome)
     app.add_exception_handler(OperationalError, _handle_database_error)
     app.add_exception_handler(RequestValidationError, _handle_validation_error)
     app.add_exception_handler(StarletteHTTPException, _handle_http_exception)

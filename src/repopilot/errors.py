@@ -39,6 +39,17 @@ class ProjectDependenciesNotFoundError(RepoPilotError):
         self.suggestions = suggestions
 
 
+class ProjectAnswerInvalidError(RepoPilotError):
+    """對話中某個回答不在該步驟的選項內或格式不合；`step` 為 None 表示回答數量多於問題數量。"""
+
+    code = "project_answer_invalid"
+
+    def __init__(self, message: str, *, step: str | None, options: list[str]) -> None:
+        super().__init__(message)
+        self.step = step
+        self.options = options
+
+
 class RepositoryNotFoundError(RepoPilotError):
     """指定的 Repository 不存在。"""
 

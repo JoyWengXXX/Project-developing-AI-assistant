@@ -671,7 +671,8 @@ export interface ValidationDetail {
 //   索引／快照錯誤：snapshot_id、index_status；search_scope_too_large：chunk_count、max_chunks；
 //   token_budget_exceeded：reason（per_request_tokens／daily_tokens／daily_cost_usd）、limit、requested、used（token 為數字、美元為字串）；
 //   qa_egress_not_consented：repositories（沒有同意的 repo）；
-//   project_dependencies_not_found：detected_language（可能為 null）、suggestions。
+//   project_dependencies_not_found：detected_language（可能為 null）、suggestions；
+//   project_answer_invalid：step（可能為 null）、options。
 export interface ErrorDetailsObject {
   index_status?: string
   snapshot_id?: number
@@ -684,6 +685,8 @@ export interface ErrorDetailsObject {
   repositories?: { repository_id: number; name: string }[]
   detected_language?: string | null
   suggestions?: string[]
+  step?: string | null
+  options?: string[]
 }
 
 export type ErrorDetails = ValidationDetail[] | ErrorDetailsObject
@@ -851,5 +854,42 @@ export interface ProjectInitResult {
   manifests: string[]
   language_files: Record<string, number>
   directories: string[]
+}
+
+export interface ProjectConversationMessage {
+  role: 'user' | 'assistant'
+  content: string
+}
+
+export interface ProjectRecommendation {
+  value: string
+  reason: string | null
+  source: 'reference' | 'llm'
+}
+
+export interface ProjectLlmStatus {
+  state: 'used' | 'skipped' | 'failed' | 'not_needed'
+  code: string | null
+  model: string | null
+  input_tokens: number | null
+  output_tokens: number | null
+}
+
+export interface ProjectTemplate {
+  name: string
+  template_path: string
+  files: string[]
+}
+
+export interface ProjectCreateWithLlmResult {
+  done: boolean
+  step: string | null
+  question: string | null
+  options: string[]
+  collected: Record<string, string | null>
+  recommendation: ProjectRecommendation | null
+  llm: ProjectLlmStatus
+  project_config: ProjectConfig | null
+  template: ProjectTemplate | null
 }
 

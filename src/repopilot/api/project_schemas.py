@@ -40,3 +40,56 @@ class ProjectInitResponse(BaseModel):
     manifests: list[str]
     language_files: dict[str, int]
     directories: list[str]
+
+
+_INT32_MAX = 2**31 - 1
+
+
+class ProjectConversationMessage(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    role: Literal["user", "assistant"]
+    content: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=2000)]
+
+
+class ProjectCreateWithLlmRequest(BaseModel):
+    """第 N 則 user 訊息回答第 N 個問題；assistant 訊息只是前端的對話紀錄，後端不採用。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    reference_snapshot_id: int | None = Field(default=None, strict=True, ge=1, le=_INT32_MAX)
+    conversation: list[ProjectConversationMessage] = Field(default_factory=list, max_length=30)
+
+
+class ProjectRecommendationResponse(BaseModel):
+    value: str
+    reason: str | None
+    source: Literal["reference", "llm"]
+
+
+class ProjectLlmStatusResponse(BaseModel):
+    """LLM 只負責推薦；`skipped`／`failed` 時對話照常進行，沒有 LLM 推薦。"""
+
+    state: Literal["used", "skipped", "failed", "not_needed"]
+    code: str | None = None
+    model: str | None = None
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+
+
+class ProjectTemplateResponse(BaseModel):
+    name: str
+    template_path: str
+    files: list[str]
+
+
+class ProjectCreateWithLlmResponse(BaseModel):
+    done: bool
+    step: str | None
+    question: str | None
+    options: list[str]
+    collected: dict[str, str | None]
+    recommendation: ProjectRecommendationResponse | None
+    llm: ProjectLlmStatusResponse
+    project_config: ProjectConfig | None
+    template: ProjectTemplateResponse | None

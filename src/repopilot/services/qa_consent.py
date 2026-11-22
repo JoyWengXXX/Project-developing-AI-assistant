@@ -1,6 +1,7 @@
 """逐 repo 資料外送同意（第四階段 4-1c，規格 D2）：沒有資料列＝未同意（預設），撤回即刪除。"""
 
 import logging
+from collections.abc import Collection
 from datetime import datetime
 
 from sqlalchemy import delete, select
@@ -8,7 +9,7 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from repopilot.db.models import RepositoryQaConsent
+from repopilot.db.models import Repository, RepositoryQaConsent
 from repopilot.errors import RepositoryNotFoundError
 from repopilot.logging_config import APP_LOGGER_NAME
 from repopilot.services.repositories import get_repository
@@ -62,3 +63,25 @@ def list_consents(session: Session) -> list[RepositoryQaConsent]:
     return list(
         session.scalars(select(RepositoryQaConsent).order_by(RepositoryQaConsent.repository_id))
     )
+
+
+def missing_consents(session: Session, repository_ids: Collection[int]) -> list[tuple[int, str]]:
+    """尚未同意資料外送的 repo（id、名稱），依 id 排序；全部已同意時為空。"""
+    if not repository_ids:
+        return []
+    consented = set(
+        session.scalars(
+            select(RepositoryQaConsent.repository_id).where(
+                RepositoryQaConsent.repository_id.in_(repository_ids)
+            )
+        )
+    )
+    missing = set(repository_ids) - consented
+    if not missing:
+        return []
+    rows = session.execute(
+        select(Repository.id, Repository.name)
+        .where(Repository.id.in_(missing))
+        .order_by(Repository.id)
+    ).all()
+    return [(row[0], row[1]) for row in rows]

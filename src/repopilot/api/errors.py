@@ -36,6 +36,7 @@ from repopilot.errors import (
     JobNotRetryableError,
     ManagedStorageError,
     PathNotMappedError,
+    ProjectAnswerInvalidError,
     ProjectDependenciesNotFoundError,
     ProjectPathInvalidError,
     QaEgressNotConsentedError,
@@ -149,6 +150,7 @@ ERROR_STATUS: dict[type[RepoPilotError], int] = {
     # 新專案初始骨架（第五階段 5-0a）：路徑不合格依 issue 回 400；缺依賴檔是內容問題，422
     ProjectPathInvalidError: 400,
     ProjectDependenciesNotFoundError: 422,
+    ProjectAnswerInvalidError: 422,
 }
 
 _HTTP_ERROR_CODES = {
@@ -201,6 +203,8 @@ def _details_of(exc: RepoPilotError) -> dict[str, Any] | None:
         return {"index_status": exc.index_status}
     if isinstance(exc, ProjectDependenciesNotFoundError):
         return {"detected_language": exc.detected_language, "suggestions": exc.suggestions}
+    if isinstance(exc, ProjectAnswerInvalidError):
+        return {"step": exc.step, "options": exc.options}
     if isinstance(exc, QaEgressNotConsentedError):
         return {
             "repositories": [

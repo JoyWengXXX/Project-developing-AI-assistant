@@ -12,7 +12,7 @@ import os
 import re
 import tomllib
 from collections import Counter
-from collections.abc import Iterator, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -169,7 +169,9 @@ Confidence = Literal["high", "medium"]
 
 
 @dataclass(frozen=True)
-class ProjectDetection:
+class Classification:
+    """依賴檔內容與語言檔案數推得的結果；掃描檔案系統與分析快照共用。"""
+
     language: str
     framework: str | None
     orm: str | None
@@ -177,9 +179,14 @@ class ProjectDetection:
     database: str | None
     dependencies: dict[str, str]
     manifests: list[str]
+    confidence: Confidence
+
+
+@dataclass(frozen=True)
+class ProjectDetection:
+    classification: Classification
     language_files: dict[str, int]
     directories: list[str]
-    confidence: Confidence
     root_path: str
     detected_at: datetime
 
@@ -227,8 +234,9 @@ def validate_project_path(
 def detect_project(root: Path, *, now: datetime | None = None) -> ProjectDetection:
     """掃描已驗證的專案根目錄；沒有任何依賴檔時拋 `ProjectDependenciesNotFoundError`。"""
     scan = _scan(root)
-    ecosystems = [eco for eco in _ECOSYSTEM_ORDER if _has_manifest(scan, eco)]
-    if not ecosystems:
+    texts = {name: _read_text(path) or "" for name, path in scan.manifests.items()}
+    classification = classify(texts, scan.language_files)
+    if classification is None:
         language = _dominant_language(scan.language_files, None)
         suggestions = [_SUGGESTIONS[language]] if language else sorted(set(_SUGGESTIONS.values()))
         raise ProjectDependenciesNotFoundError(
@@ -236,40 +244,50 @@ def detect_project(root: Path, *, now: datetime | None = None) -> ProjectDetecti
             detected_language=language,
             suggestions=suggestions,
         )
-
-    # 多個生態系並存時，選原始碼檔案最多的；平手依固定順序
-    ecosystem = max(
-        ecosystems,
-        key=lambda eco: (
-            sum(scan.language_files[lang] for lang in _ECOSYSTEM_LANGUAGES[eco]),
-            -_ECOSYSTEM_ORDER.index(eco),
-        ),
-    )
-    dependencies = _read_dependencies(scan, ecosystem)
-    language = _language_of(ecosystem, scan.language_files, dependencies)
-    framework = _match(ecosystem, "framework", dependencies)
-    manifest_names = sorted(
-        name for name in scan.manifests if MANIFEST_ECOSYSTEMS[name] == ecosystem
-    )
-    has_sources = scan.language_files[language] > 0
     return ProjectDetection(
-        language=language,
-        framework=framework,
-        orm=_match(ecosystem, "orm", dependencies),
-        test_framework=_match(ecosystem, "test_framework", dependencies),
-        database=_match(ecosystem, "database", dependencies),
-        dependencies=dependencies,
-        manifests=manifest_names,
+        classification=classification,
         language_files=dict(scan.language_files.most_common()),
         directories=sorted(scan.directories),
-        confidence="high" if framework is not None and has_sources else "medium",
         root_path=str(root),
         detected_at=now or datetime.now(UTC),
     )
 
 
-def _has_manifest(scan: _Scan, ecosystem: str) -> bool:
-    return any(MANIFEST_ECOSYSTEMS[name] == ecosystem for name in scan.manifests)
+def classify(
+    manifest_texts: Mapping[str, str], language_files: Counter[str]
+) -> Classification | None:
+    """`manifest_texts` 是根目錄依賴檔名稱 → 內容；沒有任何可辨識的依賴檔時回 None。"""
+    ecosystems = [
+        eco
+        for eco in _ECOSYSTEM_ORDER
+        if any(MANIFEST_ECOSYSTEMS.get(name) == eco for name in manifest_texts)
+    ]
+    if not ecosystems:
+        return None
+
+    # 多個生態系並存時，選原始碼檔案最多的；平手依固定順序
+    ecosystem = max(
+        ecosystems,
+        key=lambda eco: (
+            sum(language_files[lang] for lang in _ECOSYSTEM_LANGUAGES[eco]),
+            -_ECOSYSTEM_ORDER.index(eco),
+        ),
+    )
+    dependencies = _read_dependencies(manifest_texts, ecosystem)
+    language = _language_of(ecosystem, language_files, dependencies)
+    framework = match_marker(ecosystem, "framework", dependencies)
+    return Classification(
+        language=language,
+        framework=framework,
+        orm=match_marker(ecosystem, "orm", dependencies),
+        test_framework=match_marker(ecosystem, "test_framework", dependencies),
+        database=match_marker(ecosystem, "database", dependencies),
+        dependencies=dependencies,
+        manifests=sorted(
+            name for name in manifest_texts if MANIFEST_ECOSYSTEMS.get(name) == ecosystem
+        ),
+        confidence="high" if framework is not None and language_files[language] > 0 else "medium",
+    )
 
 
 def _scan(root: Path) -> _Scan:
@@ -340,7 +358,7 @@ def _language_of(ecosystem: str, counts: Counter[str], dependencies: dict[str, s
     return "javascript"
 
 
-def _match(ecosystem: str, category: Category, dependencies: dict[str, str]) -> str | None:
+def match_marker(ecosystem: str, category: Category, dependencies: dict[str, str]) -> str | None:
     for name, value in _MARKERS[ecosystem][category]:
         if name in dependencies:
             return value
@@ -358,13 +376,10 @@ def _read_text(path: Path) -> str | None:
     return data.decode("utf-8", errors="replace").removeprefix("\ufeff")
 
 
-def _read_dependencies(scan: _Scan, ecosystem: str) -> dict[str, str]:
+def _read_dependencies(manifest_texts: Mapping[str, str], ecosystem: str) -> dict[str, str]:
     dependencies: dict[str, str] = {}
-    for name, path in sorted(scan.manifests.items()):
-        if MANIFEST_ECOSYSTEMS[name] != ecosystem:
-            continue
-        text = _read_text(path)
-        if text is None:
+    for name, text in sorted(manifest_texts.items()):
+        if MANIFEST_ECOSYSTEMS.get(name) != ecosystem:
             continue
         for dep_name, spec in _parse_manifest(name, text):
             if len(dependencies) >= _MAX_DEPENDENCIES:

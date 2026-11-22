@@ -92,7 +92,7 @@ export default function App() {
           <AddRepoPanel github={github} onRegistered={handleRegistered} />
           <GitHubPanel />
           <QaSettingsPanel repos={list.items} consents={consents} state={qaSettings} />
-          <NewProjectPanel />
+          <NewProjectPanel repos={list.items ?? []} snapshotKey={snapshotRefreshKey} />
           <QaPanel
             repos={list.items ?? []}
             consents={consents}

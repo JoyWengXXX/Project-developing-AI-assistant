@@ -1,9 +1,11 @@
 """新專案（第五階段）的請求與回應模型。"""
 
 from datetime import datetime
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, StringConstraints
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_validator
+
+from repopilot.api.schemas import UsdAmount
 
 ProjectConfidence = Literal["high", "medium"]
 
@@ -17,15 +19,15 @@ class ProjectConfig(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    language: str
-    framework: str | None = None
-    orm: str | None = None
-    test_framework: str | None = None
-    database: str | None = None
-    dependencies: dict[str, str] = Field(default_factory=dict)
-    root_path: str | None = None
+    language: str = Field(max_length=60)
+    framework: str | None = Field(default=None, max_length=60)
+    orm: str | None = Field(default=None, max_length=60)
+    test_framework: str | None = Field(default=None, max_length=60)
+    database: str | None = Field(default=None, max_length=60)
+    dependencies: dict[str, str] = Field(default_factory=dict, max_length=200)
+    root_path: str | None = Field(default=None, max_length=4096)
     detected_at: datetime | None = None
-    init_instructions: str | None = None
+    init_instructions: str | None = Field(default=None, max_length=4000)
 
 
 class ProjectInitRequest(BaseModel):
@@ -81,6 +83,56 @@ class ProjectTemplateResponse(BaseModel):
     name: str
     template_path: str
     files: list[str]
+
+
+class ProjectPlanRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    target_project_config: ProjectConfig
+    reference_snapshot_id: int = Field(strict=True, ge=1, le=_INT32_MAX)
+    project_requirements: Annotated[
+        str, StringConstraints(strip_whitespace=True, min_length=1, max_length=4000)
+    ]
+
+    @field_validator("project_requirements")
+    @classmethod
+    def _no_nul(cls, value: str) -> str:
+        if "\x00" in value:
+            raise ValueError("The requirements contain an invalid character.")
+        return value
+
+
+class ProjectPlanReferenceResponse(BaseModel):
+    """計畫的參考來源。`snapshot_id` 為 null 代表快照已被移除，計畫不可再當作有效依據。"""
+
+    snapshot_id: int | None
+    repository_name: str
+    commit_sha: str
+    available: bool
+
+
+class ProjectPlanUsageResponse(BaseModel):
+    provider: str
+    model: str
+    prompt_version: str
+    input_tokens: int
+    output_tokens: int
+    cost_usd: UsdAmount
+    usage_known: bool
+
+
+class ProjectPlanResponse(BaseModel):
+    id: int
+    status: Literal["draft", "confirmed"]
+    locked: bool
+    created_at: datetime
+    confirmed_at: datetime | None
+    target_project_config: ProjectConfig
+    project_requirements: str
+    reference: ProjectPlanReferenceResponse
+    plan: dict[str, Any]
+    plan_markdown: str
+    usage: ProjectPlanUsageResponse
 
 
 class ProjectCreateWithLlmResponse(BaseModel):

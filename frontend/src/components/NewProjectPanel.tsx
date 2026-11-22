@@ -1,7 +1,8 @@
 import { useState } from 'react'
-import type { Repository } from '../types'
+import type { ProjectConfig, Repository } from '../types'
 import { ProjectInitForm } from './ProjectInitForm'
 import { ProjectLlmChat } from './ProjectLlmChat'
+import { ProjectPlanPanel } from './ProjectPlanPanel'
 
 interface Props {
   repos: Repository[]
@@ -9,14 +10,17 @@ interface Props {
 }
 
 /**
- * 「新專案」摺疊區（預設收合）：以參考 repo 為依據建立全新專案的入口。第一步是取得初始骨架的配置：
- * 已有本機骨架就匯入驗證；沒有就由對話引導選擇（LLM 只推薦）。兩個分頁都保持掛載，切換不會遺失輸入。
+ * 「新專案」摺疊區（預設收合）：以參考 repo 為依據建立全新專案。流程：
+ * ① 取得初始骨架的配置——已有本機骨架就匯入驗證；沒有就由對話引導選擇（LLM 只推薦）；
+ * ② 以該配置與一個參考版本規劃檔案清單，確認後鎖定。兩個分頁都保持掛載，切換不會遺失輸入。
  */
 export function NewProjectPanel({ repos, snapshotKey }: Props) {
   const [tab, setTab] = useState<'init' | 'llm'>('init')
+  const [config, setConfig] = useState<ProjectConfig | null>(null)
   return (
     <details className="panel advanced">
-      <summary>新專案（初始骨架）</summary>
+      <summary>新專案（初始骨架與規劃）</summary>
+      <h3>① 初始骨架</h3>
       <div role="tablist" aria-label="初始骨架來源" className="tabs">
         <button
           type="button"
@@ -42,11 +46,17 @@ export function NewProjectPanel({ repos, snapshotKey }: Props) {
         </button>
       </div>
       <div role="tabpanel" id="tabpanel-project-init" aria-labelledby="tab-project-init" hidden={tab !== 'init'}>
-        <ProjectInitForm />
+        <ProjectInitForm onDetected={(result) => setConfig(result.project_config)} />
       </div>
       <div role="tabpanel" id="tabpanel-project-llm" aria-labelledby="tab-project-llm" hidden={tab !== 'llm'}>
-        <ProjectLlmChat repos={repos} snapshotKey={snapshotKey} />
+        <ProjectLlmChat repos={repos} snapshotKey={snapshotKey} onCompleted={setConfig} />
       </div>
+      <h3>② 規劃新專案</h3>
+      {config === null ? (
+        <p className="empty">先完成上面的初始骨架（偵測或對話引導），才能規劃。</p>
+      ) : (
+        <ProjectPlanPanel key={JSON.stringify(config)} config={config} repos={repos} snapshotKey={snapshotKey} />
+      )}
     </details>
   )
 }

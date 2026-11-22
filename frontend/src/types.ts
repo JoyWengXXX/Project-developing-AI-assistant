@@ -881,6 +881,75 @@ export interface ProjectTemplate {
   files: string[]
 }
 
+export interface ProjectPlanReferenceLocation {
+  path: string
+  start_line: number
+  end_line: number
+}
+
+export interface ProjectPlanFile {
+  path: string
+  module: string
+  purpose: string
+  complexity: 'low' | 'medium' | 'high'
+  references: ProjectPlanReferenceLocation[]
+}
+
+export interface ProjectPlanDocument {
+  reference_analysis: {
+    detected: { language: string; framework: string | null } | null
+    architecture_pattern: string
+    layer_count: number | null
+    core_modules: string[]
+  }
+  architecture: {
+    summary: string
+    layer_count: number | null
+    modules: { name: string; purpose: string; depends_on: string[] }[]
+  }
+  files: ProjectPlanFile[]
+  open_questions: string[]
+  rejected_files: { path: string | null; reason: string }[]
+  dropped_references: (ProjectPlanReferenceLocation & { file: string; reason: string })[]
+  warnings: string[]
+  workload: {
+    file_count: number
+    by_complexity: Record<string, number>
+    input_tokens: number
+    output_tokens: number
+    cost_usd: string
+    model: string
+    note: string
+  }
+}
+
+export interface ProjectPlan {
+  id: number
+  status: 'draft' | 'confirmed'
+  locked: boolean
+  created_at: string
+  confirmed_at: string | null
+  target_project_config: ProjectConfig
+  project_requirements: string
+  reference: {
+    snapshot_id: number | null
+    repository_name: string
+    commit_sha: string
+    available: boolean
+  }
+  plan: ProjectPlanDocument
+  plan_markdown: string
+  usage: {
+    provider: string
+    model: string
+    prompt_version: string
+    input_tokens: number
+    output_tokens: number
+    cost_usd: string
+    usage_known: boolean
+  }
+}
+
 export interface ProjectCreateWithLlmResult {
   done: boolean
   step: string | null

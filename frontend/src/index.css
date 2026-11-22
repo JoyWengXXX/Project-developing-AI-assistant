@@ -2157,3 +2157,11 @@ label.qa-model input {
 .qa-estimate p {
   margin: 4px 0;
 }
+pre.plan-markdown {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.chat-history {
+  margin: 8px 0;
+  padding-left: 20px;
+}

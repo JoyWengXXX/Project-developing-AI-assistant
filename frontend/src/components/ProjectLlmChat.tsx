@@ -1,7 +1,7 @@
 import { useState, type FormEvent } from 'react'
 import { api } from '../api'
 import type {
-  ProjectConversationMessage, ProjectCreateWithLlmResult, ProjectLlmStatus, Repository,
+  ProjectConfig, ProjectConversationMessage, ProjectCreateWithLlmResult, ProjectLlmStatus, Repository,
 } from '../types'
 import { ApiHint, ErrorBox } from '../ui'
 import { useAction } from '../useAction'
@@ -42,7 +42,13 @@ function toConversation(history: Answered[]): ProjectConversationMessage[] {
  * 「沒有初始骨架」的對話：後端依序問語言、框架、資料庫、ORM、測試框架。LLM 只提供推薦，
  * 決定權在使用者；對話狀態由前端保存（後端無狀態），每次把完整對話送回去。不會建立任何檔案。
  */
-export function ProjectLlmChat({ repos, snapshotKey }: { repos: Repository[]; snapshotKey: number }) {
+export function ProjectLlmChat({
+  repos, snapshotKey, onCompleted,
+}: {
+  repos: Repository[]
+  snapshotKey: number
+  onCompleted?: (config: ProjectConfig) => void
+}) {
   const [snapshotId, setSnapshotId] = useState<number | null>(null)
   const [history, setHistory] = useState<Answered[]>([])
   const [turn, setTurn] = useState<ProjectCreateWithLlmResult | null>(null)
@@ -59,6 +65,9 @@ export function ProjectLlmChat({ repos, snapshotKey }: { repos: Repository[]; sn
         body,
       })
       setTurn(response.data)
+      if (response.data.done && response.data.project_config !== null) {
+        onCompleted?.(response.data.project_config)
+      }
     })
     if (ok) {
       setHistory(next)

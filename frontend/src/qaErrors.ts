@@ -38,6 +38,8 @@ export const QA_ERROR_HINT: Record<string, string> = {
   answer_unexpected_fields: '模型的回答含有不允許的欄位，所以沒有採用。可以重新提問。',
   answer_invalid_field: '模型的回答有缺少或不合法的欄位，所以沒有採用。可以重新提問。',
   answer_empty_statements: '模型說「已回答」卻沒有任何陳述，所以沒有採用。可以重新提問。',
+  project_plan_invalid_output: '模型的規劃輸出不合格（格式錯誤或沒有任何有效檔案），沒有保存計畫；用量仍會計入。可以修改需求後重新規劃。',
+  project_plan_not_found: '找不到這份計畫。',
 }
 
 const BUDGET_REASON_LABEL: Record<string, string> = {

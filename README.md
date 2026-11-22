@@ -43,6 +43,7 @@ TypeScript／JavaScript／Java／Go／Rust／SQL 語法層級解析；其他符�
 - **搜尋**（第二階段切片 8）：對已匯入的快照做三種字面（區分大小寫）子字串搜尋——檔名（`search/files`）、符號（`search/symbols`，需要已完成的結構索引）、內容（`search/text`，一個命中行一筆並帶片段；不依賴索引）。沒有正規表示式、模糊比對或相關性排序；沒有加 `pg_trgm`（20,000 檔合成快照的最壞情況單次約 3.6 秒，低於預設逾時 10 秒；真實 repo 與 Linux 容器內未驗證）。超過 `SEARCH_STATEMENT_TIMEOUT_SECONDS` 回 504 `search_timeout`。主控台在版本管理的「搜尋」面板使用。
 - **跨快照片段搜尋**：對明確指定且索引完成的快照，`keyword` 以 Unicode 字詞做不區分大小寫的字面子字串比對，每個不同字詞命中計一分；`semantic` 以本機模型產生查詢向量，使用片段內各段向量的最高 cosine 相似度；`hybrid` 將兩種排序各取前 100 名，以 RRF（`k=60`）融合。分數相同依 repo ID、快照 ID、路徑位元組、片段起點與 ID 升序。最多 20 個快照與 50 筆結果；關鍵字及混合搜尋最多 16 個不同字詞。任一快照或索引不可用時明確報錯，不回部分結果。主控台可選擇版本、建立索引並比較三種搜尋；語意與混合搜尋需啟動查詢橋接。大型快照效能尚未驗證。
 - **初步檢索評估**：以 10 個合成片段和 8 個查詢比較 Recall@5；資料與標註由 AI 擬定，使用者已逐項核對標註，仍不能代表真實 repo 的品質。評估測試預設跳過，只有明確配置隔離資料庫與模型時才執行；整合測試會重建測試資料庫 schema，不能使用共用資料庫。
+- **新專案（第五階段進行中，issue #18～#20）**：`POST /projects/init` 驗證本機初始專案路徑（須在 `REPOSITORY_ROOTS` 內、不含 symlink）並偵測語言與框架；`POST /projects/create-with-llm` 在沒有骨架時以固定問答引導選擇（LLM 只推薦，內建最小範本在 `scaffolds/`）；`POST /projects/plan` 以參考版本規劃新專案的檔案清單（同步呼叫模型，沿用問答的 key、額度與逐 repo 資料外送同意，系統驗證路徑與參考位置，Markdown 計畫存資料庫、**不寫任何檔案**），`POST /projects/plans/{id}/confirm` 確認並鎖定。只用假供應商驗證，真實供應商的品質與逐檔生成（第七階段）尚未做。
 - 操作主控台（`frontend/`）：repo 卡片總覽、版本管理（已匯入的版本＋分支下拉＋ commit 圖）、程式結構、搜尋、檔案樹、背景工作摘要、GitHub 連線。
 
 **尚未有（未完成）**：生成式 LLM、改碼、GitLab 與其他遠端來源、多使用者登入、完整前端自動化測試。
@@ -70,7 +71,7 @@ docker compose up -d --wait db db-test
 #    已經有 .env 時不要再執行這行（Copy-Item 會直接覆蓋）
 Copy-Item .env.example .env
 
-# 3. 建立資料表（目前最新 migration 為 0025；升級既有資料庫也是這行）
+# 3. 建立資料表（目前最新 migration 為 0026；升級既有資料庫也是這行）
 uv run alembic upgrade head
 uv run alembic current        # 預期 0018 (head)
 

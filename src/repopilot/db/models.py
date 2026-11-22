@@ -1044,3 +1044,46 @@ class QaCitation(Base):
     resolved_path: Mapped[str | None] = mapped_column(Text)
     resolved_start_line: Mapped[int | None] = mapped_column(Integer)
     resolved_end_line: Mapped[int | None] = mapped_column(Integer)
+
+
+class ProjectPlan(Base):
+    """新專案計畫（第五階段 5-1～5-2，migration 0026）。
+
+    `reference_snapshot_id` 為 ON DELETE SET NULL：參考快照被移除後計畫仍可讀，並以保存的 repo
+    名稱與 commit SHA 說明來源，但 `reference_snapshot_id` 為 NULL 即代表來源已不可用。
+    `confirmed` 的計畫不會再被修改（唯一的寫入路徑是確認時在列鎖下更新狀態）；重新規劃一律是新的
+    一列。`plan` 是驗證後的結構（見 `services/project_planning`），`plan_markdown` 是文件。
+    """
+
+    __tablename__ = "project_plans"
+    __table_args__ = (
+        CheckConstraint("status IN ('draft', 'confirmed')", name="status_valid"),
+        CheckConstraint(
+            "(status = 'confirmed') = (confirmed_at IS NOT NULL)", name="confirmed_matches_status"
+        ),
+        CheckConstraint(
+            "input_tokens >= 0 AND output_tokens >= 0 AND cost_usd >= 0", name="amounts_nonnegative"
+        ),
+        Index("ix_project_plans_reference_snapshot_id", "reference_snapshot_id"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    status: Mapped[str] = mapped_column(String(20), default="draft", server_default="draft")
+    target_project_config: Mapped[dict[str, Any]] = mapped_column(JSONB)
+    project_requirements: Mapped[str] = mapped_column(Text)
+    reference_snapshot_id: Mapped[int | None] = mapped_column(
+        ForeignKey("snapshots.id", ondelete="SET NULL")
+    )
+    reference_repository_name: Mapped[str] = mapped_column(String(200))
+    reference_commit_sha: Mapped[str] = mapped_column(String(40))
+    plan: Mapped[dict[str, Any]] = mapped_column(JSONB)
+    plan_markdown: Mapped[str] = mapped_column(Text)
+    provider: Mapped[str] = mapped_column(String(20))
+    model: Mapped[str] = mapped_column(String(100))
+    prompt_version: Mapped[str] = mapped_column(String(30))
+    input_tokens: Mapped[int] = mapped_column(BigInteger)
+    output_tokens: Mapped[int] = mapped_column(BigInteger)
+    cost_usd: Mapped[Decimal] = mapped_column(Numeric(18, 8))
+    usage_known: Mapped[bool] = mapped_column(Boolean, default=True, server_default=text("true"))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

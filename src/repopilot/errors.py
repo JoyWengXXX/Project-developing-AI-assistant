@@ -50,6 +50,18 @@ class ProjectAnswerInvalidError(RepoPilotError):
         self.options = options
 
 
+class ProjectPlanNotFoundError(RepoPilotError):
+    """指定的新專案計畫不存在。"""
+
+    code = "project_plan_not_found"
+
+
+class ProjectPlanInvalidOutputError(RepoPilotError):
+    """模型的規劃輸出不符合契約（格式錯誤或沒有任何有效檔案）；已呼叫模型，用量照實計入。"""
+
+    code = "project_plan_invalid_output"
+
+
 class RepositoryNotFoundError(RepoPilotError):
     """指定的 Repository 不存在。"""
 

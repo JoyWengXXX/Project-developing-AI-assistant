@@ -1,118 +1,27 @@
 """5-0b LLM 協助建立初始骨架：對話 API 的整合測試（真實 PostgreSQL、假供應商、不連網）。"""
 
 import json
-from collections.abc import Iterator
-from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-import anthropic
 import pytest
-from cryptography.fernet import Fernet
-from fastapi.testclient import TestClient
-from pydantic import SecretStr
-from sqlalchemy import Engine, text
 
-from repopilot.config import Settings
-from repopilot.main import create_app
 from repopilot.qa.errors import ProviderTimeoutError
 from repopilot.qa.fake_provider import FakeProvider
-from repopilot.qa.provider import QAProvider, Usage
-from repopilot.services import project_ai
+from repopilot.qa.provider import Usage
+from tests.integration.project_env import FAKE_API_KEY, HAIKU, Env, ledger_events
 from tests.integration.snapshot_helpers import add_snapshot
-from tests.integration.test_snapshot_indexing import add_files
 
 URL = "/api/v1/projects/create-with-llm"
-HAIKU = "claude-haiku-5-5"
-FAKE_API_KEY = "sk-ant-FAKE-0123456789-abcdefghijklmnopqrstuvwxyz-ZYXWVUTSRQ"
-REFERENCE_FILES = {
-    "requirements.txt": "fastapi>=0.110\nSQLAlchemy>=2\npytest\npsycopg\n",
-    "src/app.py": "print('x')\n",
-    "src/util.py": "print('y')\n",
-}
-
-
-@dataclass
-class Env:
-    client: TestClient
-    engine: Engine
-    repository_id: int
-    snapshot_id: int
-    provider: FakeProvider = field(default_factory=FakeProvider)
-    keys_seen: list[str] = field(default_factory=list)
-
-    def configure(self, *, consent: bool = True) -> None:
-        put = self.client.put
-        assert put("/api/v1/qa/provider-key", json={"api_key": FAKE_API_KEY}).status_code == 200
-        assert put("/api/v1/qa/settings", json={"model": HAIKU}).status_code == 200
-        if consent:
-            assert put(f"/api/v1/repositories/{self.repository_id}/qa-consent").status_code == 200
 
 
 def recommendation_text(value: str, reason: str = "fits the reference project") -> str:
     return json.dumps({"recommendation": value, "reason": reason})
 
 
-@pytest.fixture(autouse=True)
-def clean_state(db_engine: Engine) -> Iterator[None]:
-    def truncate() -> None:
-        with db_engine.begin() as connection:
-            connection.execute(
-                text(
-                    "TRUNCATE jobs, job_dispatches, qa_settings, repository_qa_consent, "
-                    "qa_usage_ledger RESTART IDENTITY CASCADE"
-                )
-            )
-
-    truncate()
-    yield
-    truncate()
-
-
-@pytest.fixture(autouse=True)
-def no_real_provider(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
-    constructed: list[object] = []
-
-    def forbidden(*args: object, **kwargs: object) -> object:
-        constructed.append(args)
-        raise AssertionError("a real Anthropic client must never be constructed in tests")
-
-    monkeypatch.setattr(anthropic, "Anthropic", forbidden)
-    yield
-    assert constructed == []
-
-
 @pytest.fixture
-def env(
-    db_engine: Engine,
-    clean_repositories: None,
-    test_database_url: str,
-    roots: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> Env:
-    settings = Settings(
-        database_url=SecretStr(test_database_url),
-        repository_roots=[roots],
-        token_encryption_key=SecretStr(Fernet.generate_key().decode()),
-    )
-    with db_engine.begin() as connection:
-        repository_id = connection.scalar(
-            text(
-                "INSERT INTO repositories (name, canonical_local_path) "
-                "VALUES ('reference', '/fake-project-llm') RETURNING id"
-            )
-        )
-    assert isinstance(repository_id, int)
-    snapshot_id = add_snapshot(db_engine, repository_id)
-    add_files(db_engine, snapshot_id, REFERENCE_FILES)
-    result = Env(TestClient(create_app(settings)), db_engine, repository_id, snapshot_id)
-
-    def build_provider(api_key: str) -> QAProvider:
-        result.keys_seen.append(api_key)
-        return result.provider
-
-    monkeypatch.setattr(project_ai, "build_provider", build_provider)
-    return result
+def env(project_env: Env) -> Env:
+    return project_env
 
 
 def post(env: Env, *answers: str, snapshot: bool = False) -> Any:
@@ -124,16 +33,6 @@ def post(env: Env, *answers: str, snapshot: bool = False) -> Any:
     if snapshot:
         body["reference_snapshot_id"] = env.snapshot_id
     return env.client.post(URL, json=body)
-
-
-def ledger_events(engine: Engine) -> list[str]:
-    with engine.connect() as connection:
-        return [
-            row[0]
-            for row in connection.execute(
-                text("SELECT event_type FROM qa_usage_ledger ORDER BY id")
-            )
-        ]
 
 
 def test_first_turn_asks_the_language_without_llm_when_nothing_is_configured(env: Env) -> None:

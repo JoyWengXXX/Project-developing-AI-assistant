@@ -2,9 +2,11 @@ import os
 from collections.abc import Iterator
 from pathlib import Path
 
+import anthropic
 import pytest
 from alembic import command
 from alembic.config import Config
+from cryptography.fernet import Fernet
 from fastapi.testclient import TestClient
 from pydantic import SecretStr
 from sqlalchemy import Engine, create_engine, text
@@ -13,6 +15,11 @@ from sqlalchemy.exc import OperationalError
 
 from repopilot.config import Settings
 from repopilot.main import create_app
+from repopilot.qa.provider import QAProvider
+from repopilot.services import project_ai
+from tests.integration.project_env import REFERENCE_FILES
+from tests.integration.project_env import Env as ProjectEnv
+from tests.integration.snapshot_helpers import add_snapshot
 from tests.stack_control import stop_job_services_if_running
 
 # 預設對應 docker-compose.yml 的 db-test（假密碼，僅限本機）
@@ -85,3 +92,63 @@ def settings(test_database_url: str, roots: Path) -> Settings:
 def client(settings: Settings, clean_repositories: None) -> Iterator[TestClient]:
     with TestClient(create_app(settings)) as test_client:
         yield test_client
+
+
+# --- 新專案（第五階段）：假供應商環境；使用的測試檔以 `env` fixture 包裝它 ---
+
+
+@pytest.fixture
+def project_env(
+    db_engine: Engine,
+    clean_repositories: None,
+    test_database_url: str,
+    roots: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> Iterator[ProjectEnv]:
+    """真實 PostgreSQL、一個已完成的參考快照與假供應商；建立真實客戶端會讓測試失敗。"""
+    constructed: list[object] = []
+
+    def forbidden(*args: object, **kwargs: object) -> object:
+        constructed.append(args)
+        raise AssertionError("a real Anthropic client must never be constructed in tests")
+
+    monkeypatch.setattr(anthropic, "Anthropic", forbidden)
+
+    def truncate() -> None:
+        with db_engine.begin() as connection:
+            connection.execute(
+                text(
+                    "TRUNCATE jobs, job_dispatches, qa_settings, repository_qa_consent, "
+                    "qa_usage_ledger RESTART IDENTITY CASCADE"
+                )
+            )
+
+    truncate()
+    app_settings = Settings(
+        database_url=SecretStr(test_database_url),
+        repository_roots=[roots],
+        token_encryption_key=SecretStr(Fernet.generate_key().decode()),
+    )
+    with db_engine.begin() as connection:
+        repository_id = connection.scalar(
+            text(
+                "INSERT INTO repositories (name, canonical_local_path) "
+                "VALUES ('reference', '/fake-project-env') RETURNING id"
+            )
+        )
+    assert isinstance(repository_id, int)
+    snapshot_id = add_snapshot(db_engine, repository_id)
+    # 延後匯入：避免 conftest 載入時匯入測試模組（循環匯入）
+    from tests.integration.test_snapshot_indexing import add_files
+
+    add_files(db_engine, snapshot_id, REFERENCE_FILES)
+    result = ProjectEnv(TestClient(create_app(app_settings)), db_engine, repository_id, snapshot_id)
+
+    def build_provider(api_key: str) -> QAProvider:
+        result.keys_seen.append(api_key)
+        return result.provider
+
+    monkeypatch.setattr(project_ai, "build_provider", build_provider)
+    yield result
+    truncate()
+    assert constructed == []

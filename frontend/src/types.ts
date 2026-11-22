@@ -670,7 +670,8 @@ export interface ValidationDetail {
 // 非 422 的錯誤可附 details 物件（內容不可信，使用前須檢查型別）：
 //   索引／快照錯誤：snapshot_id、index_status；search_scope_too_large：chunk_count、max_chunks；
 //   token_budget_exceeded：reason（per_request_tokens／daily_tokens／daily_cost_usd）、limit、requested、used（token 為數字、美元為字串）；
-//   qa_egress_not_consented：repositories（沒有同意的 repo）。
+//   qa_egress_not_consented：repositories（沒有同意的 repo）；
+//   project_dependencies_not_found：detected_language（可能為 null）、suggestions。
 export interface ErrorDetailsObject {
   index_status?: string
   snapshot_id?: number
@@ -681,6 +682,8 @@ export interface ErrorDetailsObject {
   requested?: number | string
   used?: number | string
   repositories?: { repository_id: number; name: string }[]
+  detected_language?: string | null
+  suggestions?: string[]
 }
 
 export type ErrorDetails = ValidationDetail[] | ErrorDetailsObject
@@ -827,3 +830,26 @@ export interface TextMatch {
 export type FileSearchPage = SearchPageBase<FileMatch>
 export type SymbolSearchPage = SearchPageBase<SymbolMatch>
 export type TextSearchPage = SearchPageBase<TextMatch>
+
+// ---------- 新專案（第五階段，對應 api/project_schemas.py） ----------
+
+export interface ProjectConfig {
+  language: string
+  framework: string | null
+  orm: string | null
+  test_framework: string | null
+  database: string | null
+  dependencies: Record<string, string>
+  root_path: string | null
+  detected_at: string | null
+  init_instructions: string | null
+}
+
+export interface ProjectInitResult {
+  project_config: ProjectConfig
+  confidence: 'high' | 'medium'
+  manifests: string[]
+  language_files: Record<string, number>
+  directories: string[]
+}
+

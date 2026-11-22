@@ -20,6 +20,25 @@ class InvalidRepositoryPathError(RepoPilotError):
     code = "invalid_repository_path"
 
 
+class ProjectPathInvalidError(RepoPilotError):
+    """初始專案路徑不合格：非絕對路徑、不存在或不可讀、含 symlink，或不在允許的根目錄內。"""
+
+    code = "project_path_invalid"
+
+
+class ProjectDependenciesNotFoundError(RepoPilotError):
+    """專案根目錄沒有任何可辨識的依賴檔；`detected_language` 與 `suggestions` 供使用者補齊。"""
+
+    code = "project_dependencies_not_found"
+
+    def __init__(
+        self, message: str, *, detected_language: str | None, suggestions: list[str]
+    ) -> None:
+        super().__init__(message)
+        self.detected_language = detected_language
+        self.suggestions = suggestions
+
+
 class RepositoryNotFoundError(RepoPilotError):
     """指定的 Repository 不存在。"""
 

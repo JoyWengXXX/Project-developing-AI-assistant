@@ -3,6 +3,7 @@ import { AddRepoPanel } from './components/AddRepoPanel'
 import { GitHubPanel } from './components/GitHubPanel'
 import { GitHubRegistrations } from './components/GitHubRegistrations'
 import { JobsSummaryBar } from './components/JobsSummaryBar'
+import { NewProjectPanel } from './components/NewProjectPanel'
 import { QaPanel } from './components/QaPanel'
 import { QaSettingsPanel } from './components/QaSettingsPanel'
 import { RepoDetailHeader } from './components/RepoDetailHeader'
@@ -91,6 +92,7 @@ export default function App() {
           <AddRepoPanel github={github} onRegistered={handleRegistered} />
           <GitHubPanel />
           <QaSettingsPanel repos={list.items} consents={consents} state={qaSettings} />
+          <NewProjectPanel />
           <QaPanel
             repos={list.items ?? []}
             consents={consents}

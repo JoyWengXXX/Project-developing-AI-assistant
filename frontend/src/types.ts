@@ -901,7 +901,7 @@ export interface ProjectPlanDocument {
     architecture_pattern: string
     layer_count: number | null
     core_modules: string[]
-  }
+  } | null
   architecture: {
     summary: string
     layer_count: number | null
@@ -923,6 +923,27 @@ export interface ProjectPlanDocument {
   }
 }
 
+export interface ProjectPlanListItem {
+  id: number
+  status: 'draft' | 'confirmed'
+  locked: boolean
+  created_at: string
+  confirmed_at: string | null
+  language: string
+  framework: string | null
+  requirements_excerpt: string
+  file_count: number
+  reference: { snapshot_id: number | null; repository_name: string; commit_sha: string; available: boolean } | null
+  cost_usd: string
+}
+
+export interface ProjectPlanList {
+  items: ProjectPlanListItem[]
+  total: number
+  limit: number
+  offset: number
+}
+
 export interface ProjectPlan {
   id: number
   status: 'draft' | 'confirmed'
@@ -936,7 +957,7 @@ export interface ProjectPlan {
     repository_name: string
     commit_sha: string
     available: boolean
-  }
+  } | null
   plan: ProjectPlanDocument
   plan_markdown: string
   usage: {

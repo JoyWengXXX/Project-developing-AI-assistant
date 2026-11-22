@@ -10,7 +10,7 @@ const MAX_REQUIREMENTS = 4000
 
 const COMPLEXITY_TEXT = { low: '低', medium: '中', high: '高' }
 
-function PlanView({ plan }: { plan: ProjectPlan }) {
+export function PlanView({ plan }: { plan: ProjectPlan }) {
   const doc = plan.plan
   return (
     <div>
@@ -18,8 +18,15 @@ function PlanView({ plan }: { plan: ProjectPlan }) {
         <span className={plan.locked ? 'badge badge-completed' : 'badge badge-neutral'}>
           {plan.locked ? '已確認（鎖定）' : '草稿'}
         </span>{' '}
-        計畫 #{plan.id}・參考 {plan.reference.repository_name}@<code>{plan.reference.commit_sha.slice(0, 12)}</code>
-        {!plan.reference.available && <span className="warning">（參考快照已被移除，此計畫不應再作為依據）</span>}
+        計畫 #{plan.id}・
+        {plan.reference === null ? (
+          <>未使用參考 repo（僅依需求與配置）</>
+        ) : (
+          <>
+            參考 {plan.reference.repository_name}@<code>{plan.reference.commit_sha.slice(0, 12)}</code>
+            {!plan.reference.available && <span className="warning">（參考快照已被移除，此計畫不應再作為依據）</span>}
+          </>
+        )}
       </p>
       <p>
         用量：輸入 {plan.usage.input_tokens.toLocaleString()}、輸出 {plan.usage.output_tokens.toLocaleString()} token・
@@ -28,9 +35,18 @@ function PlanView({ plan }: { plan: ProjectPlan }) {
       <h4>推薦架構（模型推測）</h4>
       <p>{doc.architecture.summary}</p>
       <p className="muted">
-        參考 repo：{doc.reference_analysis.detected !== null && <>事實（系統偵測）{doc.reference_analysis.detected.language} / {doc.reference_analysis.detected.framework ?? '未偵測到框架'}；</>}
-        推測 架構模式 {doc.reference_analysis.architecture_pattern}、層級 {doc.reference_analysis.layer_count ?? '未知'}、核心模組{' '}
-        {doc.reference_analysis.core_modules.join('、') || '未識別'}
+        {doc.reference_analysis === null ? (
+          '未使用參考 repo，以下只依需求與配置規劃。'
+        ) : (
+          <>
+            參考 repo：
+            {doc.reference_analysis.detected !== null && (
+              <>事實（系統偵測）{doc.reference_analysis.detected.language} / {doc.reference_analysis.detected.framework ?? '未偵測到框架'}；</>
+            )}
+            推測 架構模式 {doc.reference_analysis.architecture_pattern}、層級 {doc.reference_analysis.layer_count ?? '未知'}、核心模組{' '}
+            {doc.reference_analysis.core_modules.join('、') || '未識別'}
+          </>
+        )}
       </p>
       <h4>預期檔案清單（{doc.files.length} 個）</h4>
       <table className="table">
@@ -117,31 +133,35 @@ function PlanView({ plan }: { plan: ProjectPlan }) {
  * 確認後計畫鎖定；要改需求就重新規劃（產生新的草稿，已確認的計畫不變）。
  */
 export function ProjectPlanPanel({
-  config, repos, snapshotKey,
+  config, repos, snapshotKey, deletedPlanId, onChanged,
 }: {
   config: ProjectConfig
   repos: Repository[]
   snapshotKey: number
+  /** 在清單中刪除的計畫：若正是這裡顯示的那份，就不再顯示。 */
+  deletedPlanId: number | null
+  /** 產生或確認計畫後通知父元件重新載入計畫清單。 */
+  onChanged: () => void
 }) {
   const [snapshotId, setSnapshotId] = useState<number | null>(null)
   const [requirements, setRequirements] = useState('')
-  const [plan, setPlan] = useState<ProjectPlan | null>(null)
+  const [created, setCreated] = useState<ProjectPlan | null>(null)
+  const plan = created !== null && created.id !== deletedPlanId ? created : null
   const planning = useAction()
   const confirming = useAction()
 
   async function submit(e: FormEvent) {
     e.preventDefault()
-    if (snapshotId === null) return
     confirming.clear()
     await planning.run(async () => {
-      const response = await api<ProjectPlan>('POST', '/api/v1/projects/plan', {
-        body: {
-          target_project_config: config,
-          reference_snapshot_id: snapshotId,
-          project_requirements: requirements,
-        },
-      })
-      setPlan(response.data)
+      const body: Record<string, unknown> = {
+        target_project_config: config,
+        project_requirements: requirements,
+      }
+      if (snapshotId !== null) body.reference_snapshot_id = snapshotId
+      const response = await api<ProjectPlan>('POST', '/api/v1/projects/plan', { body })
+      setCreated(response.data)
+      onChanged()
     })
   }
 
@@ -149,7 +169,8 @@ export function ProjectPlanPanel({
     if (plan === null) return
     await confirming.run(async () => {
       const response = await api<ProjectPlan>('POST', `/api/v1/projects/plans/${plan.id}/confirm`)
-      setPlan(response.data)
+      setCreated(response.data)
+      onChanged()
     })
   }
 
@@ -187,11 +208,17 @@ export function ProjectPlanPanel({
           />
         </label>
         <p className="note">
-          送給模型的只有參考版本的語言、依賴、目錄、檔案路徑與符號位置（不含原始碼內容），以及上面的需求；該參考 repo 須已同意資料外送。
+          參考 repo 與版本都是選填：有選版本時，送給模型的只有該版本的語言、依賴、目錄、檔案路徑與符號位置（不含原始碼內容），
+          且該 repo 須已同意資料外送；只選 repo 沒選版本，或兩者都不選，就只依需求與上面的配置規劃，不送任何 repo 資料。
         </p>
-        <button type="submit" disabled={planning.busy || snapshotId === null || requirements.trim() === ''}>
+        <button type="submit" disabled={planning.busy || requirements.trim() === ''}>
           {planning.busy ? '規劃中（可能需要數十秒）…' : plan === null ? '產生計畫' : '修改需求後重新規劃'}
         </button>
+        {!planning.busy && requirements.trim() === '' && (
+          <p className="muted" role="status">
+            還不能按：請填寫專案需求
+          </p>
+        )}
       </form>
       <QaErrorBox error={planning.error} title="規劃失敗" />
       {plan !== null && (

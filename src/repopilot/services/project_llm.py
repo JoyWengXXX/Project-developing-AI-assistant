@@ -134,7 +134,7 @@ _ALIASES = {
     "springboot": "spring-boot",
     "spring": "spring-boot",
 }
-_FREE_TEXT = re.compile(r"^[a-z0-9][a-z0-9 ._+/-]{0,59}$")
+_FREE_TEXT = re.compile(r"^[^\s<>{}`\\][^<>{}`\\]{0,59}$")
 _CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f]")
 
 SYSTEM_PROMPT: Final = (
@@ -293,9 +293,9 @@ def _accept(
         value = recommended
     if value in options:
         return None if value == NONE_VALUE else value
-    if step == "language":
-        raise invalid("The language is not supported.")
     if value in _NONE_WORDS:
+        if step == "language":
+            raise invalid("A language is required.")
         return None
     if not _FREE_TEXT.fullmatch(value):
         raise invalid("The answer contains unsupported characters.")

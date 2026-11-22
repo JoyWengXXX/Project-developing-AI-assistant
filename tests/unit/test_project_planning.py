@@ -232,6 +232,42 @@ def test_warnings_for_unlisted_modules_and_missing_index() -> None:
     assert len(plan["warnings"]) == 2
 
 
+def test_plan_without_reference_ignores_model_references_and_analysis() -> None:
+    plan = validated(has_reference=False, has_structure_index=False)
+
+    assert plan["reference_analysis"] is None
+    assert all(f["references"] == [] for f in plan["files"])
+    assert plan["dropped_references"] == []
+    assert any("No reference snapshot" in w for w in plan["warnings"])
+    assert not any("structure index" in w for w in plan["warnings"])
+
+
+def test_user_message_without_reference_has_null_reference() -> None:
+    message = planning.build_user_message({"language": "go"}, "need an api", None, None)
+
+    data = json.loads(message.removeprefix("<data>\n").removesuffix("\n</data>"))
+    assert data["reference"] is None and data["requirements"] == "need an api"
+
+
+def test_markdown_without_reference_has_no_analysis_section() -> None:
+    plan = validated(has_reference=False)
+    plan["workload"] = planning.estimate_workload(
+        plan["files"], ModelPrice(Decimal("1"), Decimal("2")), "claude-haiku-5-5"
+    )
+
+    markdown = planning.render_markdown(
+        plan,
+        config={"language": "go"},
+        requirements="x",
+        repository=None,
+        commit_sha=None,
+        detected=None,
+    )
+
+    assert "未使用參考 repo" in markdown and "## 參考 repo 分析" not in markdown
+    assert "沒有可驗證的參考" in markdown
+
+
 def test_workload_estimate_uses_fixed_assumptions() -> None:
     files = [{"complexity": "low"}, {"complexity": "high"}, {"complexity": "high"}]
     price = ModelPrice(Decimal("1"), Decimal("2"))

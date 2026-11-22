@@ -40,6 +40,7 @@ from repopilot.errors import (
     ProjectDependenciesNotFoundError,
     ProjectPathInvalidError,
     ProjectPlanInvalidOutputError,
+    ProjectPlanLockedError,
     ProjectPlanNotFoundError,
     QaEgressNotConsentedError,
     QaModelNotSelectedError,
@@ -158,6 +159,8 @@ ERROR_STATUS: dict[type[RepoPilotError], int] = {
     # 新專案計畫（5-1～5-2）：模型輸出不可用是上游問題（502），與問答的 provider_* 同類
     ProjectPlanNotFoundError: 404,
     ProjectPlanInvalidOutputError: 502,
+    # 刪除已確認（鎖定）的計畫須帶 force=true：目前狀態不允許，409
+    ProjectPlanLockedError: 409,
 }
 
 _HTTP_ERROR_CODES = {

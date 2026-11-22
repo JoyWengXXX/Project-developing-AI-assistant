@@ -8,7 +8,7 @@ import { useAction } from '../useAction'
 import { ReferenceSnapshotSelect } from './ReferenceSnapshotSelect'
 
 const ERROR_HINTS = {
-  project_answer_invalid: '回答不在這一題的選項內或格式不符；請從選項選擇或重新輸入。',
+  project_answer_invalid: '這一題不接受這個回答（空白、含 < > { } ` \\ 等字元、超過 60 字，或「採用推薦」但沒有推薦）。請改用選項按鈕，或重新輸入。',
   snapshot_not_found: '找不到這個參考版本。',
   snapshot_not_completed: '這個參考版本尚未匯入完成。',
 }
@@ -47,7 +47,7 @@ export function ProjectLlmChat({
 }: {
   repos: Repository[]
   snapshotKey: number
-  onCompleted?: (config: ProjectConfig) => void
+  onCompleted?: (config: ProjectConfig | null) => void
 }) {
   const [snapshotId, setSnapshotId] = useState<number | null>(null)
   const [history, setHistory] = useState<Answered[]>([])
@@ -85,7 +85,14 @@ export function ProjectLlmChat({
     if (draft.trim() !== '') answer(draft.trim())
   }
 
+  // 後端無狀態：截掉這一題與之後的回答再送一次，就回到這一題（之後的回答作廢）
+  function redo(index: number) {
+    onCompleted?.(null)
+    void send(history.slice(0, index), snapshotId)
+  }
+
   function restart() {
+    onCompleted?.(null)
     setHistory([])
     setTurn(null)
     setDraft('')
@@ -115,9 +122,12 @@ export function ProjectLlmChat({
 
       {history.length > 0 && (
         <ol className="chat-history" aria-label="已回答的問題">
-          {history.map((item) => (
+          {history.map((item, index) => (
             <li key={item.question}>
-              {item.question} → <strong>{item.answer}</strong>
+              {item.question} → <strong>{item.answer}</strong>{' '}
+              <button type="button" disabled={action.busy} onClick={() => redo(index)}>
+                重選
+              </button>
             </li>
           ))}
         </ol>

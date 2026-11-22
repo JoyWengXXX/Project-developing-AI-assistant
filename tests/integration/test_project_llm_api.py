@@ -195,7 +195,7 @@ def test_full_conversation_with_unknown_framework_has_no_template(env: Env) -> N
 
 
 def test_invalid_answer_is_rejected_with_the_options(env: Env) -> None:
-    response = post(env, "cobol")
+    response = post(env, "no")
 
     assert response.status_code == 422
     error = response.json()["error"]

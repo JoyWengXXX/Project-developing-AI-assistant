@@ -74,7 +74,7 @@ def test_answers_are_normalized_aliases_none_and_free_text() -> None:
 @pytest.mark.parametrize(
     ("answers", "step"),
     [
-        (["cobol"], "language"),
+        (["不需要"], "language"),
         (["python", "x" * 61], "framework"),
         (["python", "fast\napi"], "framework"),
         (["python", "<script>"], "framework"),
@@ -88,6 +88,17 @@ def test_invalid_answers_are_rejected_with_the_step_and_options(
         project_llm.progress(answers, None)
     assert caught.value.step == step
     assert caught.value.options
+
+
+def test_free_text_is_accepted_for_language_and_framework() -> None:
+    state = project_llm.progress(["C#", "ASP.NET Core", "none", "none", "xUnit"], None)
+
+    assert state.collected["language"] == "c#"
+    assert state.collected["framework"] == "asp.net core"
+    assert state.collected["test_framework"] == "xunit"
+    assert project_llm.progress(["php", "雷拉維"], None).collected["framework"] == "雷拉維"
+    config = project_llm.build_config(state.collected)
+    assert project_llm.find_template(config) is None
 
 
 def test_more_answers_than_questions_are_rejected() -> None:

@@ -351,6 +351,131 @@ def test_removing_the_reference_snapshot_keeps_the_plan_but_marks_the_source_una
     assert body["plan"]["files"]
 
 
+def test_plan_without_reference_needs_no_consent_and_sends_no_repository_data(env: Env) -> None:
+    env.configure(consent=False)
+    env.provider = FakeProvider(text=plan_text(), usage=Usage(input_tokens=500, output_tokens=300))
+    body = request_body(env)
+    del body["reference_snapshot_id"]
+
+    response = env.client.post(PLAN_URL, json=body)
+
+    assert response.status_code == 201, response.text
+    plan = response.json()
+    assert plan["reference"] is None
+    assert plan["plan"]["reference_analysis"] is None
+    assert all(f["references"] == [] for f in plan["plan"]["files"])
+    assert "未使用參考 repo" in plan["plan_markdown"]
+    sent = env.provider.requests[0].messages[0].content
+    data = json.loads(sent.removeprefix("<data>\n").removesuffix("\n</data>"))
+    assert data["reference"] is None
+    assert ledger_events(env.engine) == ["reserve", "settle"]
+    assert env.client.get(f"{PLAN_URL}s/{plan['id']}").json() == plan
+    assert env.client.post(f"{PLAN_URL}s/{plan['id']}/confirm").json()["locked"] is True
+
+
+def test_database_requires_reference_name_and_sha_together(env: Env) -> None:
+    plan_id = make_plan(env)["id"]
+
+    with pytest.raises(IntegrityError), env.engine.begin() as connection:
+        connection.execute(
+            text("UPDATE project_plans SET reference_commit_sha = NULL WHERE id = :id"),
+            {"id": plan_id},
+        )
+
+
+def test_list_returns_newest_first_with_summary_fields_and_pagination(env: Env) -> None:
+    first = make_plan(env)
+    second = env.client.post(PLAN_URL, json=request_body(env, project_requirements="Second")).json()
+    env.client.post(f"{PLAN_URL}s/{first['id']}/confirm")
+
+    response = env.client.get(f"{PLAN_URL}s")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["total"] == 2 and [i["id"] for i in body["items"]] == [second["id"], first["id"]]
+    newest, oldest = body["items"]
+    assert newest["status"] == "draft" and oldest["locked"] is True
+    assert oldest["language"] == "python" and oldest["framework"] == "fastapi"
+    assert oldest["file_count"] == 2 and oldest["requirements_excerpt"] == REQUIREMENTS[:120]
+    assert oldest["reference"]["repository_name"] == "reference"
+    assert "plan_markdown" not in oldest and "plan" not in oldest
+    page = env.client.get(f"{PLAN_URL}s", params={"limit": 1, "offset": 1}).json()
+    assert page["total"] == 2 and [i["id"] for i in page["items"]] == [first["id"]]
+
+
+def test_list_is_empty_without_plans(env: Env) -> None:
+    assert env.client.get(f"{PLAN_URL}s").json()["items"] == []
+
+
+@pytest.mark.parametrize("params", [{"limit": 0}, {"limit": 201}, {"offset": -1}])
+def test_list_pagination_is_validated(env: Env, params: dict[str, int]) -> None:
+    assert env.client.get(f"{PLAN_URL}s", params=params).status_code == 422
+
+
+def test_draft_plan_can_be_deleted_without_force(env: Env) -> None:
+    plan_id = make_plan(env)["id"]
+
+    response = env.client.delete(f"{PLAN_URL}s/{plan_id}")
+
+    assert response.status_code == 200
+    assert response.json() == {"plan_id": plan_id, "was_confirmed": False}
+    assert env.client.get(f"{PLAN_URL}s/{plan_id}").status_code == 404
+    assert plan_rows(env.engine) == 0
+
+
+def test_confirmed_plan_needs_force_to_be_deleted(env: Env) -> None:
+    plan_id = make_plan(env)["id"]
+    env.client.post(f"{PLAN_URL}s/{plan_id}/confirm")
+
+    refused = env.client.delete(f"{PLAN_URL}s/{plan_id}")
+    assert refused.status_code == 409
+    assert refused.json()["error"]["code"] == "project_plan_locked"
+    assert env.client.get(f"{PLAN_URL}s/{plan_id}").json()["locked"] is True
+
+    deleted = env.client.delete(f"{PLAN_URL}s/{plan_id}", params={"force": "true"})
+    assert deleted.status_code == 200
+    assert deleted.json() == {"plan_id": plan_id, "was_confirmed": True}
+    assert plan_rows(env.engine) == 0
+
+
+def test_deleting_a_plan_leaves_the_reference_snapshot_and_other_plans(env: Env) -> None:
+    keep = make_plan(env)["id"]
+    drop = env.client.post(PLAN_URL, json=request_body(env)).json()["id"]
+
+    env.client.delete(f"{PLAN_URL}s/{drop}")
+
+    assert env.client.get(f"{PLAN_URL}s/{keep}").status_code == 200
+    with env.engine.connect() as connection:
+        assert connection.scalar(text("SELECT count(*) FROM snapshots")) == 1
+
+
+def test_deleting_an_unknown_plan_is_404_and_delete_is_not_repeatable(env: Env) -> None:
+    plan_id = make_plan(env)["id"]
+    assert env.client.delete(f"{PLAN_URL}s/{plan_id}").status_code == 200
+
+    again = env.client.delete(f"{PLAN_URL}s/{plan_id}")
+
+    assert again.status_code == 404
+    assert again.json()["error"]["code"] == "project_plan_not_found"
+
+
+def test_force_does_not_bypass_the_lock_through_concurrent_confirm_and_delete(env: Env) -> None:
+    plan_id = make_plan(env)["id"]
+
+    def attempt(action: str) -> int:
+        if action == "confirm":
+            return env.client.post(f"{PLAN_URL}s/{plan_id}/confirm").status_code
+        return env.client.delete(f"{PLAN_URL}s/{plan_id}").status_code
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(attempt, ["confirm", "delete"]))
+
+    # 無論先後，刪除只會在「草稿」時成功；確認先到則刪除 409，刪除先到則確認 404
+    with env.engine.connect() as connection:
+        remaining = connection.scalar(text("SELECT count(*) FROM project_plans"))
+    assert (tuple(results), remaining) in {((200, 409), 1), ((404, 200), 0)}
+
+
 def test_database_rejects_inconsistent_confirmation_state(env: Env) -> None:
     plan_id = make_plan(env)["id"]
 

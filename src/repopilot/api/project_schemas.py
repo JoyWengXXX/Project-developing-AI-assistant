@@ -89,7 +89,7 @@ class ProjectPlanRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     target_project_config: ProjectConfig
-    reference_snapshot_id: int = Field(strict=True, ge=1, le=_INT32_MAX)
+    reference_snapshot_id: int | None = Field(default=None, strict=True, ge=1, le=_INT32_MAX)
     project_requirements: Annotated[
         str, StringConstraints(strip_whitespace=True, min_length=1, max_length=4000)
     ]
@@ -103,7 +103,9 @@ class ProjectPlanRequest(BaseModel):
 
 
 class ProjectPlanReferenceResponse(BaseModel):
-    """計畫的參考來源。`snapshot_id` 為 null 代表快照已被移除，計畫不可再當作有效依據。"""
+    """計畫的參考來源（沒有使用參考時整個欄位為 null）。
+
+    `snapshot_id` 為 null 代表快照已被移除，計畫不可再當作有效依據。"""
 
     snapshot_id: int | None
     repository_name: str
@@ -121,6 +123,32 @@ class ProjectPlanUsageResponse(BaseModel):
     usage_known: bool
 
 
+class ProjectPlanListItem(BaseModel):
+    id: int
+    status: Literal["draft", "confirmed"]
+    locked: bool
+    created_at: datetime
+    confirmed_at: datetime | None
+    language: str
+    framework: str | None
+    requirements_excerpt: str
+    file_count: int
+    reference: ProjectPlanReferenceResponse | None
+    cost_usd: UsdAmount
+
+
+class ProjectPlanListResponse(BaseModel):
+    items: list[ProjectPlanListItem]
+    total: int
+    limit: int
+    offset: int
+
+
+class ProjectPlanDeletedResponse(BaseModel):
+    plan_id: int
+    was_confirmed: bool
+
+
 class ProjectPlanResponse(BaseModel):
     id: int
     status: Literal["draft", "confirmed"]
@@ -129,7 +157,7 @@ class ProjectPlanResponse(BaseModel):
     confirmed_at: datetime | None
     target_project_config: ProjectConfig
     project_requirements: str
-    reference: ProjectPlanReferenceResponse
+    reference: ProjectPlanReferenceResponse | None
     plan: dict[str, Any]
     plan_markdown: str
     usage: ProjectPlanUsageResponse

@@ -62,6 +62,12 @@ class ProjectPlanInvalidOutputError(RepoPilotError):
     code = "project_plan_invalid_output"
 
 
+class ProjectPlanLockedError(RepoPilotError):
+    """計畫已確認（鎖定），刪除須明確帶 `force=true`。"""
+
+    code = "project_plan_locked"
+
+
 class RepositoryNotFoundError(RepoPilotError):
     """指定的 Repository 不存在。"""
 

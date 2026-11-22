@@ -1064,6 +1064,10 @@ class ProjectPlan(Base):
         CheckConstraint(
             "input_tokens >= 0 AND output_tokens >= 0 AND cost_usd >= 0", name="amounts_nonnegative"
         ),
+        CheckConstraint(
+            "(reference_repository_name IS NULL) = (reference_commit_sha IS NULL)",
+            name="reference_fields_together",
+        ),
         Index("ix_project_plans_reference_snapshot_id", "reference_snapshot_id"),
     )
 
@@ -1074,8 +1078,8 @@ class ProjectPlan(Base):
     reference_snapshot_id: Mapped[int | None] = mapped_column(
         ForeignKey("snapshots.id", ondelete="SET NULL")
     )
-    reference_repository_name: Mapped[str] = mapped_column(String(200))
-    reference_commit_sha: Mapped[str] = mapped_column(String(40))
+    reference_repository_name: Mapped[str | None] = mapped_column(String(200))
+    reference_commit_sha: Mapped[str | None] = mapped_column(String(40))
     plan: Mapped[dict[str, Any]] = mapped_column(JSONB)
     plan_markdown: Mapped[str] = mapped_column(Text)
     provider: Mapped[str] = mapped_column(String(20))

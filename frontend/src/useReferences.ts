@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { api, isAbortError, type ApiError } from './api'
 import { toApiError } from './format'
-import type { ReferenceItem, ReferenceList } from './types'
+import type { ReferenceItem, ReferenceList, ReferenceSetResult } from './types'
 
 export interface ReferencesState {
   /** 最近一次成功載入的參考版本（每個 repo 最多一個）；重新載入期間沿用舊資料，第一次載入前為 null。 */
@@ -46,8 +46,8 @@ export function useReferences(): ReferencesState {
 }
 
 /** PUT /repositories/{id}/reference：把某個已匯入完成的快照設為該 repo 的參考版本（upsert）。 */
-export async function setReference(repoId: number, snapshotId: number): Promise<ReferenceItem> {
-  const res = await api<ReferenceItem>('PUT', `/api/v1/repositories/${repoId}/reference`, {
+export async function setReference(repoId: number, snapshotId: number): Promise<ReferenceSetResult> {
+  const res = await api<ReferenceSetResult>('PUT', `/api/v1/repositories/${repoId}/reference`, {
     body: { snapshot_id: snapshotId },
   })
   return res.data

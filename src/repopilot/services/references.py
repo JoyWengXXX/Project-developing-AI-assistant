@@ -24,13 +24,21 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from repopilot.db.models import Repository, RepositoryReference, Snapshot
+from repopilot.config import Settings
+from repopilot.db.models import Job, Repository, RepositoryReference, Snapshot
+from repopilot.embedding.devices import EmbeddingDevice, device_of_params
+from repopilot.embedding.local_runtime import EmbeddingRuntimeError
+from repopilot.embedding.profile import EmbeddingProfile
 from repopilot.errors import (
+    EmbeddingDeviceUnavailableError,
+    EmbeddingNotConfiguredError,
     RepositoryNotFoundError,
     SnapshotNotCompletedError,
     SnapshotNotFoundError,
 )
+from repopilot.services.index_queries import get_current_index
 from repopilot.services.repositories import get_repository
+from repopilot.services.retrieval_jobs import submit_retrieval_job
 from repopilot.services.snapshot_queries import SNAPSHOT_COMPLETED
 
 REFERENCE_SNAPSHOT_FOREIGN_KEY = "fk_repository_references_snapshot_id_snapshots"
@@ -56,6 +64,29 @@ class ReferenceView:
     created_at: datetime
 
 
+@dataclass(frozen=True)
+class ReferenceEmbedding:
+    """設定參考版本後「排入檢索 embedding」的結果（D41 延伸，issue #25）。
+
+    - `job`：已排入或沿用的進行中 job（`device` 是該 job 實際使用的裝置）。
+    - `completed`：檢索索引已完成，沒有建立 job。
+    - `skipped`：沒有排入；`reason` 說明原因（參考版本本身仍已設定成功）。
+    """
+
+    status: Literal["job", "completed", "skipped"]
+    message: str
+    reason: Literal["embedding_not_configured", "structure_index_pending"] | None = None
+    job: Job | None = None
+    device: EmbeddingDevice | None = None
+    device_fallback: bool = False
+
+
+@dataclass(frozen=True)
+class ReferenceSetResult:
+    reference: ReferenceView
+    embedding: ReferenceEmbedding
+
+
 def list_references(session: Session) -> list[ReferenceView]:
     """所有參考版本（依 repo id 排序）；單一 JOIN 查詢，不呼叫 Git。"""
     views = _load_views(session, None)
@@ -63,8 +94,70 @@ def list_references(session: Session) -> list[ReferenceView]:
     return views
 
 
-def set_reference(session: Session, repository_id: int, snapshot_id: int) -> ReferenceView:
-    """把 `snapshot_id` 設為 repo 的參考版本（upsert）；回傳設定後的參考。"""
+def set_reference(
+    session: Session,
+    repository_id: int,
+    snapshot_id: int,
+    settings: Settings,
+    *,
+    request_id: str | None = None,
+) -> ReferenceSetResult:
+    """把 `snapshot_id` 設為 repo 的參考版本（upsert），再嘗試排入檢索 embedding。
+
+    參考版本先提交；排入 embedding 是之後的獨立步驟，不影響參考版本是否設定成功。
+    """
+    view = _upsert_reference(session, repository_id, snapshot_id)
+    embedding = _submit_embedding(session, snapshot_id, settings, request_id)
+    return ReferenceSetResult(view, embedding)
+
+
+def _submit_embedding(
+    session: Session, snapshot_id: int, settings: Settings, request_id: str | None
+) -> ReferenceEmbedding:
+    try:
+        EmbeddingProfile.from_settings(settings)
+    except EmbeddingNotConfiguredError:
+        return ReferenceEmbedding(
+            "skipped",
+            "Embedding is not configured (EMBEDDING_* settings); no retrieval job was queued.",
+            reason="embedding_not_configured",
+        )
+    structure = get_current_index(session, snapshot_id, settings)
+    pending = structure is None or structure.status != "completed"
+    session.rollback()
+    if pending:
+        return ReferenceEmbedding(
+            "skipped",
+            "Waiting for the structure index; no retrieval job was queued yet.",
+            reason="structure_index_pending",
+        )
+
+    fallback = False
+    try:
+        submission = submit_retrieval_job(
+            session, snapshot_id, settings, request_id=request_id, device="gpu"
+        )
+    except (EmbeddingDeviceUnavailableError, EmbeddingNotConfiguredError, EmbeddingRuntimeError):
+        # 只有「送出時」GPU 不可用才改用 CPU；工作開始後失敗不在這裡處理
+        session.rollback()
+        fallback = True
+        submission = submit_retrieval_job(
+            session, snapshot_id, settings, request_id=request_id, device="cpu"
+        )
+    if submission.job is None:
+        return ReferenceEmbedding("completed", "The retrieval index is already completed.")
+    device = device_of_params(submission.job.params)
+    return ReferenceEmbedding(
+        "job",
+        f"Retrieval embedding job is queued on {device}.",
+        job=submission.job,
+        device=device,
+        device_fallback=fallback and device == "cpu",
+    )
+
+
+def _upsert_reference(session: Session, repository_id: int, snapshot_id: int) -> ReferenceView:
+    """寫入參考版本（upsert）；回傳設定後的參考。"""
     get_repository(session, repository_id)  # 不存在 → 404 repository_not_found
     status = session.scalar(
         select(Snapshot.status).where(

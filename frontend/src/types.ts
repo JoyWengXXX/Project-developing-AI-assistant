@@ -194,6 +194,21 @@ export interface ReferenceList {
   items: ReferenceItem[]
 }
 
+// PUT /repositories/{id}/reference 回應的 embedding 欄位（issue #25）：設定參考後排入檢索 embedding 的結果。
+// job：已排入或沿用的進行中 job；completed：索引已完成；skipped：略過（reason 說明原因，參考版本仍已設定）。
+export interface ReferenceEmbedding {
+  status: 'job' | 'completed' | 'skipped'
+  message: string
+  reason: 'embedding_not_configured' | 'structure_index_pending' | null
+  job: Job | null
+  device: 'cpu' | 'gpu' | null // job 實際使用的裝置
+  device_fallback: boolean // GPU 不可用而改用 CPU
+}
+
+export interface ReferenceSetResult extends ReferenceItem {
+  embedding: ReferenceEmbedding
+}
+
 // DELETE /api/v1/snapshots/{id}?force= 的回應（200）
 export interface SnapshotRemoved {
   snapshot_id: number

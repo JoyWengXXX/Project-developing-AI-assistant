@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { commitShortSha, formatTime } from '../format'
 import { formatSize } from '../jobFormat'
-import type { ReferenceItem, RepositoryOverview } from '../types'
+import type { ReferenceEmbedding, ReferenceItem, RepositoryOverview } from '../types'
 import { ErrorBox } from '../ui'
 import { useAction } from '../useAction'
 import { clearReference, setReference } from '../useReferences'
@@ -22,6 +22,18 @@ interface Props {
   onSwitchToLatest: (headSha: string) => void
   /** 設定或取消參考成功後：重新讀取參考清單與已匯入版本。 */
   onChanged: () => void
+}
+
+/** 設定參考後的檢索 embedding 提示（issue #25）。 */
+function embeddingNote(e: ReferenceEmbedding): string {
+  if (e.status === 'completed') return '檢索索引（embedding）已完成，不需要重做。'
+  if (e.status === 'job' && e.job !== null) {
+    const device = e.device === 'gpu' ? 'GPU' : 'CPU'
+    const fallback = e.device_fallback ? '（GPU 不可用，已改用 CPU）' : ''
+    return `已排入檢索索引（embedding）工作 #${e.job.id}（${e.job.status}），裝置：${device}${fallback}。`
+  }
+  if (e.reason === 'structure_index_pending') return '等待結構索引完成，之後才會排入檢索索引（embedding）。'
+  return '尚未設定 embedding，略過檢索索引（參考版本已設定）。'
 }
 
 /**
@@ -54,8 +66,8 @@ export function RepoReference({
   async function set() {
     if (pickedId === null) return
     const ok = await action.run(async () => {
-      await setReference(repoId, pickedId)
-      return '已設為參考版本。'
+      const result = await setReference(repoId, pickedId)
+      return `已設為參考版本。${embeddingNote(result.embedding)}`
     })
     if (ok) setPick('')
     onChanged()

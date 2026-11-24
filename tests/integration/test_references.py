@@ -109,9 +109,14 @@ def test_put_sets_the_reference_and_get_lists_it_with_the_documented_shape(
         "skipped_count": 0,
         "total_bytes": snapshot["total_bytes"],
         "created_at": body["created_at"],
+        "embedding": body["embedding"],
     }
+    # 快照沒有結構索引（或沒設定 embedding）：略過排入，參考版本仍成功（issue #25）
+    assert body["embedding"]["status"] == "skipped"
+    assert body["embedding"]["job"] is None
     assert body["created_at"].endswith("Z") or "+" in body["created_at"]
-    assert client.get(REFERENCES).json() == {"items": [body]}
+    listed = {key: value for key, value in body.items() if key != "embedding"}
+    assert client.get(REFERENCES).json() == {"items": [listed]}
 
 
 def test_listing_references_does_not_need_the_git_repository(

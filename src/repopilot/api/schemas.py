@@ -542,6 +542,30 @@ class JobSubmitResponse(BaseModel):
     reused: bool
 
 
+class ReferenceEmbeddingResponse(BaseModel):
+    """設定參考版本後排入檢索 embedding 的結果（issue #25）。
+
+    - `status=job`：`job` 是新排入或沿用的進行中 job，`device` 是它實際使用的裝置
+      （預設 `gpu`；送出時 GPU 不可用則為 `cpu` 且 `device_fallback=true`）。
+    - `status=completed`：檢索索引已完成，沒有 job。
+    - `status=skipped`：沒有排入，`reason` 為 `embedding_not_configured` 或
+      `structure_index_pending`（等待結構索引）；參考版本仍已設定。
+    """
+
+    status: Literal["job", "completed", "skipped"]
+    message: str
+    reason: Literal["embedding_not_configured", "structure_index_pending"] | None
+    job: JobResponse | None
+    device: Literal["cpu", "gpu"] | None
+    device_fallback: bool
+
+
+class ReferenceSetResponse(ReferenceResponse):
+    """`PUT /repositories/{id}/reference` 的回應：參考版本＋ embedding 排入結果。"""
+
+    embedding: ReferenceEmbeddingResponse
+
+
 class RetrievalIndexResponse(BaseModel):
     snapshot_id: int
     repository_id: int

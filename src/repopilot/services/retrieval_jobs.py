@@ -9,8 +9,14 @@ from sqlalchemy.orm import Session
 from repopilot.config import Settings
 from repopilot.db.models import Job, RetrievalChunkSet, RetrievalIndex, Snapshot
 from repopilot.embedding.devices import DEFAULT_DEVICE, EmbeddingDevice, ensure_available
+from repopilot.embedding.local_runtime import EmbeddingRuntimeError
 from repopilot.embedding.profile import EmbeddingProfile
-from repopilot.errors import SnapshotNotCompletedError, SnapshotNotFoundError
+from repopilot.errors import (
+    EmbeddingDeviceUnavailableError,
+    EmbeddingNotConfiguredError,
+    SnapshotNotCompletedError,
+    SnapshotNotFoundError,
+)
 from repopilot.indexing.file_kinds import RETRIEVAL_EXCLUDED_KINDS
 from repopilot.services import jobs
 from repopilot.services.import_jobs import find_active_job, latest_job
@@ -132,3 +138,21 @@ def submit_retrieval_job(
         )
         return RetrievalJobSubmission(created.job, snapshot_id, identity.repository_id, False)
     raise RuntimeError("Could not submit the retrieval job.")
+
+
+def submit_with_gpu_preference(
+    session: Session, snapshot_id: int, settings: Settings, *, request_id: str | None = None
+) -> tuple[RetrievalJobSubmission, bool]:
+    """GPU 優先送出；送出時 GPU 不可用才改用 CPU。回傳 (結果, 是否發生改用 CPU)。
+
+    設定參考版本（#25）與結構索引完成後補送（#26）共用。工作開始後的失敗不在這裡處理。
+    """
+    try:
+        return submit_retrieval_job(
+            session, snapshot_id, settings, request_id=request_id, device="gpu"
+        ), False
+    except (EmbeddingDeviceUnavailableError, EmbeddingNotConfiguredError, EmbeddingRuntimeError):
+        session.rollback()
+        return submit_retrieval_job(
+            session, snapshot_id, settings, request_id=request_id, device="cpu"
+        ), True

@@ -549,7 +549,7 @@ class ReferenceEmbeddingResponse(BaseModel):
       （預設 `gpu`；送出時 GPU 不可用則為 `cpu` 且 `device_fallback=true`）。
     - `status=completed`：檢索索引已完成，沒有 job。
     - `status=skipped`：沒有排入，`reason` 為 `embedding_not_configured` 或
-      `structure_index_pending`（等待結構索引）；參考版本仍已設定。
+      `structure_index_pending`（等待結構索引，完成後自動補送）；參考版本仍已設定。
     """
 
     status: Literal["job", "completed", "skipped"]

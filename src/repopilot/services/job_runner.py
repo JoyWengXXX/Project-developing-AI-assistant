@@ -79,6 +79,7 @@ from repopilot.services import (
     github_job_runner,
     job_poison,
     qa_question_runner,
+    references,
     retrieval_job_runner,
     snapshot_indexing,
     snapshots,
@@ -652,3 +653,9 @@ def _run_index_phase(
     finally:
         index_lock.release()
     snapshot_indexing.delete_outdated_indexes(session, snapshot_id, profile_hash)
+    if finished.get("status") == "succeeded":
+        # 索引完成交易已提交；補送 embedding 是獨立的附帶動作（#26），失敗只記日誌。
+        # 匯入 job 與 `index-jobs` 的 snapshot_index job 都走這條路徑，所以兩者一併處理
+        references.enqueue_embedding_after_structure_index(
+            session, snapshot_id, settings, job.request_id
+        )

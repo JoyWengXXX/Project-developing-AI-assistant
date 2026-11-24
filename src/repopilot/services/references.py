@@ -15,6 +15,7 @@
 .NET 對照：像 EF Core 的 upsert（`ExecuteUpdate` 或 `MERGE`），並讓資料庫外鍵擔任最後一道防線。
 """
 
+import logging
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Literal
@@ -27,19 +28,20 @@ from sqlalchemy.orm import Session
 from repopilot.config import Settings
 from repopilot.db.models import Job, Repository, RepositoryReference, Snapshot
 from repopilot.embedding.devices import EmbeddingDevice, device_of_params
-from repopilot.embedding.local_runtime import EmbeddingRuntimeError
 from repopilot.embedding.profile import EmbeddingProfile
 from repopilot.errors import (
-    EmbeddingDeviceUnavailableError,
     EmbeddingNotConfiguredError,
     RepositoryNotFoundError,
     SnapshotNotCompletedError,
     SnapshotNotFoundError,
 )
+from repopilot.logging_config import APP_LOGGER_NAME
 from repopilot.services.index_queries import get_current_index
 from repopilot.services.repositories import get_repository
-from repopilot.services.retrieval_jobs import submit_retrieval_job
+from repopilot.services.retrieval_jobs import submit_with_gpu_preference
 from repopilot.services.snapshot_queries import SNAPSHOT_COMPLETED
+
+logger = logging.getLogger(APP_LOGGER_NAME)
 
 REFERENCE_SNAPSHOT_FOREIGN_KEY = "fk_repository_references_snapshot_id_snapshots"
 REFERENCE_REPOSITORY_FOREIGN_KEY = "fk_repository_references_repository_id_repositories"
@@ -111,6 +113,35 @@ def set_reference(
     return ReferenceSetResult(view, embedding)
 
 
+def enqueue_embedding_after_structure_index(
+    session: Session, snapshot_id: int, settings: Settings, request_id: str | None = None
+) -> None:
+    """結構索引完成後補送（issue #26）：快照是某 repo 的參考版本才排入，否則什麼都不做。
+
+    呼叫時索引完成交易已提交；這裡任何失敗只記日誌，不影響呼叫端（匯入／索引 job 仍 succeeded）。
+    規則與 `set_reference` 相同（GPU 優先、不可用改 CPU、未設定 embedding 略過、去重）。
+    """
+    try:
+        is_reference = session.scalar(
+            select(RepositoryReference.id).where(RepositoryReference.snapshot_id == snapshot_id)
+        )
+        session.rollback()
+        if is_reference is None:
+            return
+        result = _submit_embedding(session, snapshot_id, settings, request_id)
+        logger.info(
+            "reference_embedding_after_index",
+            extra={"snapshot_id": snapshot_id, "status": result.status, "reason": result.reason},
+        )
+    except Exception:  # 補送是附帶動作：任何失敗都不得影響已完成的索引 job
+        session.rollback()
+        logger.warning(
+            "reference_embedding_after_index_failed",
+            extra={"snapshot_id": snapshot_id},
+            exc_info=True,
+        )
+
+
 def _submit_embedding(
     session: Session, snapshot_id: int, settings: Settings, request_id: str | None
 ) -> ReferenceEmbedding:
@@ -128,22 +159,14 @@ def _submit_embedding(
     if pending:
         return ReferenceEmbedding(
             "skipped",
-            "Waiting for the structure index; no retrieval job was queued yet.",
+            "Waiting for the structure index; a retrieval job will be queued automatically "
+            "when it completes.",
             reason="structure_index_pending",
         )
 
-    fallback = False
-    try:
-        submission = submit_retrieval_job(
-            session, snapshot_id, settings, request_id=request_id, device="gpu"
-        )
-    except (EmbeddingDeviceUnavailableError, EmbeddingNotConfiguredError, EmbeddingRuntimeError):
-        # 只有「送出時」GPU 不可用才改用 CPU；工作開始後失敗不在這裡處理
-        session.rollback()
-        fallback = True
-        submission = submit_retrieval_job(
-            session, snapshot_id, settings, request_id=request_id, device="cpu"
-        )
+    submission, fallback = submit_with_gpu_preference(
+        session, snapshot_id, settings, request_id=request_id
+    )
     if submission.job is None:
         return ReferenceEmbedding("completed", "The retrieval index is already completed.")
     device = device_of_params(submission.job.params)

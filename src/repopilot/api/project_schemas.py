@@ -61,6 +61,16 @@ class ProjectCreateWithLlmRequest(BaseModel):
 
     reference_snapshot_id: int | None = Field(default=None, strict=True, ge=1, le=_INT32_MAX)
     conversation: list[ProjectConversationMessage] = Field(default_factory=list, max_length=30)
+    project_requirements: Annotated[
+        str | None, StringConstraints(strip_whitespace=True, max_length=4000)
+    ] = None
+
+    @field_validator("project_requirements")
+    @classmethod
+    def _no_nul(cls, value: str | None) -> str | None:
+        if value is not None and "\x00" in value:
+            raise ValueError("The requirements contain an invalid character.")
+        return value
 
 
 class ProjectRecommendationResponse(BaseModel):
@@ -173,3 +183,4 @@ class ProjectCreateWithLlmResponse(BaseModel):
     llm: ProjectLlmStatusResponse
     project_config: ProjectConfig | None
     template: ProjectTemplateResponse | None
+    reference_note: str | None = None

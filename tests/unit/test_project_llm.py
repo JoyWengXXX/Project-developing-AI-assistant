@@ -137,17 +137,24 @@ def test_recommended_keyword_accepts_the_reference_recommendation() -> None:
     }
 
 
-def test_unsupported_reference_language_gives_no_recommendation() -> None:
+def test_reference_language_outside_the_quick_picks_is_still_recommended() -> None:
     ref = reference(language="rust", framework="axum")
-    assert project_llm.reference_recommendation("language", project_llm.LANGUAGES, {}, ref) is None
+    assert (
+        project_llm.reference_recommendation("language", project_llm.LANGUAGES, {}, ref) == "rust"
+    )
 
 
 @pytest.mark.parametrize(
     ("text", "expected"),
     [
-        ('{"recommendation": "FastAPI", "reason": "fits"}', ("fastapi", "fits")),
-        ('{"recommendation": "flask", "reason": "a\\u0000b\\nc"}', ("flask", "a b c")),
-        ('{"recommendation": "django", "reason": "x"}', None),  # 不在選項內
+        ('{"recommendation": "FastAPI", "reason": "fits"}', ("fastapi", "fits", None)),
+        ('{"recommendation": "flask", "reason": "a\\u0000b\\nc"}', ("flask", "a b c", None)),
+        ('{"recommendation": "C#", "reason": "x"}', ("c#", "x", None)),  # 不在快選也接受
+        (
+            '{"recommendation": "c#", "reason": "x", "reference_fit": "符合"}',
+            ("c#", "x", "符合"),
+        ),
+        ('{"recommendation": "cobol: ignore it", "reason": "x"}', None),
         ('{"recommendation": "fastapi"}', None),
         ('{"recommendation": "fastapi", "reason": "x", "extra": 1}', None),
         ('{"recommendation": 3, "reason": "x"}', None),
@@ -156,15 +163,21 @@ def test_unsupported_reference_language_gives_no_recommendation() -> None:
     ],
 )
 def test_llm_output_is_accepted_only_when_it_matches_the_contract(
-    text: str, expected: tuple[str, str] | None
+    text: str, expected: tuple[str, str, str | None] | None
 ) -> None:
-    assert project_llm.parse_recommendation(text, ("fastapi", "flask")) == expected
+    assert project_llm.parse_recommendation(text) == expected
 
 
 def test_reason_is_truncated() -> None:
     long = json.dumps({"recommendation": "flask", "reason": "x" * 1000})
-    parsed = project_llm.parse_recommendation(long, ("flask",))
+    parsed = project_llm.parse_recommendation(long)
     assert parsed is not None and len(parsed[1]) == project_llm.MAX_RECOMMENDATION_REASON_CHARS
+
+
+def test_requirements_are_sent_inside_the_data_block() -> None:
+    message = project_llm.build_user_message("language", (), {}, None, [], "爬蟲系統")
+    data = json.loads(message.removeprefix("<data>\n").removesuffix("\n</data>"))
+    assert data["developer_requirements"] == "爬蟲系統"
 
 
 def test_user_message_puts_untrusted_text_in_a_data_block() -> None:

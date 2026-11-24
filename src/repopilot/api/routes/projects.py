@@ -73,14 +73,16 @@ def create_with_llm(
         conversation=[
             project_llm.Message(message.role, message.content) for message in body.conversation
         ],
+        requirements=body.project_requirements,
     )
-    config = turn.config
     template = turn.template
     recommendation = turn.recommendation
+    config = turn.config
     return ProjectCreateWithLlmResponse(
         done=turn.done,
         step=turn.step,
         question=turn.question,
+        reference_note=turn.reference_note,
         options=turn.options,
         collected=turn.collected,
         recommendation=None

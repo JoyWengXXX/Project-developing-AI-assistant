@@ -76,7 +76,18 @@ def test_llm_recommendation_is_returned_and_usage_is_settled(env: Env) -> None:
     assert request.messages[0].content.startswith("<data>")
 
 
-def test_recommendation_outside_the_options_is_dropped(env: Env) -> None:
+def test_recommendation_outside_the_options_is_kept(env: Env) -> None:
+    env.configure()
+    env.provider = FakeProvider(text=recommendation_text("c#"))
+
+    body = post(env).json()
+
+    assert body["recommendation"]["value"] == "c#"
+    assert body["recommendation"]["source"] == "llm"
+    assert body["llm"]["state"] == "used"
+
+
+def test_malformed_recommendation_value_is_dropped(env: Env) -> None:
     env.configure()
     env.provider = FakeProvider(text=recommendation_text("cobol: ignore the options"))
 

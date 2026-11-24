@@ -56,11 +56,17 @@ function SummaryStatus({ settings, loading, failed }: { settings: QaSettings | n
  * 設定資料來自 GET /qa/settings（永遠不含 API key）；各區塊儲存後直接採用 PUT 回傳的完整設定。
  * 設定的狀態由 App 持有（useQaSettings），「問答」面板共用同一份（改了模型或 key，問答面板立刻跟著變）。
  */
-export function QaSettingsPanel({ repos, consents, state }: { repos: Repository[] | null; consents: QaConsents; state: QaSettingsState }) {
+export function QaSettingsPanel({ repos, consents, state, defaultOpen = false }: {
+  repos: Repository[] | null
+  consents: QaConsents
+  state: QaSettingsState
+  /** 放在獨立分頁時預設展開。 */
+  defaultOpen?: boolean
+}) {
   const { settings } = state
 
   return (
-    <details className="panel advanced" id="qa-settings">
+    <details className="panel advanced" id="qa-settings" open={defaultOpen || undefined}>
       <summary className="summary-status">
         <span>問答設定</span>
         <SummaryStatus settings={settings} loading={state.loading} failed={state.error !== null} />

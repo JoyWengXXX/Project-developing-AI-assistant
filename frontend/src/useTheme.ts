@@ -7,7 +7,7 @@ const STORAGE_KEY = 'repopilot-theme'
 function initialTheme(): Theme {
   const saved = localStorage.getItem(STORAGE_KEY)
   if (saved === 'light' || saved === 'dark') return saved
-  return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'
+  return 'dark' // 藍圖介面以深色為主；使用者切換後會記住
 }
 
 /** 切換淺色／暗黑模式：寫入 <html data-theme> 並記住選擇（只存在本機瀏覽器）。 */

@@ -8,7 +8,7 @@ function SnapshotOptions({
 }: {
   repo: Repository
   value: number | null
-  onChange: (snapshotId: number | null) => void
+  onChange: (snapshotId: number | null, label: string | null) => void
   snapshotKey: number
 }) {
   const snapshots = useSnapshotList(repo.id, 'completed', snapshotKey)
@@ -17,7 +17,11 @@ function SnapshotOptions({
       <select
         aria-label="參考版本"
         value={value ?? ''}
-        onChange={(e) => onChange(e.target.value === '' ? null : Number(e.target.value))}
+        onChange={(e) => {
+          const id = e.target.value === '' ? null : Number(e.target.value)
+          const picked = (snapshots.items ?? []).find((s) => s.id === id)
+          onChange(id, picked === undefined ? null : `${repo.name} @ ${picked.commit_sha.slice(0, 7)}`)
+        }}
       >
         <option value="">（不使用參考版本）</option>
         {(snapshots.items ?? []).map((snapshot) => (
@@ -37,7 +41,7 @@ export function ReferenceSnapshotSelect({
 }: {
   repos: Repository[]
   snapshotId: number | null
-  onChange: (snapshotId: number | null) => void
+  onChange: (snapshotId: number | null, label: string | null) => void
   snapshotKey: number
 }) {
   const [repoId, setRepoId] = useState<number | null>(null)
@@ -50,7 +54,7 @@ export function ReferenceSnapshotSelect({
           value={repoId ?? ''}
           onChange={(e) => {
             setRepoId(e.target.value === '' ? null : Number(e.target.value))
-            onChange(null)
+            onChange(null, null)
           }}
         >
           <option value="">（不使用參考 repo）</option>

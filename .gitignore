@@ -31,3 +31,4 @@ build/
 .test-repos/
 .test-managed/
 .test-remote/
+.data/

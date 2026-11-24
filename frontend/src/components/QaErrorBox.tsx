@@ -17,20 +17,20 @@ export function QaErrorBox({ error, title = '錯誤', requestId = null }: {
   const rid = 'requestId' in error ? error.requestId : requestId
   return (
     <div className="error-box qa-error" role="alert">
-      <div className="error-title">
-        {title}
-        {status !== null && status !== undefined && <> · HTTP {status}</>}
-      </div>
+      <div className="error-title">{title}</div>
       <p className="qa-error-summary">{text.summary}</p>
       {text.advice !== null && <p className="error-hint">{text.advice}</p>}
-      <p className="muted qa-error-code">
-        code <code>{error.code}</code>
-        {rid !== null && rid !== undefined && (
-          <>
-            ・request_id <code>{rid}</code>
-          </>
-        )}
-      </p>
+      <details className="error-tech">
+        <summary>技術細節{status !== null && status !== undefined && <>（HTTP {status}）</>}</summary>
+        <p className="qa-error-code">
+          code <code>{error.code}</code>
+          {rid !== null && rid !== undefined && (
+            <>
+              ・request_id <code>{rid}</code>
+            </>
+          )}
+        </p>
+      </details>
     </div>
   )
 }

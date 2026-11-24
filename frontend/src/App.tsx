@@ -1,16 +1,18 @@
 import { useEffect, useState } from 'react'
 import { AddRepoPanel } from './components/AddRepoPanel'
+import { AppHeader } from './components/AppHeader'
 import { GitHubPanel } from './components/GitHubPanel'
 import { GitHubRegistrations } from './components/GitHubRegistrations'
 import { JobsSummaryBar } from './components/JobsSummaryBar'
-import { NewProjectPanel } from './components/NewProjectPanel'
+import { ProjectStudio } from './components/ProjectStudio'
 import { QaPanel } from './components/QaPanel'
 import { QaSettingsPanel } from './components/QaSettingsPanel'
 import { RepoDetailHeader } from './components/RepoDetailHeader'
 import { RepoOverviewGrid } from './components/RepoOverviewGrid'
 import { RetrievalPanel } from './components/RetrievalPanel'
-import { StatusHeader } from './components/StatusHeader'
+import { SectionNav } from './components/SectionNav'
 import { VersionPanel } from './components/VersionPanel'
+import { onNavigate, type Section } from './navigation'
 import type { Repository } from './types'
 import { useGitHubJobs } from './useGitHubJobs'
 import { useJobsOverview } from './useJobsOverview'
@@ -18,11 +20,12 @@ import { useQaConsents } from './useQaConsents'
 import { useQaSettings } from './useQaSettings'
 import { useRepoImports } from './useRepoImports'
 import { useRepoList } from './useRepoList'
+import { useUiMode } from './useUiMode'
 
-// 不使用路由或狀態管理函式庫：首頁是「倉庫總覽」（repo 卡片），點卡片後整頁切換成該 repo 的詳情
-// （版本管理：已匯入的版本、commit 圖與選取 commit 的操作；檔案區），用「← 回到總覽」回來。選取狀態集中在這裡，用 props 往下傳。
-// 選擇「切換」而不是「總覽下方再顯示詳情」：詳情很長，切換後不必捲動；總覽卸載時，
-// 它的進行中請求（概況、已匯入版本）會一併取消；回到總覽時一律重新讀取（參考版本、概況都是最新的）。
+// 不使用路由或狀態管理函式庫：頂端四個分頁（新專案、參考專案、問答、設定），只隱藏不卸載。
+// 「參考專案」分頁內：總覽（repo 卡片）點卡片後切換成該 repo 的詳情（版本管理、檔案區），用「← 回到總覽」回來。
+// 選取狀態集中在這裡，用 props 往下傳；回到總覽時一律重新讀取（參考版本、概況都是最新的）。
+// 一般模式隱藏 API 提示與進階工具（檢索、偵測已有專案）；開發者模式全部顯示。
 // 匯入（註冊後的一次性匯入、卡片的「匯入」）的狀態由這裡的 useRepoImports 持有，不會因為換頁而中斷。
 // 背景工作的資料也只在這裡輪詢一次（useJobsOverview）：頂端摘要、repo 卡片、詳情版本區與完整列表共用同一份，用 props 往下傳。
 // GitHub 註冊與更新（fetch）也是背景工作，由這裡的 useGitHubJobs 送出並偵測完成（成功後重新載入列表、自動匯入一次、保存 refs 變更清單）。
@@ -31,6 +34,9 @@ import { useRepoList } from './useRepoList'
 // 問答設定（useQaSettings）同樣由這裡持有：「問答設定」面板與「問答」面板共用同一份（改了模型或 key，提問面板立刻跟著變）。
 // 「問答」面板放在首頁面板區（進入 repo 詳情時只是隱藏、不卸載），進行中的問答不會因為換頁而遺失。
 export default function App() {
+  const ui = useUiMode()
+  const [section, setSection] = useState<Section>('project')
+  useEffect(() => onNavigate(setSection), [])
   const [repo, setRepo] = useState<Repository | null>(null)
   const [returnedFromDetail, setReturnedFromDetail] = useState(false) // 回到總覽時把焦點移到標題
   const [focusImported, setFocusImported] = useState(false) // 從卡片的「管理已匯入版本」進來：焦點移到「已匯入的版本」
@@ -81,55 +87,83 @@ export default function App() {
 
   return (
     <>
-      <StatusHeader />
-      <main className="layout">
-        {/* 背景工作：頁面頂端只有一行摘要（含進入 repo 詳情時）；完整列表按「查看所有背景工作」才開啟。進行中與失敗的工作顯示在它所屬的 repo 卡片與詳情版本區 */}
-        <JobsSummaryBar jobs={jobs} repos={list.items} />
-        {/* 「GitHub 註冊工作」「新增 repo」與「GitHub 連線」：進入詳情時只是隱藏（不卸載），輸入內容與進行中的請求不會遺失。
-            註冊成功前沒有 repo（沒有卡片），所以進行中與失敗的註冊工作列在這裡，不放在摺疊區內，重新整理頁面後也看得到 */}
-        <div className="home-panels" hidden={repo !== null}>
-          <GitHubRegistrations github={github} jobs={jobs} />
-          <AddRepoPanel github={github} onRegistered={handleRegistered} />
-          <GitHubPanel />
-          <QaSettingsPanel repos={list.items} consents={consents} state={qaSettings} />
-          <NewProjectPanel repos={list.items ?? []} snapshotKey={snapshotRefreshKey} />
+      <a className="skip-link" href="#main">
+        跳到主要內容
+      </a>
+      <AppHeader mode={ui.mode} onModeChange={ui.setMode} />
+      <SectionNav current={section} onChange={setSection} />
+      <main className="layout" id="main">
+        {/* 背景工作摘要只在開發者模式顯示；一般模式下進行中與失敗的工作仍顯示在所屬的 repo 卡片與詳情 */}
+        {ui.mode === 'developer' && <JobsSummaryBar jobs={jobs} repos={list.items} />}
+
+        {/* 四個分頁只隱藏不卸載：輸入內容、進行中的對話、問答與請求不會因為換頁而遺失 */}
+        <section id="section-project" role="tabpanel" aria-labelledby="section-tab-project" hidden={section !== 'project'}>
+          <ProjectStudio repos={list.items ?? []} snapshotKey={snapshotRefreshKey} settings={qaSettings} mode={ui.mode} />
+        </section>
+
+        <section
+          id="section-repos"
+          role="tabpanel"
+          aria-labelledby="section-tab-repos"
+          hidden={section !== 'repos'}
+          className="section-stack"
+        >
+          {/* 註冊成功前沒有 repo（沒有卡片），所以進行中與失敗的註冊工作列在這裡；進入詳情時只是隱藏 */}
+          <div className="home-panels" hidden={repo !== null}>
+            <GitHubRegistrations github={github} jobs={jobs} />
+            <AddRepoPanel github={github} onRegistered={handleRegistered} />
+          </div>
+          {repo === null ? (
+            <>
+              {ui.mode === 'developer' && <RetrievalPanel repos={list.items ?? []} snapshotKey={snapshotRefreshKey} />}
+              <RepoOverviewGrid
+                list={list}
+                imports={imports}
+                jobs={jobs}
+                github={github}
+                consents={consents}
+                onOpen={openRepo}
+                onRemoved={handleRepoRemoved}
+                focusTitle={returnedFromDetail}
+              />
+            </>
+          ) : (
+            <>
+              <RepoDetailHeader key={`header-${repo.id}`} repo={repo} onBack={backToOverview} />
+              <VersionPanel
+                key={`version-${repo.id}`}
+                repo={repo}
+                jobs={jobs}
+                reloadKey={github.fetchTicks[repo.id] ?? 0}
+                snapshotKey={snapshotRefreshKey}
+                onSnapshotsChanged={bumpSnapshots}
+                focusImported={focusImported}
+              />
+            </>
+          )}
+        </section>
+
+        <section id="section-qa" role="tabpanel" aria-labelledby="section-tab-qa" hidden={section !== 'qa'}>
           <QaPanel
             repos={list.items ?? []}
             consents={consents}
             settings={qaSettings}
             jobs={jobs}
             snapshotKey={snapshotRefreshKey}
+            defaultOpen
           />
-        </div>
+        </section>
 
-        {repo === null ? (
-          <>
-            <RetrievalPanel repos={list.items ?? []} snapshotKey={snapshotRefreshKey} />
-            <RepoOverviewGrid
-              list={list}
-              imports={imports}
-              jobs={jobs}
-              github={github}
-              consents={consents}
-              onOpen={openRepo}
-              onRemoved={handleRepoRemoved}
-              focusTitle={returnedFromDetail}
-            />
-          </>
-        ) : (
-          <>
-            <RepoDetailHeader key={`header-${repo.id}`} repo={repo} onBack={backToOverview} />
-            <VersionPanel
-              key={`version-${repo.id}`}
-              repo={repo}
-              jobs={jobs}
-              reloadKey={github.fetchTicks[repo.id] ?? 0}
-              snapshotKey={snapshotRefreshKey}
-              onSnapshotsChanged={bumpSnapshots}
-              focusImported={focusImported}
-            />
-          </>
-        )}
+        <section
+          id="section-settings"
+          role="tabpanel"
+          aria-labelledby="section-tab-settings"
+          hidden={section !== 'settings'}
+          className="section-stack"
+        >
+          <QaSettingsPanel repos={list.items} consents={consents} state={qaSettings} defaultOpen />
+          <GitHubPanel />
+        </section>
       </main>
     </>
   )

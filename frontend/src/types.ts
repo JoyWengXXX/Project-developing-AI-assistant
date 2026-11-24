@@ -996,5 +996,5 @@ export interface ProjectCreateWithLlmResult {
   llm: ProjectLlmStatus
   project_config: ProjectConfig | null
   template: ProjectTemplate | null
+  reference_note?: string | null
 }
-

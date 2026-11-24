@@ -16,7 +16,8 @@ export function ApiHint({ apis }: { apis: string[] }) {
 }
 
 /**
- * 統一錯誤格式的顯示：HTTP 狀態碼、code、message、request_id，422 另列 details。
+ * 統一錯誤格式的顯示：先給白話說明（沒有對應說明時用後端 message），
+ * HTTP 狀態碼、code、message、request_id 與 422 的 details 收在「技術細節」。
  * hints：特定情境的說明表（例如移除 repo），優先於通用的 ERROR_HINT。
  */
 export function ErrorBox({ error, hints }: { error: ApiError | null; hints?: Record<string, string> }) {
@@ -24,9 +25,10 @@ export function ErrorBox({ error, hints }: { error: ApiError | null; hints?: Rec
   const hint = hints?.[error.code] ?? ERROR_HINT[error.code]
   return (
     <div className="error-box" role="alert">
-      <div className="error-title">
-        錯誤{error.status !== null && <> · HTTP {error.status}</>}
-      </div>
+      <div className="error-title">沒有完成</div>
+      <p className="error-hint">{hint ?? error.message}</p>
+      <details className="error-tech">
+        <summary>技術細節{error.status !== null && <>（HTTP {error.status}）</>}</summary>
       <dl className="kv">
         <dt>code</dt>
         <dd>
@@ -37,7 +39,6 @@ export function ErrorBox({ error, hints }: { error: ApiError | null; hints?: Rec
         <dt>request_id</dt>
         <dd>{error.requestId ? <code>{error.requestId}</code> : '（無）'}</dd>
       </dl>
-      {hint && <p className="error-hint">說明：{hint}</p>}
       {Array.isArray(error.details) && error.details.length > 0 && (
         <div>
           <div className="error-title">details（哪個欄位不合法）</div>
@@ -56,6 +57,7 @@ export function ErrorBox({ error, hints }: { error: ApiError | null; hints?: Rec
           {error.details.index_status !== undefined && <>索引狀態：{error.details.index_status}</>}
         </p>
       )}
+      </details>
     </div>
   )
 }

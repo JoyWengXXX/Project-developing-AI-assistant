@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { isQaActive } from '../qaQuestion'
+import { navigateTo } from '../navigation'
 import type { QaEstimate, QaQuestionStatus, QaQuestionSubmitResponse, Repository, SnapshotItem } from '../types'
 import { ApiHint, ErrorBox } from '../ui'
 import type { JobsOverview } from '../useJobsOverview'
@@ -10,13 +11,17 @@ import { QaHistory } from './QaHistory'
 import { QaQuestionView } from './QaQuestionView'
 import { QA_MAX_SNAPSHOTS, QaSnapshotPicker, type QaSelection } from './QaSnapshotPicker'
 
-/** 「前往問答設定」：打開設定面板（<details id="qa-settings">）、捲動並把焦點移到它的標題。 */
+/** 「前往問答設定」：切到「設定」分頁、打開設定面板（<details id="qa-settings">）、捲動並把焦點移到它的標題。 */
 function openSettingsPanel() {
-  const panel = document.getElementById('qa-settings')
-  if (!(panel instanceof HTMLDetailsElement)) return
-  panel.open = true
-  panel.scrollIntoView({ block: 'start' })
-  panel.querySelector('summary')?.focus()
+  navigateTo('settings')
+  // 分頁在下一次 render 才顯示，等它出現再捲動與移動焦點
+  requestAnimationFrame(() => {
+    const panel = document.getElementById('qa-settings')
+    if (!(panel instanceof HTMLDetailsElement)) return
+    panel.open = true
+    panel.scrollIntoView({ block: 'start' })
+    panel.querySelector('summary')?.focus()
+  })
 }
 
 function SummaryBadge({ settings }: { settings: QaSettingsState }) {
@@ -34,15 +39,17 @@ function SummaryBadge({ settings }: { settings: QaSettingsState }) {
  * 問題與答案只存在記憶體：不寫入 localStorage／sessionStorage／cookie／URL。
  */
 export function QaPanel({
-  repos, consents, settings, jobs, snapshotKey,
+  repos, consents, settings, jobs, snapshotKey, defaultOpen = false,
 }: {
   repos: Repository[]
   consents: QaConsents
   settings: QaSettingsState
   jobs: JobsOverview
   snapshotKey: number
+  /** 放在獨立分頁時預設展開。 */
+  defaultOpen?: boolean
 }) {
-  const [open, setOpen] = useState(false)
+  const [open, setOpen] = useState(defaultOpen)
   const [selected, setSelected] = useState<QaSelection[]>([])
   const [text, setText] = useState('')
   const [viewId, setViewId] = useState<number | null>(null)
